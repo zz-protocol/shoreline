@@ -348,8 +348,8 @@ func TestRetryIntervals(t *testing.T) {
 	for i, w := range want {
 		got := calls[i+1].Sub(calls[i])
 		t.Logf("retry %d interval %v (want ~%v)", i+1, got.Round(time.Millisecond), w)
-		if d := got - w; d < -time.Second || d > time.Second {
-			t.Errorf("retry %d interval %v, want %v ±1s", i+1, got, w)
+		if d := got - w; d < -time.Second || d > 1500*time.Millisecond { // 上限放宽到 +1.5s：asynq 轮询抖动
+			t.Errorf("retry %d interval %v, want %v -1s/+1.5s", i+1, got, w)
 		}
 		if got <= prev {
 			t.Errorf("retry %d interval %v not increasing (prev %v)", i+1, got, prev)
