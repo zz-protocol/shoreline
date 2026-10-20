@@ -7,7 +7,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -21,6 +23,16 @@ func main() {
 		log.Fatalf("migrate: %v", err)
 	}
 	rdb := redis.NewClient(&redis.Options{Addr: os.Getenv("REDIS_ADDR")})
+	rates, err := ratesFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	pool, err := pgxpool.New(context.Background(), dbURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	srv, wmux := newWorker(asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")}, pool, rates, nil)
+	go func() { log.Fatal(srv.Run(wmux)) }()
 	checks := map[string]func(context.Context) error{
 		"postgres": func(ctx context.Context) error {
 			conn, err := pgx.Connect(ctx, dbURL)

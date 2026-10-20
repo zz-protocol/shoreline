@@ -19,7 +19,7 @@ func TestMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close(ctx)
+	t.Cleanup(func() { conn.Close(context.Background()) })
 	for _, tbl := range []string{"scan_tasks", "events", "urls", "assets", "scope_rules", "root_domains", "vendors", "schema_migrations"} {
 		if _, err := conn.Exec(ctx, "DROP TABLE IF EXISTS "+tbl+" CASCADE"); err != nil {
 			t.Fatal(err)
@@ -38,6 +38,10 @@ func TestMigrate(t *testing.T) {
 		t.Fatalf("rerun sql: %v", err)
 	}
 
+	// 测试用了显式 id，结束时清空数据并重置序列，避免影响其他测试
+	t.Cleanup(func() {
+		conn.Exec(context.Background(), `TRUNCATE vendors, root_domains, scope_rules, assets, urls, events, scan_tasks RESTART IDENTITY CASCADE`)
+	})
 	mustExec := func(sql string, args ...any) {
 		t.Helper()
 		if _, err := conn.Exec(ctx, sql, args...); err != nil {
