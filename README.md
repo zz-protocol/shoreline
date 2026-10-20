@@ -59,7 +59,7 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 对每个主机按 https、http 各发一次 `GET /`，不跟随跳转（记录 Location 为 redirect_to），不校验证书，正文最多读 1MB；
 记录状态码、标题、技术栈（wappalyzergo）和指纹 fingerprint_hash = sha256(状态码|标题|技术栈)。
 泛解析候选走页面复核：DNS 阶段 IP 落在泛解析集合的主机，以及父域存在泛解析但 IP 未命中的主机（轮换 IP 时 DNS 可能漏标，记 assets.parent_wildcard）。
-复核用 HTTP_VERIFY_RPS 单独限速，每根域每轮最多 HTTP_VERIFY_MAX 个。每个父域每个 scheme 取 2 个随机子域 `wc-<随机>.<父域>` 的页面作对照：
+复核用 HTTP_VERIFY_RPS 单独限速，每根域每轮最多 HTTP_VERIFY_MAX 个。每个父域每个 scheme 取 2 个随机子域 `wc-<随机>.<父域>` 的页面作对照（某次请求失败时重取 1 个随机子域；仍不足 2 页则本轮该父域候选保持 wildcard、不入库 URL）：
 先规范化（去掉主机名、uuid、>= 8 位十六进制串、含数字的词、长度 >= 20 的词、英文星期/月份名），
 再把两页之间不同的词视为动态内容掩码掉（两页最长公共词序列为模板，差异词数为动态配额），覆盖规则外的随机词、短 base64、文本日期等。
 候选页相似度 = 与模板的最长公共词数 /（模板词数 + 超出动态配额的多余词数），状态码须相同，>= HTTP_SIMILARITY 视为泛解析。

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -135,7 +136,7 @@ func TestPageNormalization(t *testing.T) {
 	b, _ := p.get(ctx, "http", "wc-0011223344556677.s1.test")
 	lb, _ := p.get(ctx, "http", "lb.s1.test")
 	cache := &pageCache{m: map[string]*wildcardTemplate{}, ok: map[string]bool{}}
-	tpl := p.controlTemplate(ctx, cache, "http", "s1.test")
+	tpl, _ := p.controlTemplate(ctx, cache, "http", "s1.test")
 	if s := tpl.similarity(a); s < 0.9 {
 		t.Fatalf("random-token wildcard page vs template %.3f", s)
 	}
@@ -171,4 +172,68 @@ func TestVerifyRateAndCap(t *testing.T) {
 		t.Fatalf("wild=%d elapsed=%v", wild, el)
 	}
 	t.Logf("HTTP_VERIFY_MAX=3 HTTP_VERIFY_RPS=5：6 个候选全部标 wildcard（3 个复核、3 个超限），耗时 %v", el.Round(time.Millisecond))
+}
+
+// 对照页请求失败：重取一个随机子域；仍不足 2 页时本轮该父域候选保持 wildcard（lb 也不救回、不入库 URL）。
+func TestControlPageFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		failFirst int64 // 前 N 个 wc- 请求断开连接
+		lbRescued bool
+		ctrlReqs  int64
+	}{
+		{"首个对照页失败、重取成功", 1, true, 3},
+		{"对照页一直失败", 1 << 30, false, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEnv(t)
+			ctx := context.Background()
+			var ctrl atomic.Int64
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				host, _, _ := net.SplitHostPort(r.Host)
+				if host == "" {
+					host = r.Host
+				}
+				if strings.HasPrefix(host, "wc-") {
+					if ctrl.Add(1) <= tc.failFirst {
+						c, _, _ := w.(http.Hijacker).Hijack()
+						c.Close() // 请求失败
+						return
+					}
+				}
+				if strings.HasPrefix(host, "lb.") {
+					fmt.Fprint(w, lbPage)
+					return
+				}
+				fmt.Fprintf(w, wildPage, host)
+			}))
+			t.Cleanup(srv.Close)
+			cfg, _ := httpConfigFromEnv()
+			cfg.RPS, cfg.VerifyRPS, cfg.Schemes, cfg.Timeout = 1000, 1000, []string{"http"}, 2*time.Second
+			cfg.Dial = func(string) string { return srv.Listener.Addr().String() }
+			t.Cleanup(func() {
+				e.pool.Exec(context.Background(), `DELETE FROM assets WHERE subdomain LIKE '%.cf.test'`)
+			})
+			hosts := []string{"lb.cf.test", "fake1.cf.test", "fake2.cf.test"}
+			for _, h := range hosts {
+				e.pool.Exec(ctx, `INSERT INTO assets (root_id, subdomain, resolved, wildcard, parent_wildcard) VALUES ($1, $2, true, true, true)`, e.rootID, h)
+			}
+			if _, err := httpHandler(e.pool, newProber(cfg))(ctx, 0, hosts); err != nil {
+				t.Fatal(err)
+			}
+			var lbWild bool
+			var urls, wildFakes int
+			e.pool.QueryRow(ctx, `SELECT wildcard FROM assets WHERE subdomain = 'lb.cf.test'`).Scan(&lbWild)
+			e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM urls WHERE host LIKE '%.cf.test'),
+				(SELECT count(*) FROM assets WHERE subdomain LIKE 'fake%.cf.test' AND wildcard)`).Scan(&urls, &wildFakes)
+			wantURLs := 0
+			if tc.lbRescued {
+				wantURLs = 1
+			}
+			if lbWild == tc.lbRescued || urls != wantURLs || wildFakes != 2 || ctrl.Load() != tc.ctrlReqs {
+				t.Fatalf("lb.wildcard=%v urls=%d wildFakes=%d controlRequests=%d", lbWild, urls, wildFakes, ctrl.Load())
+			}
+			t.Logf("对照页请求 %d 次；lb.wildcard=%v urls=%d 假子域 wildcard=%d/2", ctrl.Load(), lbWild, urls, wildFakes)
+		})
+	}
 }

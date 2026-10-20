@@ -327,42 +327,48 @@ func (p *prober) randomPage(ctx context.Context, scheme, parent string) *probeRe
 	return r
 }
 
-// controlTemplate 取父域 2 个随机子域的对照页建立模板（按 parent+scheme 缓存）。
-func (p *prober) controlTemplate(ctx context.Context, c *pageCache, scheme, parent string) *wildcardTemplate {
+// controlTemplate 取父域 2 个随机子域的对照页建立模板（按 parent+scheme 缓存）。某次请求失败时重取一个随机子域；
+// 仍不足 2 页则返回 insufficient=true，本轮该父域的候选保持 wildcard。
+func (p *prober) controlTemplate(ctx context.Context, c *pageCache, scheme, parent string) (t *wildcardTemplate, insufficient bool) {
 	key := scheme + "://" + parent
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.ok[key] {
-		return c.m[key]
+		return c.m[key], c.m[key] == nil
 	}
 	c.ok[key] = true
-	a, b := p.randomPage(ctx, scheme, parent), p.randomPage(ctx, scheme, parent)
-	if a == nil || b == nil {
-		if a == nil {
-			a = b
+	var pages []*probeResult
+	for tries := 0; tries < 3 && len(pages) < 2; tries++ { // 2 页 + 失败时重取 1 次
+		if r := p.randomPage(ctx, scheme, parent); r != nil {
+			pages = append(pages, r)
 		}
-		if a != nil {
-			c.m[key] = &wildcardTemplate{sample: a, template: pageWords(a)}
-		}
-		return c.m[key]
 	}
+	if len(pages) < 2 {
+		return nil, true
+	}
+	a, b := pages[0], pages[1]
 	if a.Status != b.Status {
-		return nil // 两个随机子域状态码都不一致：不按泛解析处理
+		// 两个随机子域状态码不一致：无稳定泛解析页，模板为空，候选页只要有内容就视为不相似
+		c.m[key] = &wildcardTemplate{sample: &probeResult{Status: -1}}
+		return c.m[key], false
 	}
 	wa, wb := pageWords(a), pageWords(b)
 	tpl := lcs(wa, wb)
 	c.m[key] = &wildcardTemplate{sample: a, template: tpl, allowed: max(len(wa), len(wb)) - len(tpl)}
-	return c.m[key]
+	return c.m[key], false
 }
 
-// isWildcardPage：结果与同 scheme 的父域泛解析模板相似度 >= 阈值。
+// isWildcardPage：结果与同 scheme 的父域泛解析模板相似度 >= 阈值；对照页不足 2 页时按泛解析处理（保持 wildcard）。
 func (p *prober) isWildcardPage(ctx context.Context, c *pageCache, r *probeResult) bool {
 	dot := strings.IndexByte(r.Host, '.')
 	if dot < 0 {
 		return false
 	}
-	t := p.controlTemplate(ctx, c, r.Scheme, r.Host[dot+1:])
-	return t != nil && t.similarity(r) >= p.cfg.Similarity
+	t, insufficient := p.controlTemplate(ctx, c, r.Scheme, r.Host[dot+1:])
+	if insufficient {
+		return true
+	}
+	return t.similarity(r) >= p.cfg.Similarity
 }
 
 // httpHandler 是 http 类扫描：对每个主机 GET /，记录状态码/标题/指纹/跳转并 upsert urls。
