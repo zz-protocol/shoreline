@@ -229,6 +229,24 @@ func TestChainPassiveDNSHTTP(t *testing.T) {
 	if total != 3 {
 		t.Fatalf("scan_tasks = %d, want 3 (passive, dns, http)", total)
 	}
+	// 派生关系：passive 为起点（parent 空、root 指向自身），dns←passive，http←dns，root 均为 passive
+	ids := map[string]int64{}
+	parents := map[string]*int64{}
+	roots := map[string]int64{}
+	rows, _ := e.pool.Query(context.Background(), `SELECT kind, id, parent_id, root_scan_id FROM scan_tasks WHERE root_id = $1`, e.rootID)
+	for rows.Next() {
+		var k string
+		var id, root int64
+		var parent *int64
+		rows.Scan(&k, &id, &parent, &root)
+		ids[k], parents[k], roots[k] = id, parent, root
+	}
+	rows.Close()
+	if parents["passive"] != nil || roots["passive"] != ids["passive"] ||
+		parents["dns"] == nil || *parents["dns"] != ids["passive"] || roots["dns"] != ids["passive"] ||
+		parents["http"] == nil || *parents["http"] != ids["dns"] || roots["http"] != ids["passive"] {
+		t.Fatalf("lineage ids=%v parents=%v roots=%v", ids, parents, roots)
+	}
 }
 
 // dns 无输出时不触发 http。

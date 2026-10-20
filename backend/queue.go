@@ -86,18 +86,26 @@ func retryDelay(base time.Duration, n int) time.Duration {
 
 // TriggerScan 手动触发扫描：写入 scan_tasks（pending）并投递到对应队列，返回任务 id。
 func TriggerScan(ctx context.Context, d *pgxpool.Pool, client *asynq.Client, rootID int64, kind string, maxRetry int) (int64, error) {
-	return enqueueScan(ctx, d, client, rootID, kind, nil, maxRetry)
+	return enqueueScan(ctx, d, client, rootID, kind, nil, 0, maxRetry)
 }
 
-func enqueueScan(ctx context.Context, d *pgxpool.Pool, client *asynq.Client, rootID int64, kind string, hosts []string, maxRetry int) (int64, error) {
+// enqueueScan 写入 scan_tasks 并投递；parentID 为 0 表示链路起点（root_scan_id 指向自身）。
+func enqueueScan(ctx context.Context, d *pgxpool.Pool, client *asynq.Client, rootID int64, kind string, hosts []string, parentID int64, maxRetry int) (int64, error) {
 	if !validKind(kind) {
 		return 0, fmt.Errorf("unknown scan kind %q", kind)
 	}
 	var id int64
-	err := d.QueryRow(ctx, `INSERT INTO scan_tasks (vendor_id, root_id, kind)
-		SELECT vendor_id, id, $2 FROM root_domains WHERE id = $1 RETURNING id`, rootID, kind).Scan(&id)
+	err := d.QueryRow(ctx, `INSERT INTO scan_tasks (vendor_id, root_id, kind, parent_id, root_scan_id)
+		SELECT r.vendor_id, r.id, $2, p.id, p.root_scan_id
+		FROM root_domains r LEFT JOIN scan_tasks p ON p.id = $3
+		WHERE r.id = $1 RETURNING id`, rootID, kind, parentID).Scan(&id)
 	if err != nil {
 		return 0, err
+	}
+	if parentID == 0 {
+		if _, err := d.Exec(ctx, `UPDATE scan_tasks SET root_scan_id = id WHERE id = $1`, id); err != nil {
+			return 0, err
+		}
 	}
 	payload, _ := json.Marshal(scanPayload{ScanID: id, Hosts: hosts})
 	task := asynq.NewTask("scan:"+kind, payload)
@@ -173,7 +181,7 @@ func newWorker(redisOpt asynq.RedisClientOpt, d *pgxpool.Pool, cfg workerConfig,
 			if err == nil && len(out) > 0 && nextKind[kind] != "" {
 				var rootID int64
 				if err = d.QueryRow(ctx, `SELECT root_id FROM scan_tasks WHERE id = $1`, p.ScanID).Scan(&rootID); err == nil {
-					_, err = enqueueScan(ctx, d, client, rootID, nextKind[kind], out, cfg.MaxRetry)
+					_, err = enqueueScan(ctx, d, client, rootID, nextKind[kind], out, p.ScanID, cfg.MaxRetry)
 				}
 			}
 			if err != nil {

@@ -22,6 +22,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	pcfg, err := passiveConfigFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
 	dbURL := os.Getenv("DATABASE_URL")
 	if err := runMigrations(dbURL); err != nil {
 		log.Fatalf("migrate: %v", err)
@@ -31,7 +35,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	srv, wmux := newWorker(asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")}, pool, cfg, nil)
+	handlers := map[string]ScanHandler{"passive": passiveHandler(pool, passiveSources(pcfg))}
+	srv, wmux := newWorker(asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")}, pool, cfg, handlers)
 	go func() { log.Fatal(srv.Run(wmux)) }()
 	checks := map[string]func(context.Context) error{
 		"postgres": func(ctx context.Context) error {
