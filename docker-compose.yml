@@ -13,11 +13,11 @@ services:
     environment:
       DATABASE_URL: postgres://sam:sam@postgres:5432/sam?sslmode=disable
       REDIS_ADDR: redis:6379
-    ports: ["8080:8080"]
+    ports: ["127.0.0.1:8080:8080"]
     depends_on: [postgres, redis]
   frontend:
     build: ./frontend
-    ports: ["5173:5173"]
+    ports: ["127.0.0.1:5173:80"]
     depends_on: [backend]
 volumes:
   pgdata:
