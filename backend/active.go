@@ -207,15 +207,24 @@ type activeStats struct {
 
 // discover 生成候选并解析：字典 × 根域、mutable（已解析非泛解析子域）的变形；再以本轮新增的非泛解析子域为父域跑一层字典。
 // 已入库的子域不作候选。候选总数受 ACTIVE_MAX_CANDIDATES 限制：递归层预留 20%，第一层没用完的额度也转给递归层。
-func (a *activeScanner) discover(ctx context.Context, root string, known, mutable []string) ([]string, activeStats) {
+func (a *activeScanner) discover(ctx context.Context, root string, known, mutable []string) (map[string][]string, activeStats) {
 	root = normalizeHost(root)
-	seen := map[string]bool{root: true}
+	skip := map[string]bool{root: true}
 	for _, k := range known {
-		seen[k] = true
+		skip[k] = true
 	}
-	collect := func(budget int, add func(func(string))) []string {
+	seen := map[string]bool{}
+	origin := map[string]map[string]bool{} // 候选 → 生成它的来源（同一子域可有多种）
+	collect := func(budget int, add func(func(h, src string))) []string {
 		var c []string
-		add(func(h string) {
+		add(func(h, src string) {
+			if skip[h] {
+				return
+			}
+			if origin[h] == nil {
+				origin[h] = map[string]bool{}
+			}
+			origin[h][src] = true
 			if len(c) < budget && !seen[h] {
 				seen[h] = true
 				c = append(c, h)
@@ -225,30 +234,42 @@ func (a *activeScanner) discover(ctx context.Context, root string, known, mutabl
 	}
 	wc := &wildcardCache{m: map[string]*wildcardEntry{}}
 	reserve := a.cfg.MaxCandidates / 5
-	first := collect(a.cfg.MaxCandidates-reserve, func(push func(string)) {
+	first := collect(a.cfg.MaxCandidates-reserve, func(push func(h, src string)) {
 		for _, w := range a.cfg.Words {
-			push(w + "." + root)
+			push(w+"."+root, srcWordlist)
 		}
 		for _, k := range mutable {
 			for _, m := range mutations(k) {
-				push(m)
+				push(m, srcMutation)
 			}
 		}
 	})
 	hits, rej1 := a.resolve(ctx, root, first, wc)
-	second := collect(a.cfg.MaxCandidates-len(first), func(push func(string)) { // 递归一层：只对本轮新增的非泛解析子域
+	second := collect(a.cfg.MaxCandidates-len(first), func(push func(h, src string)) { // 递归一层：只对本轮新增的非泛解析子域
 		for _, h := range hits {
 			for _, w := range a.cfg.Words {
-				push(w + "." + h)
+				push(w+"."+h, srcRecursive)
 			}
 		}
 	})
 	hits2, rej2 := a.resolve(ctx, root, second, wc)
-	hits = append(hits, hits2...)
-	sort.Strings(hits)
-	return hits, activeStats{Candidates: len(first) + len(second), FirstLayer: len(first), Recursive: len(second),
-		Hits: len(hits), TrustedRejected: rej1 + rej2}
+	found := map[string][]string{}
+	for _, h := range append(hits, hits2...) {
+		for src := range origin[h] {
+			found[h] = append(found[h], src)
+		}
+		sort.Strings(found[h])
+	}
+	return found, activeStats{Candidates: len(first) + len(second), FirstLayer: len(first), Recursive: len(second),
+		Hits: len(found), TrustedRejected: rej1 + rej2}
 }
+
+// 主动发现来源（写入 assets.sources，多种来源时与其他来源一样合并去重）。
+const (
+	srcWordlist  = "active:wordlist"
+	srcMutation  = "active:mutation"
+	srcRecursive = "active:recursive"
+)
 
 // activeHandler 是 active 类扫描：厂商开关关闭时直接跳过（不发任何 DNS 查询）。
 func activeHandler(d *pgxpool.Pool, a *activeScanner) ScanHandler {
@@ -274,19 +295,20 @@ func activeHandler(d *pgxpool.Pool, a *activeScanner) ScanHandler {
 		if err != nil {
 			return nil, err
 		}
-		hits, st := a.discover(ctx, root, known, mutable)
+		found, st := a.discover(ctx, root, known, mutable)
 		log.Printf("active %s: %d candidates (first %d, recursive %d), %d hits, %d rejected by trusted resolvers",
 			root, st.Candidates, st.FirstLayer, st.Recursive, st.Hits, st.TrustedRejected)
 		if _, err := d.Exec(ctx, `UPDATE scan_tasks SET result = $2 WHERE id = $1`, scanID, st); err != nil {
 			return nil, err
 		}
-		found := map[string][]string{}
-		for _, h := range hits {
-			found[h] = []string{"active"}
-		}
 		if _, err := storeAssets(ctx, d, found); err != nil {
 			return nil, err
 		}
+		hits := make([]string, 0, len(found))
+		for h := range found {
+			hits = append(hits, h)
+		}
+		sort.Strings(hits)
 		return hits, nil
 	}
 }

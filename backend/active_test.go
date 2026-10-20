@@ -100,16 +100,30 @@ func TestMutations(t *testing.T) {
 func TestDiscoverMockDNS(t *testing.T) {
 	a, nb, nt := activeTestScanner(t, testWords)
 	known := []string{"app2.act.test"}
-	hits, st := a.discover(context.Background(), "act.test", known, known)
-	want := []string{"api.act.test", "app2-dev.act.test", "app3.act.test", "cdn.act.test", "dev.api.act.test", "www.act.test"}
-	if !reflect.DeepEqual(hits, want) || st.TrustedRejected != 1 {
-		t.Fatalf("hits %v\nwant %v; rejected %d", hits, want, st.TrustedRejected)
+	found, st := a.discover(context.Background(), "act.test", known, known)
+	want := map[string][]string{
+		"api.act.test":      {srcWordlist},
+		"app2-dev.act.test": {srcMutation},
+		"app3.act.test":     {srcMutation},
+		"cdn.act.test":      {srcWordlist},
+		"dev.api.act.test":  {srcRecursive},
+		"www.act.test":      {srcWordlist},
+	}
+	if !reflect.DeepEqual(found, want) || st.TrustedRejected != 1 {
+		t.Fatalf("found %v\nwant %v; rejected %d", found, want, st.TrustedRejected)
 	}
 	t.Logf("%+v，命中 %v；批量 resolver 查询 %d 次，可信 resolver 查询 %d 次（poison 被复核剔除，cdn 下泛解析被过滤）",
-		st, hits, nb.Load(), nt.Load())
+		st, found, nb.Load(), nt.Load())
+
+	// 同一子域被多种方式生成：来源合并
+	a2, _, _ := activeTestScanner(t, append([]string{"app3"}, testWords...))
+	found2, _ := a2.discover(context.Background(), "act.test", known, known)
+	if !reflect.DeepEqual(found2["app3.act.test"], []string{srcMutation, srcWordlist}) {
+		t.Fatalf("app3 sources %v", found2["app3.act.test"])
+	}
+	t.Logf("app3.act.test 同时由字典和变形生成：sources=%v", found2["app3.act.test"])
 }
 
-// 候选配额：递归层预留 20%，第一层没用完的额度转给递归层。
 func TestDiscoverCandidateCap(t *testing.T) {
 	a, _, _ := activeTestScanner(t, testWords)
 	a.cfg.MaxCandidates = 10 // 第一层上限 8；testWords 只有 7 个 → 剩余 3 个给递归层
@@ -223,9 +237,12 @@ func TestActiveSwitchEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.waitStatus(t, "http", "done", 1)
-	rows, _ := e.pool.Query(ctx, `SELECT subdomain FROM assets WHERE root_id = $1 AND 'active' = ANY(sources) ORDER BY 1`, rootID)
+	// 来源细分：active:wordlist / active:mutation / active:recursive
+	rows, _ := e.pool.Query(ctx, `SELECT subdomain || '=' || array_to_string(sources, '+') FROM assets
+		WHERE root_id = $1 AND sources && '{active:wordlist,active:mutation,active:recursive}' ORDER BY 1`, rootID)
 	got, _ := pgxCollectStrings(rows)
-	want := []string{"api.act.test", "app2-dev.act.test", "app3.act.test", "cdn.act.test", "dev.api.act.test", "www.act.test"}
+	want := []string{"api.act.test=active:wordlist", "app2-dev.act.test=active:mutation", "app3.act.test=active:mutation",
+		"cdn.act.test=active:wordlist", "dev.api.act.test=active:recursive", "www.act.test=active:wordlist"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("active assets %v want %v", got, want)
 	}
