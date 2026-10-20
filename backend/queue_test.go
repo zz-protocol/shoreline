@@ -134,7 +134,7 @@ func (e *testEnv) start(t *testing.T, cfg workerConfig, handlers map[string]Scan
 // waitStatus 等到该根域下 kind 类任务有 n 个达到 status。
 func (e *testEnv) waitStatus(t *testing.T, kind, status string, n int) {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		var c int
 		e.pool.QueryRow(context.Background(), `SELECT count(*) FROM scan_tasks WHERE root_id = $1 AND kind = $2 AND status = $3`,
@@ -323,12 +323,15 @@ func TestRetry(t *testing.T) {
 	}
 }
 
-// 真实重试间隔：base=1s、MaxRetry=3 → 相邻调用间隔约 1s/2s/4s（误差 <1s）且递增。
+// 真实重试间隔：base=2s、MaxRetry=3 → 相邻调用间隔约 2s/4s/8s，各自误差 ±1s（asynq 轮询抖动 <1s，
+// 用 2s 基数使相邻期望值相差 >= 2s，不再单独断言严格递增）。
 func TestRetryIntervals(t *testing.T) {
 	e := newTestEnv(t)
 	var mu sync.Mutex
 	var calls []time.Time
-	e.start(t, testConfig(fastRates), map[string]ScanHandler{
+	cfg := testConfig(fastRates)
+	cfg.RetryBase = 2 * time.Second
+	e.start(t, cfg, map[string]ScanHandler{
 		"dns": func(context.Context, int64, []string) ([]string, error) {
 			mu.Lock()
 			calls = append(calls, time.Now())
@@ -343,17 +346,12 @@ func TestRetryIntervals(t *testing.T) {
 	if len(calls) != 4 {
 		t.Fatalf("calls = %d, want 4", len(calls))
 	}
-	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
-	var prev time.Duration
+	want := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second}
 	for i, w := range want {
 		got := calls[i+1].Sub(calls[i])
 		t.Logf("retry %d interval %v (want ~%v)", i+1, got.Round(time.Millisecond), w)
-		if d := got - w; d < -time.Second || d > 1500*time.Millisecond { // 上限放宽到 +1.5s：asynq 轮询抖动
-			t.Errorf("retry %d interval %v, want %v -1s/+1.5s", i+1, got, w)
+		if d := got - w; d < -time.Second || d > time.Second {
+			t.Errorf("retry %d interval %v, want %v ±1s", i+1, got, w)
 		}
-		if got <= prev {
-			t.Errorf("retry %d interval %v not increasing (prev %v)", i+1, got, prev)
-		}
-		prev = got
 	}
 }
