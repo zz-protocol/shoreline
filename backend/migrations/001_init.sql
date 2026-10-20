@@ -55,10 +55,10 @@ CREATE TABLE IF NOT EXISTS urls (
 );
 CREATE INDEX IF NOT EXISTS urls_asset_id_idx ON urls (asset_id);
 
--- 事件：new / changed
+-- 事件：new / changed / recovered（失联后重新解析成功）
 CREATE TABLE IF NOT EXISTS events (
     id         BIGSERIAL PRIMARY KEY,
-    type       TEXT NOT NULL CHECK (type IN ('new', 'changed')),
+    type       TEXT NOT NULL CHECK (type IN ('new', 'changed', 'recovered')),
     asset_id   BIGINT REFERENCES assets(id) ON DELETE CASCADE,
     url_id     BIGINT REFERENCES urls(id) ON DELETE CASCADE,
     detail     JSONB NOT NULL DEFAULT '{}',

@@ -116,7 +116,7 @@ func mockDNS(t *testing.T) (addr string, queried func() []string) {
 }
 
 func testResolver(addrs ...string) *resolver {
-	return newResolver(dnsConfig{Resolvers: addrs, Timeout: 500 * time.Millisecond, QPS: 10000, WildcardProbe: 3, WildcardStable: 5, WildcardMax: 30, Concurrency: 4})
+	return newResolver(dnsConfig{Resolvers: addrs, Timeout: 500 * time.Millisecond, QPS: 10000, WildcardProbe: 3, WildcardStable: 5, WildcardMax: 30, Concurrency: 4, VerifiedTTL: 168 * time.Hour})
 }
 
 func TestResolveHostsMock(t *testing.T) {

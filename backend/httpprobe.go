@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	wappalyzer "github.com/projectdiscovery/wappalyzergo"
 	"golang.org/x/time/rate"
@@ -324,7 +326,8 @@ func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 					for _, r := range results {
 						allWild = allWild && p.isWildcardPage(ctx, cache, r)
 					}
-					_, err := d.Exec(ctx, `UPDATE assets SET wildcard = $2 WHERE id = $1`, it.assetID, allWild)
+					_, err := d.Exec(ctx, `UPDATE assets SET wildcard = $2, parent_wildcard = $2,
+						verified_real_at = CASE WHEN $2 THEN NULL ELSE now() END WHERE id = $1`, it.assetID, allWild)
 					if err == nil && !allWild { // 页面复核为真实主机：此时才算新增资产
 						err = emitNew(ctx, d, it.assetID, nil, map[string]any{"subdomain": it.host, "verified_real": true})
 					}
@@ -362,39 +365,53 @@ func nonNil(s []string) []string {
 }
 
 // storeURL upsert URL，并按新增/变更生成事件（状态码、标题、指纹 hash 任一变化为变更）。
+// 在事务里 SELECT ... FOR UPDATE 锁行后比较新旧值：并发同结果时只有第一个真正改值的记 changed。
 func (p *prober) storeURL(ctx context.Context, d *pgxpool.Pool, assetID int64, r *probeResult) error {
-	var urlID int64
-	var inserted bool
-	var oldStatus *int
-	var oldTitle, oldFP *string
-	err := d.QueryRow(ctx, `WITH old AS (SELECT status_code, title, fingerprint_hash FROM urls WHERE scheme = $2 AND host = $3 AND port = $4)
-		INSERT INTO urls (asset_id, scheme, host, port, status_code, title, fingerprint_hash, redirect_to, tech, sources)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, '{http}')
-		ON CONFLICT (scheme, host, port) DO UPDATE SET asset_id = EXCLUDED.asset_id, status_code = EXCLUDED.status_code,
-			title = EXCLUDED.title, fingerprint_hash = EXCLUDED.fingerprint_hash, redirect_to = EXCLUDED.redirect_to,
-			tech = EXCLUDED.tech, last_seen = now()
-		RETURNING id, xmax = 0, (SELECT status_code FROM old), (SELECT title FROM old), (SELECT fingerprint_hash FROM old)`,
-		assetID, r.Scheme, r.Host, r.Port, r.Status, r.Title, r.Fingerprint, nullIfEmpty(r.Redirect), nonNil(r.Tech)).
-		Scan(&urlID, &inserted, &oldStatus, &oldTitle, &oldFP)
-	if err != nil {
-		return err
-	}
 	url := fmt.Sprintf("%s://%s:%d", r.Scheme, r.Host, r.Port)
-	if inserted {
-		return emitNew(ctx, d, assetID, &urlID, map[string]any{"url": url, "status_code": r.Status, "title": r.Title})
+	for {
+		retry := false
+		err := pgx.BeginFunc(ctx, d, func(tx pgx.Tx) error {
+			var urlID int64
+			var oldStatus *int
+			var oldTitle, oldFP *string
+			err := tx.QueryRow(ctx, `SELECT id, status_code, title, fingerprint_hash FROM urls
+				WHERE scheme = $1 AND host = $2 AND port = $3 FOR UPDATE`, r.Scheme, r.Host, r.Port).Scan(&urlID, &oldStatus, &oldTitle, &oldFP)
+			if errors.Is(err, pgx.ErrNoRows) {
+				err = tx.QueryRow(ctx, `INSERT INTO urls (asset_id, scheme, host, port, status_code, title, fingerprint_hash, redirect_to, tech, sources)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, '{http}') ON CONFLICT (scheme, host, port) DO NOTHING RETURNING id`,
+					assetID, r.Scheme, r.Host, r.Port, r.Status, r.Title, r.Fingerprint, nullIfEmpty(r.Redirect), nonNil(r.Tech)).Scan(&urlID)
+				if errors.Is(err, pgx.ErrNoRows) { // 并发插入：重来走更新路径
+					retry = true
+					return nil
+				} else if err != nil {
+					return err
+				}
+				return emitNew(ctx, tx, assetID, &urlID, map[string]any{"url": url, "status_code": r.Status, "title": r.Title})
+			} else if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE urls SET asset_id = $2, status_code = $3, title = $4, fingerprint_hash = $5,
+					redirect_to = $6, tech = $7, last_seen = now() WHERE id = $1`,
+				urlID, assetID, r.Status, r.Title, r.Fingerprint, nullIfEmpty(r.Redirect), nonNil(r.Tech)); err != nil {
+				return err
+			}
+			changes := map[string]change{}
+			if oldStatus == nil || *oldStatus != r.Status {
+				changes["status_code"] = change{oldStatus, r.Status}
+			}
+			if oldTitle == nil || *oldTitle != r.Title {
+				changes["title"] = change{oldTitle, r.Title}
+			}
+			if oldFP == nil || *oldFP != r.Fingerprint {
+				changes["fingerprint_hash"] = change{oldFP, r.Fingerprint}
+			}
+			if len(changes) == 0 {
+				return nil
+			}
+			return emitEvent(ctx, tx, "changed", assetID, &urlID, map[string]any{"url": url, "changes": changes})
+		})
+		if err != nil || !retry {
+			return err
+		}
 	}
-	changes := map[string]change{}
-	if oldStatus == nil || *oldStatus != r.Status {
-		changes["status_code"] = change{oldStatus, r.Status}
-	}
-	if oldTitle == nil || *oldTitle != r.Title {
-		changes["title"] = change{oldTitle, r.Title}
-	}
-	if oldFP == nil || *oldFP != r.Fingerprint {
-		changes["fingerprint_hash"] = change{oldFP, r.Fingerprint}
-	}
-	if len(changes) == 0 {
-		return nil
-	}
-	return emitChanged(ctx, d, assetID, &urlID, map[string]any{"url": url, "changes": changes})
 }

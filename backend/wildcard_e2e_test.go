@@ -65,7 +65,7 @@ func TestWildcardRandomTokensEndToEnd(t *testing.T) {
 	clean()
 	t.Cleanup(clean)
 	res := newResolver(dnsConfig{Resolvers: []string{addr}, Timeout: 500 * time.Millisecond, QPS: 10000,
-		WildcardProbe: 3, WildcardStable: 5, WildcardMax: 60, Concurrency: 4}) // 生产默认 5/60
+		WildcardProbe: 3, WildcardStable: 5, WildcardMax: 60, Concurrency: 4, VerifiedTTL: 168 * time.Hour}) // 生产默认 5/60
 	dnsH := dnsHandler(e.pool, res)
 	missed := map[string]int{}
 	e.start(t, testConfig(fastRates), map[string]ScanHandler{

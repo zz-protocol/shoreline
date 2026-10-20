@@ -96,8 +96,16 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 
 ### 新增与变更事件（T9）
 
-- 资产新增：子域首次解析成功且非泛解析时生成一次 `new`；wildcard=true 的不生成。泛解析候选经 HTTP 页面复核为真实主机时，此时才生成 `new`。
-- 资产变更：前后两次都解析成功且非泛解析，IP 集合变化时生成 `changed`，detail.changes.ips 记新旧值。
-- URL 新增：scheme+host+port 首次入库时生成一次 `new`（url_id 非空）。
-- URL 变更：状态码、标题或指纹 hash 变化时生成 `changed`，detail.changes 记各字段新旧值。
-- `new` 由唯一部分索引（迁移 008）保证每个资产/URL 只生成一次，重复扫描、重试、并发都不会重复播报。
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| WILDCARD_VERIFIED_TTL | 168h | HTTP 页面复核为真实主机（assets.verified_real_at）的有效期；期内 DNS 不重标 wildcard，过期后重新复核 |
+
+- 资产新增 `new`：子域首次解析成功且非泛解析时生成一次；解析失败照样入库但不发。wildcard=true 的不生成；父域有泛解析的主机等 HTTP 复核为真实后才生成。
+- 资产变更 `changed`：上次与本次都解析成功且非泛解析，IP 或 CNAME 集合变化（含新增 IPv6、恢复到原值），detail.changes.ips / cnames 记新旧值；CDN 不单独算。
+- 资产恢复 `recovered`：解析失败（如 NXDOMAIN）时保留最后一次成功的 IP/CNAME 只记 resolved=false；再次解析成功时发 recovered，detail 带 last_ips/ips、last_cnames/cnames。
+- 已复核为真实的主机在有效期内 IP 全部回落到泛解析 IP 时不报（v1）。
+- URL 新增 `new`：scheme+host+port 首次入库时生成一次（url_id 非空）。资产 new 与 URL new 都存，默认按资产聚合留给 T12/T13。
+- URL 变更 `changed`：状态码、标题或指纹 hash 变化，detail.changes 记各字段新旧值；只改正文不算。
+- 新旧值比较在 `SELECT ... FOR UPDATE` 事务里做，并发同结果同一字段只记一条 changed；`new` 另由唯一部分索引（迁移 008，建索引前先去重存量重复）保证只生成一次。
+
+迁移编号：004 含大小写重复根域合并（先合并再加约束）；008 事件去重+唯一索引；009 assets.parent_wildcard / verified_real_at。首个公开版本发布前允许原地修改迁移，开发库需重建。

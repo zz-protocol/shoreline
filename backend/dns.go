@@ -30,10 +30,18 @@ type dnsConfig struct {
 	WildcardStable int // DNS_WILDCARD_STABLE：连续 N 次无新 IP 停止初始探测（默认 5）
 	WildcardMax    int // DNS_WILDCARD_MAX：每个父域探测总上限，含补探（默认 60）
 	Concurrency    int
+	VerifiedTTL    time.Duration // WILDCARD_VERIFIED_TTL：HTTP 复核为真实的有效期（默认 168h）
 }
 
 func dnsConfigFromEnv() (dnsConfig, error) {
-	c := dnsConfig{Resolvers: []string{"223.5.5.5:53", "119.29.29.29:53", "1.1.1.1:53"}, Timeout: 2 * time.Second, QPS: 50, WildcardProbe: 3, WildcardStable: 5, WildcardMax: 60, Concurrency: 20}
+	c := dnsConfig{Resolvers: []string{"223.5.5.5:53", "119.29.29.29:53", "1.1.1.1:53"}, Timeout: 2 * time.Second, QPS: 50, WildcardProbe: 3, WildcardStable: 5, WildcardMax: 60, Concurrency: 20, VerifiedTTL: 168 * time.Hour}
+	if s := os.Getenv("WILDCARD_VERIFIED_TTL"); s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil || d <= 0 {
+			return c, fmt.Errorf("WILDCARD_VERIFIED_TTL: invalid %q", s)
+		}
+		c.VerifiedTTL = d
+	}
 	if s := os.Getenv("DNS_RESOLVERS"); s != "" {
 		c.Resolvers = nil
 		for _, r := range strings.Split(s, ",") {
@@ -327,34 +335,79 @@ func dnsHandler(d *pgxpool.Pool, r *resolver) ScanHandler {
 			if cnames == nil {
 				cnames = []string{}
 			}
-			var assetID int64
-			var oldIPs []string
-			var oldResolved, oldWild bool
-			err := d.QueryRow(ctx, `WITH old AS (SELECT id, ips, resolved, wildcard FROM assets WHERE subdomain = $1)
-				UPDATE assets a SET ips = $2, cnames = $3, resolved = $4, wildcard = $5, cdn = $6, parent_wildcard = $7, resolved_at = now()
-				FROM old WHERE a.id = old.id RETURNING a.id, old.ips, COALESCE(old.resolved, false), COALESCE(old.wildcard, false)`,
-				normalizeHost(hd.Host), ips, cnames, hd.Resolved, hd.Wildcard, cdn, hd.ParentWild).Scan(&assetID, &oldIPs, &oldResolved, &oldWild)
-			if errors.Is(err, pgx.ErrNoRows) {
-				continue
-			} else if err != nil {
+			host := normalizeHost(hd.Host)
+			var forward bool
+			err := pgx.BeginFunc(ctx, d, func(tx pgx.Tx) error {
+				var err error
+				forward, err = r.storeDNS(ctx, tx, host, hd, ips, cnames, cdn)
+				return err
+			})
+			if err != nil {
 				return nil, err
 			}
-			// wildcard=true 不生成事件；父域有泛解析的主机等 HTTP 页面复核为真实后再生成
-			if hd.Resolved && !hd.Wildcard && !hd.ParentWild {
-				if err := emitNew(ctx, d, assetID, nil, map[string]any{"subdomain": normalizeHost(hd.Host), "ips": ips}); err != nil {
-					return nil, err
-				}
-				if oldResolved && !oldWild && !sameSet(oldIPs, ips) {
-					if err := emitChanged(ctx, d, assetID, nil, map[string]any{"subdomain": normalizeHost(hd.Host),
-						"changes": map[string]change{"ips": {oldIPs, ips}}}); err != nil {
-						return nil, err
-					}
-				}
-			}
-			if hd.Resolved { // 泛解析候选也交给 http，由页面相似度最终判定（T8）
+			if forward {
 				next = append(next, hd.Host)
 			}
 		}
 		return next, nil
 	}
+}
+
+// storeDNS 在事务里锁定资产行，比较新旧值后更新并生成事件；返回是否交给 http。
+func (r *resolver) storeDNS(ctx context.Context, tx pgx.Tx, host string, hd hostDNS, ips, cnames []string, cdn *string) (bool, error) {
+	var assetID int64
+	var oldIPs, oldCNAMEs []string
+	var oldResolved *bool
+	var oldWild, verified bool
+	err := tx.QueryRow(ctx, `SELECT id, ips, cnames, resolved, wildcard,
+			verified_real_at IS NOT NULL AND verified_real_at > now() - make_interval(secs => $2)
+		FROM assets WHERE subdomain = $1 FOR UPDATE`, host, r.cfg.VerifiedTTL.Seconds()).
+		Scan(&assetID, &oldIPs, &oldCNAMEs, &oldResolved, &oldWild, &verified)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	if !hd.Resolved { // 失联：保留最后一次成功的 IP/CNAME，只记 resolved=false
+		_, err := tx.Exec(ctx, `UPDATE assets SET resolved = false, resolved_at = now() WHERE id = $1`, assetID)
+		return false, err
+	}
+	wild, parentWild := hd.Wildcard, hd.ParentWild
+	quiet := false
+	if verified { // 有效期内已复核为真实：DNS 不重标 wildcard，也不再复核
+		quiet = wild // IP 全部回落到泛解析 IP：v1 不报
+		wild, parentWild = false, false
+	}
+	if _, err := tx.Exec(ctx, `UPDATE assets SET ips = $2, cnames = $3, resolved = true, wildcard = $4, cdn = $5,
+			parent_wildcard = $6, resolved_at = now() WHERE id = $1`, assetID, ips, cnames, wild, cdn, parentWild); err != nil {
+		return false, err
+	}
+	// wildcard=true 不生成事件；父域有泛解析的等 HTTP 页面复核为真实后再生成
+	if wild || parentWild || quiet {
+		return true, nil
+	}
+	if err := emitNew(ctx, tx, assetID, nil, map[string]any{"subdomain": host, "ips": ips}); err != nil {
+		return false, err
+	}
+	if oldResolved == nil || oldWild && !verified {
+		return true, nil // 首次解析，或上次是泛解析
+	}
+	if !*oldResolved && len(oldIPs) == 0 {
+		return true, nil // 之前从未解析成功
+	}
+	if !*oldResolved {
+		return true, emitEvent(ctx, tx, "recovered", assetID, nil, map[string]any{"subdomain": host,
+			"last_ips": oldIPs, "ips": ips, "last_cnames": oldCNAMEs, "cnames": cnames})
+	}
+	changes := map[string]change{}
+	if !sameSet(oldIPs, ips) {
+		changes["ips"] = change{oldIPs, ips}
+	}
+	if !sameSet(oldCNAMEs, cnames) {
+		changes["cnames"] = change{oldCNAMEs, cnames}
+	}
+	if len(changes) == 0 {
+		return true, nil
+	}
+	return true, emitEvent(ctx, tx, "changed", assetID, nil, map[string]any{"subdomain": host, "changes": changes})
 }
