@@ -7,11 +7,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"golang.org/x/net/idna"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -78,6 +82,29 @@ func hasControl(s string) bool {
 	return false
 }
 
+// expandStats：ICP 查询失败次数与各类丢弃计数（写入 scan_tasks.result）。
+type expandStats struct {
+	ICPFailures      int `json:"icp_failures"`
+	SkippedIP        int `json:"skipped_ip"`
+	SkippedInvalid   int `json:"skipped_invalid"`
+	SkippedKnownRoot int `json:"skipped_known_root"`
+}
+
+// icpIsIP：ICP 记录的"域名"实为 IPv4/IPv6（可带 scheme/端口/方括号/path）。
+func icpIsIP(s string) bool {
+	s = strings.TrimSpace(s)
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	if h, _, err := net.SplitHostPort(s); err == nil {
+		s = h
+	}
+	return net.ParseIP(strings.Trim(s, "[]")) != nil
+}
+
 // normalizeICPDomain 规范化 ICP 返回的域名：去 scheme、path/query、端口、"*."、末尾点，转小写；非法返回 false。
 func normalizeICPDomain(s string) (string, bool) {
 	s = strings.ToLower(strings.TrimSpace(s))
@@ -94,6 +121,11 @@ func normalizeICPDomain(s string) (string, bool) {
 		s = s[:i]
 	}
 	s = strings.TrimSuffix(strings.TrimPrefix(s, "*."), ".")
+	if a, err := idna.Lookup.ToASCII(s); err == nil { // 中文等 IDN 转 punycode
+		s = a
+	} else {
+		return s, false
+	}
 	return s, validDomain(s)
 }
 
@@ -163,6 +195,34 @@ func (s dbSubsidiaries) Subsidiaries(ctx context.Context, vendorID int64, _ stri
 	})
 }
 
+var ratioRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)
+
+// parseRatio 解析持股百分比：十进制数字，可带 "%"/"％"（前面可有空格），范围 0-100。
+func parseRatio(s string) (float64, bool) {
+	s = strings.TrimSpace(s)
+	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(s, "%"), "％"))
+	if !ratioRe.MatchString(s) {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	return v, err == nil && v >= 0 && v <= 100
+}
+
+var (
+	headerRatios = []string{"比例", "持股", "持股比例", "持股百分比", "持股比例(%)", "持股比例%", "ratio", "share", "percent", "percentage"}
+)
+
+// isSubsidiaryHeader：第一行所有列都是非数字列名才算表头；为避免把 "子D,abc" 这类坏数据当表头，
+// 比例列还必须是已知比例列名（比例/持股/ratio 等）。
+func isSubsidiaryHeader(rec []string) bool {
+	for _, c := range rec {
+		if c = strings.TrimSpace(c); c == "" || ratioRe.MatchString(strings.TrimSpace(strings.TrimRight(c, "%％ "))) {
+			return false
+		}
+	}
+	return slices.Contains(headerRatios, strings.ToLower(strings.TrimSpace(rec[1])))
+}
+
 // importSubsidiaries 手工导入子公司名单：CSV 每行 "名称,持股百分比(0-100)"，# 开头为注释；同名覆盖比例。返回导入行数。
 func importSubsidiaries(ctx context.Context, d *pgxpool.Pool, vendorID int64, r io.Reader) (int, error) {
 	br := bufio.NewReader(r)
@@ -173,28 +233,31 @@ func importSubsidiaries(ctx context.Context, d *pgxpool.Pool, vendorID int64, r 
 	cr.Comment = '#'
 	cr.FieldsPerRecord = 2
 	cr.TrimLeadingSpace = true
-	recs, err := cr.ReadAll()
-	if err != nil {
-		return 0, err
-	}
 	type row struct {
 		name  string
 		ratio float64
 	}
 	var rows []row
-	for i, rec := range recs {
-		name := strings.TrimSpace(rec[0])
-		if i == 0 { // 首行比例列不是数字：视为表头跳过
-			if _, err := strconv.ParseFloat(strings.TrimSuffix(strings.TrimSpace(rec[1]), "%"), 64); err != nil {
-				continue
-			}
+	for first := true; ; first = false {
+		rec, err := cr.Read()
+		if err == io.EOF {
+			break
 		}
-		ratio, err := strconv.ParseFloat(strings.TrimSuffix(strings.TrimSpace(rec[1]), "%"), 64)
-		if name == "" || err != nil || ratio < 0 || ratio > 100 || ratio != ratio {
-			return 0, fmt.Errorf("line %d: invalid %q", i+1, strings.Join(rec, ","))
+		if err != nil {
+			return 0, err
+		}
+		line, _ := cr.FieldPos(0)
+		if first && isSubsidiaryHeader(rec) { // 只有明显表头才跳过
+			continue
+		}
+		name := strings.TrimSpace(rec[0])
+		ratio, ok := parseRatio(rec[1])
+		if name == "" || !ok {
+			return 0, fmt.Errorf("line %d: invalid %q", line, strings.Join(rec, ","))
 		}
 		rows = append(rows, row{name, ratio})
 	}
+	var err error
 	err = pgx.BeginFunc(ctx, d, func(tx pgx.Tx) error {
 		for _, r := range rows {
 			if _, err := tx.Exec(ctx, `INSERT INTO vendor_subsidiaries (vendor_id, name, ratio) VALUES ($1, $2, $3)
@@ -216,19 +279,28 @@ type candidate struct {
 
 // expandVendor 跑扩展链路，返回 域名 → 发现依据（已是根域的不返回）。
 // 第二个返回值为 ICP 查询失败次数（子公司源失败不计）。
-func expandVendor(ctx context.Context, icp ICPSource, subs SubsidiarySource, vendorID int64, company string, roots []string) (map[string][]candidate, int, error) {
+func expandVendor(ctx context.Context, icp ICPSource, subs SubsidiarySource, vendorID int64, company string, roots []string) (map[string][]candidate, expandStats, error) {
 	out := map[string][]candidate{}
 	isRoot := map[string]bool{}
 	for _, r := range roots {
 		isRoot[normalizeHost(r)] = true
 	}
 	var errs []error
-	icpFails := 0
+	var st expandStats
 	seen := map[string]bool{}
 	add := func(recs []ICPRecord, source string, extra map[string]any) {
 		for _, rec := range recs {
+			if icpIsIP(rec.Domain) { // IP（v4/v6）不生成候选
+				st.SkippedIP++
+				continue
+			}
 			dom, ok := normalizeICPDomain(rec.Domain)
-			if !ok || underRoot(dom, isRoot) { // 非法，或已有根域及其子域：丢弃
+			if !ok {
+				st.SkippedInvalid++
+				continue
+			}
+			if underRoot(dom, isRoot) { // 已有根域及其子域：丢弃
+				st.SkippedKnownRoot++
 				continue
 			}
 			ev := map[string]any{"via": source, "company": rec.Company, "license": rec.License}
@@ -251,7 +323,7 @@ func expandVendor(ctx context.Context, icp ICPSource, subs SubsidiarySource, ven
 		queried[name] = true
 		recs, err := icp.ByCompany(ctx, name)
 		if err != nil {
-			icpFails++
+			st.ICPFailures++
 			errs = append(errs, err)
 			return
 		}
@@ -275,7 +347,7 @@ func expandVendor(ctx context.Context, icp ICPSource, subs SubsidiarySource, ven
 	for _, r := range roots {
 		recs, err := icp.ByDomain(ctx, r)
 		if err != nil {
-			icpFails++
+			st.ICPFailures++
 			errs = append(errs, err)
 			continue
 		}
@@ -284,12 +356,12 @@ func expandVendor(ctx context.Context, icp ICPSource, subs SubsidiarySource, ven
 		}
 	}
 	if len(out) == 0 && len(errs) > 0 {
-		return nil, icpFails, errors.Join(errs...)
+		return nil, st, errors.Join(errs...)
 	}
 	for _, err := range errs {
 		log.Printf("expand vendor %d: %v", vendorID, err)
 	}
-	return out, icpFails, nil
+	return out, st, nil
 }
 
 // storeCandidates 写入 root_candidates：新域名为 pending；已存在且 pending 的合并来源与依据；已确认/已忽略的不动（忽略不再提示）。
@@ -405,7 +477,7 @@ func expandHandler(d *pgxpool.Pool, icp ICPSource, subs SubsidiarySource) ScanHa
 		}
 		found, fails, err := expandVendor(ctx, icp, subs, vendorID, name, roots)
 		if err != nil {
-			d.Exec(ctx, `UPDATE scan_tasks SET result = $2 WHERE id = $1`, scanID, map[string]int{"icp_failures": fails})
+			d.Exec(ctx, `UPDATE scan_tasks SET result = $2 WHERE id = $1`, scanID, fails)
 			return nil, err
 		}
 		created, err := storeCandidates(ctx, d, vendorID, found)
@@ -414,7 +486,8 @@ func expandHandler(d *pgxpool.Pool, icp ICPSource, subs SubsidiarySource) ScanHa
 		}
 		log.Printf("expand vendor %d: %d domains found, %d new candidates", vendorID, len(found), created)
 		_, err = d.Exec(ctx, `UPDATE scan_tasks SET result = $2 WHERE id = $1`, scanID,
-			map[string]int{"found": len(found), "new_candidates": created, "icp_failures": fails})
+			map[string]any{"found": len(found), "new_candidates": created, "icp_failures": fails.ICPFailures,
+				"skipped_ip": fails.SkippedIP, "skipped_invalid": fails.SkippedInvalid, "skipped_known_root": fails.SkippedKnownRoot})
 		return nil, err
 	}
 }

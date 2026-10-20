@@ -13,6 +13,7 @@ require (
 	github.com/projectdiscovery/subfinder/v2 v2.17.0
 	github.com/projectdiscovery/wappalyzergo v0.3.6
 	github.com/redis/go-redis/v9 v9.23.0
+	golang.org/x/net v0.59.0
 	golang.org/x/time v0.16.0
 )
 
@@ -114,7 +115,6 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/exp v0.0.0-20260112195511-716be5621a96 // indirect
-	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect

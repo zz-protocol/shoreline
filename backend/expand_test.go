@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -255,10 +257,10 @@ func TestCandidateOtherVendorReassignAndICPFailures(t *testing.T) {
 		t.Fatal("reassigned a non-pending candidate")
 	}
 	_, fails, err := expandVendor(ctx, failICP{}, nil, v1, "甲", []string{"a.test", "b.test"})
-	if err == nil || fails != 3 {
-		t.Fatalf("fails=%d err=%v", fails, err)
+	if err == nil || fails.ICPFailures != 3 {
+		t.Fatalf("fails=%+v err=%v", fails, err)
 	}
-	t.Logf("证据厂商 %v，改归属 %d→%d 成功，非 pending 改归属被拒；ICP 失败次数 %d", vendors, v1, v2, fails)
+	t.Logf("证据厂商 %v，改归属 %d→%d 成功，非 pending 改归属被拒；ICP 失败次数 %d", vendors, v1, v2, fails.ICPFailures)
 }
 
 // T11 打回 1/5：ICP 域名规范化、非法拒绝、已有根域及其子域丢弃、同批重复证据去重。
@@ -281,7 +283,7 @@ func TestICPDomainNormalizeAndDedup(t *testing.T) {
 		{"bad_domain", "甲", "L1"}, {"http://", "甲", "L1"}, // 非法：丢弃
 	}}}
 	found, fails, err := expandVendor(context.Background(), src, nil, 1, "甲", []string{"corp.test"})
-	if err != nil || fails != 0 {
+	if err != nil || fails.ICPFailures != 0 {
 		t.Fatal(err)
 	}
 	if len(found) != 1 || len(found["new-a.test"]) != 2 {
@@ -366,4 +368,57 @@ func TestConfirmCandidateTakenFunction(t *testing.T) {
 		t.Fatalf("err %v status %s", err, st)
 	}
 	t.Logf("confirm → %v；候选 %s", err, st)
+}
+
+// T11 复验：IP（v4/v6）丢弃计入 skipped_ip；中文域名转 punycode。
+func TestICPSkipIPAndPunycode(t *testing.T) {
+	src := stubICP{company: map[string][]ICPRecord{"甲": {
+		{"1.2.3.4", "甲", "L"}, {"http://10.0.0.1:8080/x", "甲", "L"}, {"2001:db8::1", "甲", "L"}, {"[2001:db8::2]:443", "甲", "L"}, {"https://[::1]/", "甲", "L"},
+		{"例子.中国", "甲", "L"}, {"https://WWW.测试.公司/x", "甲", "L"}, {"bad_domain", "甲", "L"}, {"www.corp.test", "甲", "L"},
+	}}}
+	found, st, err := expandVendor(context.Background(), src, nil, 1, "甲", []string{"corp.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doms []string
+	for d := range found {
+		doms = append(doms, d)
+	}
+	sort.Strings(doms)
+	want := []string{"www.xn--0zwm56d.xn--55qx5d", "xn--fsqu00a.xn--fiqs8s"}
+	if !reflect.DeepEqual(doms, want) || st != (expandStats{SkippedIP: 5, SkippedInvalid: 1, SkippedKnownRoot: 1}) {
+		t.Fatalf("doms %v stats %+v", doms, st)
+	}
+	t.Logf("候选 %v；统计 %+v", doms, st)
+}
+
+// T11 复验：CSV 表头只认"所有列都是非数字列名且比例列是已知列名"；"51 %"、"51％" 可用；坏比例第 1/2 行都报错带行号。
+func TestImportSubsidiariesStrict(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	v := e.vendorID()
+	n, err := importSubsidiaries(ctx, e.pool, v, strings.NewReader("子A,51 %\n子H,51％\n"))
+	if err != nil || n != 2 {
+		t.Fatalf("%d %v", n, err)
+	}
+	got, _ := dbSubsidiaries{e.pool}.Subsidiaries(ctx, v, "")
+	t.Logf("子A,51 %% / 子H,51％ → 导入 %v", got)
+	for _, hdr := range []string{"名称,比例\n", "name,ratio\n", "子公司名称,持股比例\n", "Company,Share\n"} {
+		if n, err := importSubsidiaries(ctx, e.pool, v, strings.NewReader(hdr+"子E,60\n")); err != nil || n != 1 {
+			t.Fatalf("header %q: %d %v", hdr, n, err)
+		}
+	}
+	for _, bad := range []string{"子B,五十一", "子I,0x33", "子L,", "子D,abc", "子M,1e2", "子N,Inf", "子O,NaN", "子P,101"} {
+		for _, pos := range []int{1, 2} {
+			in := bad + "\n"
+			if pos == 2 {
+				in = "子Z,60\n" + bad + "\n"
+			}
+			_, err := importSubsidiaries(ctx, e.pool, v, strings.NewReader(in))
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("line %d", pos)) {
+				t.Fatalf("%q at line %d: %v", bad, pos, err)
+			}
+			t.Logf("%q 第 %d 行 → %v", bad, pos, err)
+		}
+	}
 }
