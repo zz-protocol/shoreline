@@ -1,0 +1,18 @@
+# certstream-server-go（MIT，https://github.com/d-Rickyy-b/certstream-server-go）最小配置。
+# 仅 compose 内网访问：backend 用 ws://certstream:8080/ 订阅 lite 流（含 leaf_cert.all_domains）。
+webserver:
+  listen_addr: "0.0.0.0"
+  listen_port: 8080
+  real_ip: false
+  whitelist:
+    - "172.16.0.0/12"   # docker 内网；默认 127.0.0.1/8 会拒绝 backend 容器
+  full_url: "/full-stream"
+  lite_url: "/"
+  domains_only_url: "/domains-only"
+  compression_enabled: false
+
+prometheus:
+  enabled: false
+
+general:
+  disable_default_logs: false

@@ -26,6 +26,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	cs, err := certstreamConfigFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
 	dbURL := os.Getenv("DATABASE_URL")
 	if err := runMigrations(dbURL); err != nil {
 		log.Fatalf("migrate: %v", err)
@@ -38,8 +42,13 @@ func main() {
 	handlers := map[string]ScanHandler{"passive": passiveHandler(pool, passiveSources(pcfg))}
 	srv, wmux := newWorker(asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")}, pool, cfg, handlers)
 	go func() { log.Fatal(srv.Run(wmux)) }()
-	if cs := certstreamConfigFromEnv(); cs.URL != "" { // 未配置 CERTSTREAM_URL 则不启动
-		go runCertstream(context.Background(), cs, pool)
+	if cs.URL != "" { // 未配置 CERTSTREAM_URL 则不启动
+		client := asynq.NewClient(asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")})
+		go runCertstream(context.Background(), cs, pool, func(rootID int64, hosts []string) {
+			if _, err := enqueueScan(context.Background(), pool, client, rootID, "dns", hosts, 0, cfg.MaxRetry); err != nil {
+				log.Printf("certstream: dispatch dns: %v", err)
+			}
+		})
 	}
 	checks := map[string]func(context.Context) error{
 		"postgres": func(ctx context.Context) error {

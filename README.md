@@ -36,9 +36,20 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| CERTSTREAM_URL | 空（不启动） | 实时 CT 流 websocket 地址，如 wss://certstream.calidog.io/；断线 5s 重连，根域列表每分钟刷新 |
+| CERTSTREAM_URL | 空（不启动） | 实时 CT 流 websocket 地址；断线 5s 重连，根域列表每分钟刷新 |
+| CERTSTREAM_BATCH_SIZE | 100 | 新子域攒满 N 条即交 dns 扫描（整数 >= 1） |
+| CERTSTREAM_BATCH_INTERVAL | 60s | 首条进批后最多等 T 交 dns（Go duration，>= 1s） |
 
-匹配任一根域的证书域名以来源 `certstream` 入库。
+匹配任一根域的证书域名以来源 `certstream` 入库；**首次入库**的子域按根域分组攒批后创建 dns 扫描任务。
+
+自建 CT 流（可选，镜像 `0rickyy0/certstream-server-go:v1.10.1`，MIT）：
+
+    CERTSTREAM_URL=ws://certstream:8080/ docker compose --profile certstream up --build
+
+不加 `--profile certstream` 时该服务不启动；配置在 `certstream/config.yaml`（只允许 docker 内网访问，不对宿主暴露端口）。
+也可把 CERTSTREAM_URL 指向公共服务（如 wss://certstream.calidog.io/）而不启自建服务。
+
+> ⚠️ 测试用的 `backend/testdata/certstream_sample.jsonl` 是按 certstream 公开消息格式**手写的合成样本，未用真实流核对**。
 
 限速按单进程计：**总速率 = 单实例速率 × 实例数**。
 

@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -86,19 +88,92 @@ func (m *rootMatcher) refresh(ctx context.Context, d *pgxpool.Pool) error {
 	return nil
 }
 
-// certstreamConfig：CERTSTREAM_URL 为空（默认）则不启动，开发阶段不连外网；部署时设为 wss://certstream.calidog.io/ 等。
+// certstreamConfig：CERTSTREAM_URL 为空（默认）则不启动，开发阶段不连外网；部署时设为自建 certstream-server-go 或公共服务地址。
 type certstreamConfig struct {
-	URL       string
-	Reconnect time.Duration // 断线重连间隔
-	Refresh   time.Duration // 根域列表刷新间隔
+	URL        string
+	Reconnect  time.Duration // 断线重连间隔
+	Refresh    time.Duration // 根域列表刷新间隔
+	BatchSize  int           // CERTSTREAM_BATCH_SIZE：新子域攒满 N 条交 dns（默认 100）
+	BatchDelay time.Duration // CERTSTREAM_BATCH_INTERVAL：首条进批后最多等 T 交 dns（默认 60s，>= 1s）
 }
 
-func certstreamConfigFromEnv() certstreamConfig {
-	return certstreamConfig{URL: os.Getenv("CERTSTREAM_URL"), Reconnect: 5 * time.Second, Refresh: time.Minute}
+func certstreamConfigFromEnv() (certstreamConfig, error) {
+	c := certstreamConfig{URL: os.Getenv("CERTSTREAM_URL"), Reconnect: 5 * time.Second, Refresh: time.Minute,
+		BatchSize: 100, BatchDelay: time.Minute}
+	if s := os.Getenv("CERTSTREAM_BATCH_SIZE"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 {
+			return c, fmt.Errorf("CERTSTREAM_BATCH_SIZE: invalid %q (integer >= 1)", s)
+		}
+		c.BatchSize = n
+	}
+	if s := os.Getenv("CERTSTREAM_BATCH_INTERVAL"); s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil || d < time.Second {
+			return c, fmt.Errorf("CERTSTREAM_BATCH_INTERVAL: invalid %q (duration >= 1s, e.g. 60s)", s)
+		}
+		c.BatchDelay = d
+	}
+	return c, nil
 }
 
-// runCertstream 常驻订阅：断线自动重连，匹配根域的域名以来源 certstream 入库，直到 ctx 结束。
-func runCertstream(ctx context.Context, cfg certstreamConfig, d *pgxpool.Pool) {
+// batcher 在内存攒批：满 size 条立即 flush；否则首条进批后满 delay 时 flush。
+type batcher struct {
+	mu      sync.Mutex
+	size    int
+	delay   time.Duration
+	pending map[int64][]string // 根域 id → 子域
+	count   int
+	timer   *time.Timer
+	flush   func(map[int64][]string)
+}
+
+func newBatcher(size int, delay time.Duration, flush func(map[int64][]string)) *batcher {
+	return &batcher{size: size, delay: delay, pending: map[int64][]string{}, flush: flush}
+}
+
+func (b *batcher) add(rootID int64, host string) {
+	b.mu.Lock()
+	b.pending[rootID] = append(b.pending[rootID], host)
+	b.count++
+	if b.count >= b.size {
+		b.flushLocked()
+		return
+	}
+	if b.timer == nil {
+		b.timer = time.AfterFunc(b.delay, func() {
+			b.mu.Lock()
+			b.flushLocked()
+		})
+	}
+	b.mu.Unlock()
+}
+
+// flushLocked 取走当前批并解锁，再在锁外调用 flush。
+func (b *batcher) flushLocked() {
+	if b.timer != nil {
+		b.timer.Stop()
+		b.timer = nil
+	}
+	batch := b.pending
+	b.pending, b.count = map[int64][]string{}, 0
+	b.mu.Unlock()
+	if len(batch) > 0 {
+		b.flush(batch)
+	}
+}
+
+// dispatchFunc 把一批新子域交给 dns（按根域分组）。
+type dispatchFunc func(rootID int64, hosts []string)
+
+// runCertstream 常驻订阅：断线自动重连，匹配根域的域名以来源 certstream 入库，
+// 首次入库的子域攒批后交给 dns，直到 ctx 结束。
+func runCertstream(ctx context.Context, cfg certstreamConfig, d *pgxpool.Pool, dispatch dispatchFunc) {
+	b := newBatcher(cfg.BatchSize, cfg.BatchDelay, func(batch map[int64][]string) {
+		for rootID, hosts := range batch {
+			dispatch(rootID, hosts)
+		}
+	})
 	m := &rootMatcher{}
 	if err := m.refresh(ctx, d); err != nil {
 		log.Printf("certstream: load roots: %v", err)
@@ -118,7 +193,7 @@ func runCertstream(ctx context.Context, cfg certstreamConfig, d *pgxpool.Pool) {
 		}
 	}()
 	for ctx.Err() == nil {
-		if err := streamOnce(ctx, cfg.URL, m, d); err != nil && ctx.Err() == nil {
+		if err := streamOnce(ctx, cfg.URL, m, d, b); err != nil && ctx.Err() == nil {
 			log.Printf("certstream: %v; reconnect in %v", err, cfg.Reconnect)
 		}
 		select {
@@ -128,7 +203,7 @@ func runCertstream(ctx context.Context, cfg certstreamConfig, d *pgxpool.Pool) {
 	}
 }
 
-func streamOnce(ctx context.Context, url string, m *rootMatcher, d *pgxpool.Pool) error {
+func streamOnce(ctx context.Context, url string, m *rootMatcher, d *pgxpool.Pool, b *batcher) error {
 	conn, _, err := websocket.Dial(ctx, url, nil)
 	if err != nil {
 		return err
@@ -148,8 +223,12 @@ func streamOnce(ctx context.Context, url string, m *rootMatcher, d *pgxpool.Pool
 		for _, h := range hosts {
 			found[h] = []string{"certstream"}
 		}
-		if err := storeAssets(ctx, d, found); err != nil {
+		created, err := storeAssets(ctx, d, found)
+		if err != nil {
 			log.Printf("certstream: store: %v", err)
+		}
+		for h, rootID := range created {
+			b.add(rootID, h)
 		}
 	}
 }

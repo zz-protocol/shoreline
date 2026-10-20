@@ -137,4 +137,5 @@
 | postgres:16-alpine | PostgreSQL License |
 | redis:7-alpine | **注意**：该标签当前指向 7.4.x，许可为 RSALv2 / SSPLv1（非 OSI 开源）；仅作为独立服务运行，不随本项目代码分发。7.2.x 及以前为 BSD-3-Clause（待架构决定是否固定 7.2 或换 Valkey） |
 | nginx:1.27-alpine | BSD-2-Clause |
+| 0rickyy0/certstream-server-go:v1.10.1（可选 profile） | MIT |
 | golang / node / alpine（仅构建） | BSD-3 / MIT / MIT 等 |

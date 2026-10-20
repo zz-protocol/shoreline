@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -91,17 +92,25 @@ func TestCertstreamReplay(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	var mu sync.Mutex
+	dispatched := map[int64][]string{}
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
-		runCertstream(runCtx, certstreamConfig{URL: "ws" + strings.TrimPrefix(srv.URL, "http"), Reconnect: 100 * time.Millisecond, Refresh: time.Minute}, e.pool)
+		runCertstream(runCtx, certstreamConfig{URL: "ws" + strings.TrimPrefix(srv.URL, "http"), Reconnect: 100 * time.Millisecond,
+			Refresh: time.Minute, BatchSize: 1000, BatchDelay: 150 * time.Millisecond}, e.pool,
+			func(rootID int64, hosts []string) {
+				mu.Lock()
+				dispatched[rootID] = append(dispatched[rootID], hosts...)
+				mu.Unlock()
+			})
 		close(done)
 	}()
 	deadline := time.Now().Add(10 * time.Second)
 	for conns.Load() < 2 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(400 * time.Millisecond) // 等超时触发的批次
 	cancel()
 	<-done
 	if conns.Load() < 2 {
@@ -133,5 +142,86 @@ func TestCertstreamReplay(t *testing.T) {
 	e.pool.QueryRow(ctx, `SELECT first_seen, last_seen FROM assets WHERE subdomain = 'www.alpha.test'`).Scan(&first, &last)
 	if !last.After(first) {
 		t.Errorf("www.alpha.test seen again should bump last_seen: first=%v last=%v", first, last)
+	}
+
+	// 只有首次入库的 4 个子域交给 dns（重复回放不再派发），按根域分组
+	mu.Lock()
+	defer mu.Unlock()
+	var alphaID, betaID int64
+	e.pool.QueryRow(ctx, `SELECT id FROM root_domains WHERE domain = 'alpha.test'`).Scan(&alphaID)
+	e.pool.QueryRow(ctx, `SELECT id FROM root_domains WHERE domain = 'sub.beta.test'`).Scan(&betaID)
+	for _, h := range dispatched {
+		sort.Strings(h)
+	}
+	wantDispatch := map[int64][]string{alphaID: {"alpha.test", "api.alpha.test", "www.alpha.test"}, betaID: {"pay.sub.beta.test"}}
+	if !reflect.DeepEqual(dispatched, wantDispatch) {
+		t.Fatalf("dispatched %v, want %v", dispatched, wantDispatch)
+	}
+}
+
+func TestBatcherFlushOnSize(t *testing.T) {
+	got := make(chan map[int64][]string, 4)
+	b := newBatcher(3, time.Hour, func(m map[int64][]string) { got <- m })
+	b.add(1, "a")
+	b.add(2, "b")
+	select {
+	case m := <-got:
+		t.Fatalf("flushed early: %v", m)
+	case <-time.After(50 * time.Millisecond):
+	}
+	b.add(1, "c") // 第 3 条：立即触发
+	select {
+	case m := <-got:
+		if !reflect.DeepEqual(m, map[int64][]string{1: {"a", "c"}, 2: {"b"}}) {
+			t.Fatalf("batch %v", m)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("size trigger did not flush")
+	}
+}
+
+func TestBatcherFlushOnTimeout(t *testing.T) {
+	got := make(chan map[int64][]string, 4)
+	b := newBatcher(100, 200*time.Millisecond, func(m map[int64][]string) { got <- m })
+	start := time.Now()
+	b.add(1, "a")
+	b.add(1, "b")
+	select {
+	case m := <-got:
+		el := time.Since(start)
+		if el < 180*time.Millisecond || el > 600*time.Millisecond {
+			t.Errorf("timeout flush after %v, want ~200ms", el)
+		}
+		if !reflect.DeepEqual(m, map[int64][]string{1: {"a", "b"}}) {
+			t.Fatalf("batch %v", m)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout trigger did not flush")
+	}
+	select { // 已清空，计时器不再重复触发
+	case m := <-got:
+		t.Fatalf("extra flush %v", m)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+func TestCertstreamConfigFromEnv(t *testing.T) {
+	c, err := certstreamConfigFromEnv()
+	if err != nil || c.URL != "" || c.BatchSize != 100 || c.BatchDelay != time.Minute {
+		t.Fatalf("defaults %+v %v", c, err)
+	}
+	t.Setenv("CERTSTREAM_BATCH_SIZE", "10")
+	t.Setenv("CERTSTREAM_BATCH_INTERVAL", "5s")
+	if c, _ = certstreamConfigFromEnv(); c.BatchSize != 10 || c.BatchDelay != 5*time.Second {
+		t.Fatalf("overrides %+v", c)
+	}
+	for k, vs := range map[string][]string{"CERTSTREAM_BATCH_SIZE": {"0", "-1", "x", "1.5"}, "CERTSTREAM_BATCH_INTERVAL": {"0s", "500ms", "abc", "-1s"}} {
+		for _, v := range vs {
+			t.Setenv(k, v)
+			if _, err := certstreamConfigFromEnv(); err == nil {
+				t.Errorf("%s=%s should be rejected", k, v)
+			}
+		}
+		t.Setenv(k, "")
 	}
 }

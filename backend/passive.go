@@ -284,7 +284,8 @@ func collectPassive(ctx context.Context, domain string, srcs []Source) (map[stri
 }
 
 // storeAssets upsert 资产：归属取最长匹配根域，in_scope 按该厂商范围规则判定，sources 合并去重，更新 last_seen。
-func storeAssets(ctx context.Context, d *pgxpool.Pool, found map[string][]string) error {
+// 返回本次首次入库的子域 → 根域 id。
+func storeAssets(ctx context.Context, d *pgxpool.Pool, found map[string][]string) (map[string]int64, error) {
 	type root struct {
 		id     int64
 		domain string
@@ -293,35 +294,36 @@ func storeAssets(ctx context.Context, d *pgxpool.Pool, found map[string][]string
 	var roots []root
 	rows, err := d.Query(ctx, `SELECT id, domain, vendor_id FROM root_domains`)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for rows.Next() {
 		var r root
 		if err := rows.Scan(&r.id, &r.domain, &r.vendor); err != nil {
-			return err
+			return nil, err
 		}
 		r.domain = normalizeHost(r.domain)
 		roots = append(roots, r)
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	rules := map[int64][]ScopeRule{}
 	rows, err = d.Query(ctx, `SELECT vendor_id, kind, pattern FROM scope_rules`)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for rows.Next() {
 		var v int64
 		var r ScopeRule
 		if err := rows.Scan(&v, &r.Kind, &r.Pattern); err != nil {
-			return err
+			return nil, err
 		}
 		rules[v] = append(rules[v], r)
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return nil, err
 	}
+	created := map[string]int64{}
 	for host, srcs := range found {
 		var best *root
 		for i, r := range roots {
@@ -332,16 +334,21 @@ func storeAssets(ctx context.Context, d *pgxpool.Pool, found map[string][]string
 		if best == nil {
 			continue
 		}
-		_, err := d.Exec(ctx, `INSERT INTO assets (root_id, subdomain, sources, in_scope) VALUES ($1, $2, $3, $4)
+		var inserted bool
+		err := d.QueryRow(ctx, `INSERT INTO assets (root_id, subdomain, sources, in_scope) VALUES ($1, $2, $3, $4)
 			ON CONFLICT (subdomain) DO UPDATE SET
 				last_seen = now(), root_id = EXCLUDED.root_id, in_scope = EXCLUDED.in_scope,
-				sources = ARRAY(SELECT DISTINCT unnest(assets.sources || EXCLUDED.sources) ORDER BY 1)`,
-			best.id, host, srcs, InScope(host, rules[best.vendor]))
+				sources = ARRAY(SELECT DISTINCT unnest(assets.sources || EXCLUDED.sources) ORDER BY 1)
+			RETURNING xmax = 0`,
+			best.id, host, srcs, InScope(host, rules[best.vendor])).Scan(&inserted)
 		if err != nil {
-			return err
+			return nil, err
+		}
+		if inserted {
+			created[host] = best.id
 		}
 	}
-	return nil
+	return created, nil
 }
 
 // passiveHandler 是 passive 类扫描：收集、入库，返回子域交给 dns。
@@ -356,7 +363,7 @@ func passiveHandler(d *pgxpool.Pool, srcs []Source) ScanHandler {
 		if err != nil {
 			return nil, err
 		}
-		if err := storeAssets(ctx, d, found); err != nil {
+		if _, err := storeAssets(ctx, d, found); err != nil {
 			return nil, err
 		}
 		hosts := make([]string, 0, len(found))

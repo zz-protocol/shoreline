@@ -13,8 +13,15 @@ services:
     environment:
       DATABASE_URL: postgres://sam:sam@postgres:5432/sam?sslmode=disable
       REDIS_ADDR: redis:6379
+      CERTSTREAM_URL: ${CERTSTREAM_URL:-}
     ports: ["127.0.0.1:8080:8080"]
     depends_on: [postgres, redis]
+  # 可选：自建 CT 流服务。启用：docker compose --profile certstream up，
+  # 并给 backend 设 CERTSTREAM_URL=ws://certstream:8080/（见 README）。不对宿主暴露端口。
+  certstream:
+    image: 0rickyy0/certstream-server-go:v1.10.1
+    profiles: [certstream]
+    volumes: ["./certstream/config.yaml:/app/config.yaml:ro"]
   frontend:
     build: ./frontend
     ports: ["127.0.0.1:5173:80"]
