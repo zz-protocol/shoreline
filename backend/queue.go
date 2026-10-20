@@ -17,13 +17,13 @@ import (
 )
 
 // 三类扫描，各自一个 Asynq 队列和独立限速。
-var scanKinds = []string{"passive", "active", "dns", "http"}
+var scanKinds = []string{"passive", "active", "dns", "http", "expand"}
 
 // 自动串联：passive 发现的子域交给 dns，dns 输出（解析成功且非泛解析）交给 http。
 var nextKind = map[string]string{"passive": "dns", "active": "dns", "dns": "http"}
 
-// 默认限速（任务/秒，单实例），可用 RATE_PASSIVE / RATE_ACTIVE / RATE_DNS / RATE_HTTP 覆盖。
-var defaultRates = map[string]float64{"passive": 1, "active": 1, "dns": 10, "http": 5}
+// 默认限速（任务/秒，单实例），可用 RATE_PASSIVE / RATE_ACTIVE / RATE_DNS / RATE_HTTP / RATE_EXPAND 覆盖。
+var defaultRates = map[string]float64{"passive": 1, "active": 1, "dns": 10, "http": 5, "expand": 1}
 
 type scanPayload struct {
 	ScanID int64    `json:"scan_id"`

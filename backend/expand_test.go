@@ -1,0 +1,208 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
+	"sync"
+	"testing"
+)
+
+// mockICP 本地 ICP 接口：按 company / domain 返回备案记录，要求 Bearer key。
+func mockICP(t *testing.T) (*httpICP, *[]string) {
+	t.Helper()
+	byCompany := map[string][]ICPRecord{
+		"示例科技有限公司": {{"corp.test", "示例科技有限公司", "京ICP备00000001号"}, {"corp-cloud.test", "示例科技有限公司", "京ICP备00000001号"},
+			{"CORP-Shop.test.", "示例科技有限公司", "京ICP备00000001号"}},
+		"子公司甲":     {{"suba.test", "子公司甲", "沪ICP备00000002号"}},
+		"子公司乙":     {{"subb.test", "子公司乙", "沪ICP备00000003号"}},
+		"示例集团有限公司": {{"group.test", "示例集团有限公司", "京ICP备00000004号"}, {"corp-cloud.test", "示例集团有限公司", "京ICP备00000001号"}},
+	}
+	byDomain := map[string][]ICPRecord{"corp.test": {{"corp.test", "示例集团有限公司", "京ICP备00000004号"}}}
+	var mu sync.Mutex
+	var reqs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-key" {
+			http.Error(w, "unauthorized", 401)
+			return
+		}
+		mu.Lock()
+		reqs = append(reqs, r.URL.RawQuery)
+		mu.Unlock()
+		var recs []ICPRecord
+		if c := r.URL.Query().Get("company"); c != "" {
+			recs = byCompany[c]
+		} else {
+			recs = byDomain[r.URL.Query().Get("domain")]
+		}
+		json.NewEncoder(w).Encode(map[string]any{"records": recs})
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ICP_API_URL", srv.URL+"/icp")
+	t.Setenv("ICP_API_KEY", "test-key")
+	src, err := icpSourceFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return src.(*httpICP), &reqs
+}
+
+func TestICPSourceFromEnv(t *testing.T) {
+	t.Setenv("ICP_API_URL", "")
+	if s, err := icpSourceFromEnv(); s != nil || err != nil {
+		t.Fatalf("unset: %v %v", s, err)
+	}
+	for _, v := range []string{"ftp://x", "not a url", "http://"} {
+		t.Setenv("ICP_API_URL", v)
+		if _, err := icpSourceFromEnv(); err == nil {
+			t.Fatalf("ICP_API_URL=%q accepted", v)
+		}
+	}
+}
+
+func TestImportSubsidiaries(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	var vendorID int64
+	e.pool.QueryRow(ctx, `SELECT vendor_id FROM root_domains WHERE id = $1`, e.rootID).Scan(&vendorID)
+	t.Cleanup(func() {
+		e.pool.Exec(context.Background(), `DELETE FROM vendor_subsidiaries WHERE vendor_id = $1`, vendorID)
+	})
+	n, err := importSubsidiaries(ctx, e.pool, vendorID, strings.NewReader("# 名称,持股%\n子公司甲,60\n子公司乙, 30%\n子公司甲,65\n"))
+	if err != nil || n != 3 {
+		t.Fatalf("import: %d %v", n, err)
+	}
+	got, _ := dbSubsidiaries{e.pool}.Subsidiaries(ctx, vendorID, "")
+	if want := []Subsidiary{{"子公司乙", 30}, {"子公司甲", 65}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	for _, bad := range []string{"x,101\n", "x,-1\n", "x,abc\n", ",50\n", "x\n", "x,NaN\n"} {
+		if _, err := importSubsidiaries(ctx, e.pool, vendorID, strings.NewReader(bad)); err == nil {
+			t.Fatalf("accepted %q", bad)
+		}
+	}
+	t.Logf("导入 %d 行，同名覆盖后 %v；非法行拒绝", n, got)
+}
+
+// 全链路：expand 只手动触发；主体名→ICP、子公司(>=50%)→ICP、已有根域反查主体→ICP；结果进待确认，不自动加入扫描；
+// 确认后才写 root_domains；忽略的再次扩展不再提示。
+func TestExpandEndToEnd(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	icp, reqs := mockICP(t)
+	var vendorID int64
+	e.pool.QueryRow(ctx, `SELECT vendor_id FROM root_domains WHERE id = $1`, e.rootID).Scan(&vendorID)
+	clean := func() {
+		c := context.Background()
+		e.pool.Exec(c, `DELETE FROM root_candidates WHERE vendor_id = $1`, vendorID)
+		e.pool.Exec(c, `DELETE FROM vendor_subsidiaries WHERE vendor_id = $1`, vendorID)
+		e.pool.Exec(c, `DELETE FROM root_domains WHERE domain LIKE '%corp%.test' OR domain IN ('suba.test', 'subb.test', 'group.test')`)
+		e.pool.Exec(c, `UPDATE vendors SET company_name = NULL WHERE id = $1`, vendorID)
+	}
+	clean()
+	t.Cleanup(clean)
+	var rootID int64
+	e.pool.QueryRow(ctx, `INSERT INTO root_domains (vendor_id, domain) VALUES ($1, 'corp.test') RETURNING id`, vendorID).Scan(&rootID)
+	e.pool.Exec(ctx, `UPDATE vendors SET company_name = '示例科技有限公司' WHERE id = $1`, vendorID)
+	importSubsidiaries(ctx, e.pool, vendorID, strings.NewReader("子公司甲,60\n子公司乙,30\n"))
+	e.rootID = rootID
+	e.start(t, testConfig(fastRates), map[string]ScanHandler{"expand": expandHandler(e.pool, icp, dbSubsidiaries{e.pool})})
+
+	candidates := func() map[string]string {
+		rows, _ := e.pool.Query(ctx, `SELECT domain || '|' || status || '|' || array_to_string(sources, '+') FROM root_candidates WHERE vendor_id = $1 ORDER BY 1`, vendorID)
+		list, _ := pgxCollectStrings(rows)
+		out := map[string]string{}
+		for _, l := range list {
+			p := strings.SplitN(l, "|", 2)
+			out[p[0]] = p[1]
+		}
+		return out
+	}
+	rootsCount := func() (n int) {
+		e.pool.QueryRow(ctx, `SELECT count(*) FROM root_domains WHERE vendor_id = $1`, vendorID).Scan(&n)
+		return
+	}
+	before := rootsCount()
+	if _, err := TriggerScan(ctx, e.pool, e.client, rootID, "expand", 3); err != nil {
+		t.Fatal(err)
+	}
+	e.waitStatus(t, "expand", "done", 1)
+	got := candidates()
+	want := map[string]string{
+		"corp-cloud.test": "pending|icp:company+icp:reverse",
+		"corp-shop.test":  "pending|icp:company",
+		"group.test":      "pending|icp:reverse",
+		"suba.test":       "pending|icp:subsidiary",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("candidates %v\nwant %v", got, want)
+	}
+	var others int
+	e.pool.QueryRow(ctx, `SELECT count(*) FROM scan_tasks WHERE root_id = $1 AND kind <> 'expand'`, rootID).Scan(&others)
+	if rootsCount() != before || others != 0 {
+		t.Fatalf("auto-added: roots %d->%d, follow-up tasks %d", before, rootsCount(), others)
+	}
+	var ev, result string
+	e.pool.QueryRow(ctx, `SELECT evidence::text FROM root_candidates WHERE domain = 'suba.test'`).Scan(&ev)
+	e.pool.QueryRow(ctx, `SELECT result::text FROM scan_tasks WHERE root_id = $1 AND kind = 'expand'`, rootID).Scan(&result)
+	t.Logf("第 1 轮：待确认 %v；根域数不变 %d；suba 依据 %s；result %s；ICP 请求 %v", got, before, ev, result, *reqs)
+
+	// 确认 suba.test → 写 root_domains；忽略 group.test
+	var subaID, groupID int64
+	e.pool.QueryRow(ctx, `SELECT id FROM root_candidates WHERE domain = 'suba.test'`).Scan(&subaID)
+	e.pool.QueryRow(ctx, `SELECT id FROM root_candidates WHERE domain = 'group.test'`).Scan(&groupID)
+	if err := confirmCandidate(ctx, e.pool, subaID); err != nil {
+		t.Fatal(err)
+	}
+	if err := ignoreCandidate(ctx, e.pool, groupID); err != nil {
+		t.Fatal(err)
+	}
+	if err := confirmCandidate(ctx, e.pool, groupID); err == nil {
+		t.Fatal("confirmed an ignored candidate")
+	}
+	var subaRoot int
+	e.pool.QueryRow(ctx, `SELECT count(*) FROM root_domains WHERE domain = 'suba.test' AND vendor_id = $1`, vendorID).Scan(&subaRoot)
+	if subaRoot != 1 {
+		t.Fatal("confirmed candidate not in root_domains")
+	}
+	// 第 2 轮：忽略的不再提示，已确认的（已是根域）不再出现，无新增
+	if _, err := TriggerScan(ctx, e.pool, e.client, rootID, "expand", 3); err != nil {
+		t.Fatal(err)
+	}
+	e.waitStatus(t, "expand", "done", 2)
+	got2 := candidates()
+	want2 := map[string]string{
+		"corp-cloud.test": "pending|icp:company+icp:reverse",
+		"corp-shop.test":  "pending|icp:company",
+		"group.test":      "ignored|icp:reverse",
+		"suba.test":       "confirmed|icp:subsidiary",
+	}
+	if !reflect.DeepEqual(got2, want2) {
+		t.Fatalf("round 2 %v\nwant %v", got2, want2)
+	}
+	var result2 string
+	e.pool.QueryRow(ctx, `SELECT result::text FROM scan_tasks WHERE root_id = $1 AND kind = 'expand' ORDER BY id DESC LIMIT 1`, rootID).Scan(&result2)
+	if !strings.Contains(result2, `"new_candidates": 0`) {
+		t.Fatalf("round 2 result %s", result2)
+	}
+	t.Logf("第 2 轮：%v；result %s", got2, result2)
+}
+
+func TestExpandSkippedWithoutICP(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	e.start(t, testConfig(fastRates), map[string]ScanHandler{"expand": expandHandler(e.pool, nil, dbSubsidiaries{e.pool})})
+	if _, err := TriggerScan(ctx, e.pool, e.client, e.rootID, "expand", 3); err != nil {
+		t.Fatal(err)
+	}
+	e.waitStatus(t, "expand", "done", 1)
+	var result string
+	e.pool.QueryRow(ctx, `SELECT result::text FROM scan_tasks WHERE root_id = $1 AND kind = 'expand'`, e.rootID).Scan(&result)
+	if !strings.Contains(result, "icp not configured") {
+		t.Fatalf("result %s", result)
+	}
+	t.Logf("未配置 ICP_API_URL：%s", result)
+}

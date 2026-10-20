@@ -138,3 +138,20 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 - 全量：`cd backend && TEST_DATABASE_URL=postgres://sam:sam@127.0.0.1:5432/sam?sslmode=disable go test ./...`（外部依赖全部本地 mock）。
 - 真实时间的重试间隔测试 `TestRetryIntervals` 依赖 asynq 调度时序，放在 `//go:build integration` 文件里，全量不含，单独跑：
   `TEST_DATABASE_URL=... go test -tags integration -count=10 -run TestRetryIntervals .`
+
+### ICP/子公司扩展（T11）
+
+只手动触发（`TriggerScan(..., "expand", ...)`，按任务所属根域的厂商跑），发现的新根域进 `root_candidates`（待确认），不自动加入扫描、不串联后续任务。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| ICP_API_URL | 空（跳过扩展） | 通用 HTTP JSON ICP 接口地址，须 http/https；非法值启动即退出 |
+| ICP_API_KEY | 空 | 有值时请求带 `Authorization: Bearer <key>` |
+| RATE_EXPAND | 1 | expand 任务速率（任务/秒，同 RATE_*） |
+
+- ICP 接口约定：`GET <ICP_API_URL>?company=<主体名>` 或 `?domain=<域名>`，响应 `{"records":[{"domain":"...","company":"...","license":"备案号"}]}`。对接具体服务商时需按此约定加一层转换。
+- 链路：厂商主体名（`vendors.company_name`）→ ICP；子公司（持股 >= 50%，只一层）→ ICP；已有根域 → ICP 反查主体 → 该主体的 ICP。已是根域的不进候选。
+- 子公司源可插拔；当前实现为手工导入名单 `vendor_subsidiaries`（CSV：`名称,持股百分比`，# 开头为注释，同名覆盖比例）。
+- `root_candidates`：厂商、域名、来源（icp:company / icp:subsidiary / icp:reverse，可多种）、依据（主体、备案号、子公司及比例、反查的根域）、状态（pending 待确认 / confirmed 已确认 / ignored 已忽略）、时间。
+  确认写入 `root_domains`（不自动扫描）；忽略后再次扩展也不再提示。确认/忽略的操作接口在 T12/T14，当前为函数 `confirmCandidate` / `ignoreCandidate`。
+- 每次 expand 把 found / new_candidates 写入 `scan_tasks.result`。
