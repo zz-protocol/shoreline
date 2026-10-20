@@ -198,6 +198,9 @@ func pageWords(r *probeResult) []string {
 
 const maxPageWords = 3000
 
+// minTemplateWords：两张对照页公共词少于此数时模板不可用。
+const minTemplateWords = 5
+
 // pageTokens：pageWords 的 3-gram 集合。
 func pageTokens(r *probeResult) map[string]bool {
 	words := pageWords(r)
@@ -327,8 +330,8 @@ func (p *prober) randomPage(ctx context.Context, scheme, parent string) *probeRe
 	return r
 }
 
-// controlTemplate 取父域 2 个随机子域的对照页建立模板（按 parent+scheme 缓存）。某次请求失败时重取一个随机子域；
-// 仍不足 2 页则返回 insufficient=true，本轮该父域的候选保持 wildcard。
+// controlTemplate 取父域 2 个随机子域的对照页建立模板（按 parent+scheme 缓存）。某次请求失败（含超时）时重取一个随机子域；
+// 仍不足 2 页、两页状态码不一致、或两页都为空页，返回 insufficient=true：拿不到可用对照页一律不放行，本轮该父域候选保持 wildcard。
 func (p *prober) controlTemplate(ctx context.Context, c *pageCache, scheme, parent string) (t *wildcardTemplate, insufficient bool) {
 	key := scheme + "://" + parent
 	c.mu.Lock()
@@ -347,13 +350,14 @@ func (p *prober) controlTemplate(ctx context.Context, c *pageCache, scheme, pare
 		return nil, true
 	}
 	a, b := pages[0], pages[1]
-	if a.Status != b.Status {
-		// 两个随机子域状态码不一致：无稳定泛解析页，模板为空，候选页只要有内容就视为不相似
-		c.m[key] = &wildcardTemplate{sample: &probeResult{Status: -1}}
-		return c.m[key], false
-	}
 	wa, wb := pageWords(a), pageWords(b)
 	tpl := lcs(wa, wb)
+	// 对照页不可用：状态码不一致，或公共内容不足 minTemplateWords 个词（空页、几乎全是动态内容）且不是相同跳转
+	// → 不放行，候选保持 wildcard 留待下轮
+	redirectOnly := len(wa) == 0 && len(wb) == 0 && a.Redirect != "" && sameRedirect(a, b) == 1
+	if a.Status != b.Status || len(tpl) < minTemplateWords && !redirectOnly {
+		return nil, true
+	}
 	c.m[key] = &wildcardTemplate{sample: a, template: tpl, allowed: max(len(wa), len(wb)) - len(tpl)}
 	return c.m[key], false
 }

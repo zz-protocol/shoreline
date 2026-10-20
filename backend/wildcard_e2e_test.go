@@ -237,3 +237,57 @@ func TestControlPageFailure(t *testing.T) {
 		})
 	}
 }
+
+// 交付复现：wc-* 对照子域响应超过 HTTP_TIMEOUT 或为空页（假主机正常返回停放页），以及整页随机内容的泛解析 → 不得放行，全部保持 wildcard、0 URL、0 事件。
+func TestControlPageTimeoutOrEmpty(t *testing.T) {
+	for _, mode := range []string{"timeout", "empty", "allDynamic"} {
+		t.Run(mode, func(t *testing.T) {
+			e := newTestEnv(t)
+			ctx := context.Background()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				host, _, _ := net.SplitHostPort(r.Host)
+				if host == "" {
+					host = r.Host
+				}
+				if mode == "allDynamic" { // 泛解析页整页都是随机内容（对照页与假主机同样）
+					b := make([]byte, 16)
+					rand.Read(b)
+					fmt.Fprintf(w, "<p>%s</p>", base64.RawURLEncoding.EncodeToString(b))
+					return
+				}
+				if strings.HasPrefix(host, "wc-") {
+					switch mode {
+					case "timeout":
+						time.Sleep(400 * time.Millisecond) // > HTTP_TIMEOUT(200ms)
+					case "empty":
+						return
+					}
+				}
+				fmt.Fprintf(w, wildPage, host)
+			}))
+			t.Cleanup(srv.Close)
+			cfg, _ := httpConfigFromEnv()
+			cfg.RPS, cfg.VerifyRPS, cfg.Schemes, cfg.Timeout = 1000, 1000, []string{"http"}, 200*time.Millisecond
+			cfg.Dial = func(string) string { return srv.Listener.Addr().String() }
+			t.Cleanup(func() { e.pool.Exec(context.Background(), `DELETE FROM assets WHERE subdomain LIKE '%.to.test'`) })
+			var hosts []string
+			for i := 0; i < 45; i++ {
+				h := fmt.Sprintf("fake%02d.to.test", i)
+				hosts = append(hosts, h)
+				e.pool.Exec(ctx, `INSERT INTO assets (root_id, subdomain, resolved, wildcard, parent_wildcard) VALUES ($1, $2, true, $3, true)`,
+					e.rootID, h, i%3 != 0) // 1/3 模拟 DNS 漏标
+			}
+			if _, err := httpHandler(e.pool, newProber(cfg))(ctx, 0, hosts); err != nil {
+				t.Fatal(err)
+			}
+			var urls, wild, events int
+			e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM urls WHERE host LIKE '%.to.test'),
+				(SELECT count(*) FROM assets WHERE subdomain LIKE '%.to.test' AND wildcard),
+				(SELECT count(*) FROM events ev JOIN assets a ON a.id = ev.asset_id WHERE a.subdomain LIKE '%.to.test')`).Scan(&urls, &wild, &events)
+			if urls != 0 || wild != 45 || events != 0 {
+				t.Fatalf("%s: urls=%d wildcard=%d/45 events=%d", mode, urls, wild, events)
+			}
+			t.Logf("对照页%s：urls=%d wildcard=%d/45 events=%d", mode, urls, wild, events)
+		})
+	}
+}
