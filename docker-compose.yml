@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sam
+      POSTGRES_PASSWORD: sam
+      POSTGRES_DB: sam
+    volumes: [pgdata:/var/lib/postgresql/data]
+  redis:
+    image: redis:7-alpine
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgres://sam:sam@postgres:5432/sam?sslmode=disable
+      REDIS_ADDR: redis:6379
+    ports: ["8080:8080"]
+    depends_on: [postgres, redis]
+  frontend:
+    build: ./frontend
+    ports: ["5173:5173"]
+    depends_on: [backend]
+volumes:
+  pgdata:
