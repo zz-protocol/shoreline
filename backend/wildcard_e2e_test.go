@@ -291,3 +291,69 @@ func TestControlPageTimeoutOrEmpty(t *testing.T) {
 		})
 	}
 }
+
+// T8 返工：泛解析父域返回短 404（nginx 默认页 / "not found"），真实主机 lb/blog 返回 200 → 必须救回；假主机保持 wildcard。
+// 另含 200 短页（hash 稳定）与长度稳定但内容随机的短页。
+func TestShortWildcardPage(t *testing.T) {
+	nginx404 := "<html>\r\n<head><title>404 Not Found</title></head>\r\n<body>\r\n<center><h1>404 Not Found</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n"
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   func() string
+	}{
+		{"nginx404", 404, func() string { return nginx404 }},
+		{"notfound404", 404, func() string { return "not found" }},
+		{"short200", 200, func() string { return "ok" }},
+		{"random200", 200, func() string { // 长度稳定、内容随机的短页
+			b := make([]byte, 12)
+			rand.Read(b)
+			return hex.EncodeToString(b)[:12] + "zz"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEnv(t)
+			ctx := context.Background()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				host, _, _ := net.SplitHostPort(r.Host)
+				if host == "" {
+					host = r.Host
+				}
+				switch {
+				case strings.HasPrefix(host, "lb."):
+					fmt.Fprint(w, lbPage)
+				case strings.HasPrefix(host, "blog."):
+					fmt.Fprint(w, `<html><head><title>Blog</title></head><body><p>Latest posts from our engineering team.</p></body></html>`)
+				default:
+					w.WriteHeader(tc.status)
+					fmt.Fprint(w, tc.body())
+				}
+			}))
+			t.Cleanup(srv.Close)
+			cfg, _ := httpConfigFromEnv()
+			cfg.RPS, cfg.VerifyRPS, cfg.Schemes, cfg.Timeout = 1000, 1000, []string{"http"}, 2*time.Second
+			cfg.Dial = func(string) string { return srv.Listener.Addr().String() }
+			t.Cleanup(func() { e.pool.Exec(context.Background(), `DELETE FROM assets WHERE subdomain LIKE '%.short.test'`) })
+			hosts := []string{"lb.short.test", "blog.short.test"}
+			for i := 0; i < 20; i++ {
+				hosts = append(hosts, fmt.Sprintf("fake%02d.short.test", i))
+			}
+			for i, h := range hosts {
+				e.pool.Exec(ctx, `INSERT INTO assets (root_id, subdomain, resolved, wildcard, parent_wildcard) VALUES ($1, $2, true, $3, true)`,
+					e.rootID, h, i%3 != 0)
+			}
+			if _, err := httpHandler(e.pool, newProber(cfg))(ctx, 0, hosts); err != nil {
+				t.Fatal(err)
+			}
+			var realURLs, fakeURLs, wildFakes, realWild int
+			e.pool.QueryRow(ctx, `SELECT
+				(SELECT count(*) FROM urls WHERE host IN ('lb.short.test', 'blog.short.test')),
+				(SELECT count(*) FROM urls WHERE host LIKE 'fake%.short.test'),
+				(SELECT count(*) FROM assets WHERE subdomain LIKE 'fake%.short.test' AND wildcard),
+				(SELECT count(*) FROM assets WHERE subdomain IN ('lb.short.test', 'blog.short.test') AND wildcard)`).Scan(&realURLs, &fakeURLs, &wildFakes, &realWild)
+			if realURLs != 2 || realWild != 0 || fakeURLs != 0 || wildFakes != 20 {
+				t.Fatalf("%s: real urls=%d real wildcard=%d fake urls=%d fake wildcard=%d/20", tc.name, realURLs, realWild, fakeURLs, wildFakes)
+			}
+			t.Logf("%s：lb/blog 救回（urls=%d），假主机 urls=%d wildcard=%d/20", tc.name, realURLs, fakeURLs, wildFakes)
+		})
+	}
+}

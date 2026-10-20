@@ -198,7 +198,7 @@ func pageWords(r *probeResult) []string {
 
 const maxPageWords = 3000
 
-// minTemplateWords：两张对照页公共词少于此数时模板不可用。
+// minTemplateWords：两张对照页公共词少于此数时改用短页模式（状态码 / hash / 长度比较）。
 const minTemplateWords = 5
 
 // pageTokens：pageWords 的 3-gram 集合。
@@ -294,12 +294,46 @@ type wildcardTemplate struct {
 	sample   *probeResult
 	template []string
 	allowed  int
+	// 短页模式（模板公共词 < minTemplateWords）：候选状态码与对照页不同 → 真实；
+	// 两张对照页 hash 相同时，候选 hash 不同 → 真实；只有长度接近时，候选长度明显不同 → 真实；其余按泛解析。
+	short                 bool
+	hash                  string
+	length                int
+	stableHash, stableLen bool
+}
+
+// pageHash 规范化后（去主机名与动态 token）的词序列 hash。
+func pageHash(r *probeResult) string {
+	sum := sha256.Sum256([]byte(strings.Join(pageWords(r), " ")))
+	return hex.EncodeToString(sum[:])
+}
+
+// bodyLen 去掉主机名后的正文长度。
+func bodyLen(r *probeResult) int {
+	return len(strings.ReplaceAll(strings.ToLower(string(r.body)), strings.ToLower(r.Host), ""))
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 // templateSimilarity 候选页与模板的相似度：模板覆盖率，超出动态词配额的多余词计入分母。
 func (t *wildcardTemplate) similarity(r *probeResult) float64 {
 	if r.Status != t.sample.Status {
 		return 0
+	}
+	if t.short {
+		// 对照页长度稳定时以长度为准（hash 可能因归一化后残留的随机片段而抖动）；仅 hash 稳定时才比 hash。
+		switch {
+		case t.stableLen && abs(bodyLen(r)-t.length) > max(64, t.length*3/10):
+			return 0
+		case !t.stableLen && t.stableHash && pageHash(r) != t.hash:
+			return 0
+		}
+		return 1
 	}
 	words := pageWords(r)
 	if len(t.template) == 0 {
@@ -331,7 +365,8 @@ func (p *prober) randomPage(ctx context.Context, scheme, parent string) *probeRe
 }
 
 // controlTemplate 取父域 2 个随机子域的对照页建立模板（按 parent+scheme 缓存）。某次请求失败（含超时）时重取一个随机子域；
-// 仍不足 2 页、两页状态码不一致、或两页都为空页，返回 insufficient=true：拿不到可用对照页一律不放行，本轮该父域候选保持 wildcard。
+// 仍不足 2 页、两页状态码不一致、或有空页，返回 insufficient=true：拿不到可用对照页一律不放行，本轮该父域候选保持 wildcard。
+// 模板太短时改用短页模式（见 wildcardTemplate.short）。
 func (p *prober) controlTemplate(ctx context.Context, c *pageCache, scheme, parent string) (t *wildcardTemplate, insufficient bool) {
 	key := scheme + "://" + parent
 	c.mu.Lock()
@@ -352,11 +387,17 @@ func (p *prober) controlTemplate(ctx context.Context, c *pageCache, scheme, pare
 	a, b := pages[0], pages[1]
 	wa, wb := pageWords(a), pageWords(b)
 	tpl := lcs(wa, wb)
-	// 对照页不可用：状态码不一致，或公共内容不足 minTemplateWords 个词（空页、几乎全是动态内容）且不是相同跳转
-	// → 不放行，候选保持 wildcard 留待下轮
 	redirectOnly := len(wa) == 0 && len(wb) == 0 && a.Redirect != "" && sameRedirect(a, b) == 1
-	if a.Status != b.Status || len(tpl) < minTemplateWords && !redirectOnly {
-		return nil, true
+	if a.Status != b.Status || (len(a.body) == 0 || len(b.body) == 0) && !redirectOnly {
+		return nil, true // 对照页不可用（状态码不一致、空页）：不放行，候选保持 wildcard 留待下轮
+	}
+	if len(tpl) < minTemplateWords && !redirectOnly {
+		// 模板太短（如 nginx 默认 404、"not found"）：改用短页模式，见 wildcardTemplate.short
+		ha, hb := pageHash(a), pageHash(b)
+		la, lb := bodyLen(a), bodyLen(b)
+		c.m[key] = &wildcardTemplate{sample: a, short: true, hash: ha, length: la,
+			stableHash: ha == hb, stableLen: abs(la-lb) <= max(la, lb)/10}
+		return c.m[key], false
 	}
 	c.m[key] = &wildcardTemplate{sample: a, template: tpl, allowed: max(len(wa), len(wb)) - len(tpl)}
 	return c.m[key], false
