@@ -24,6 +24,14 @@ SRC 资产发现与新增监控。MIT 许可。规格见 SPEC.md，任务见 TAS
 
 crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录全部来源。
 
+## Certstream
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| CERTSTREAM_URL | 空（不启动） | 实时 CT 流 websocket 地址，如 wss://certstream.calidog.io/；断线 5s 重连，根域列表每分钟刷新 |
+
+匹配任一根域的证书域名以来源 `certstream` 入库。
+
 限速按单进程计：**总速率 = 单实例速率 × 实例数**。
 
 扫描自动串联：passive → dns → http（只传解析成功、非泛解析的主机）。

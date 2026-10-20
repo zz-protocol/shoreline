@@ -1,0 +1,8 @@
+{"message_type":"heartbeat","timestamp":1761000000.0}
+{"message_type":"certificate_update","data":{"update_type":"X509LogEntry","leaf_cert":{"all_domains":["www.alpha.test","alpha.test"],"subject":{"CN":"www.alpha.test"}},"seen":1761000001.1,"source":{"name":"Sample Log","url":"https://ct.example.invalid/"}}}
+{"message_type":"certificate_update","data":{"update_type":"X509LogEntry","leaf_cert":{"all_domains":["*.API.Alpha.Test","api.alpha.test"]},"seen":1761000001.2}}
+{"message_type":"certificate_update","data":{"update_type":"X509LogEntry","leaf_cert":{"all_domains":["notalpha.test","alpha.test.evil.test","unrelated.test"]},"seen":1761000001.3}}
+not json at all
+{"message_type":"certificate_update","data":{"update_type":"PrecertLogEntry","leaf_cert":{"all_domains":["pay.sub.beta.test","beta.test."]},"seen":1761000001.4}}
+{"message_type":"certificate_update","data":{"leaf_cert":{}}}
+{"message_type":"certificate_update","data":{"update_type":"X509LogEntry","leaf_cert":{"all_domains":["www.alpha.test"]},"seen":1761000001.5}}

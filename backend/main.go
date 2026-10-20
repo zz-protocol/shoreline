@@ -38,6 +38,9 @@ func main() {
 	handlers := map[string]ScanHandler{"passive": passiveHandler(pool, passiveSources(pcfg))}
 	srv, wmux := newWorker(asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")}, pool, cfg, handlers)
 	go func() { log.Fatal(srv.Run(wmux)) }()
+	if cs := certstreamConfigFromEnv(); cs.URL != "" { // 未配置 CERTSTREAM_URL 则不启动
+		go runCertstream(context.Background(), cs, pool)
+	}
 	checks := map[string]func(context.Context) error{
 		"postgres": func(ctx context.Context) error {
 			conn, err := pgx.Connect(ctx, dbURL)
