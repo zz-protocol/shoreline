@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	crand "crypto/rand"
+	"fmt"
 	"net"
 	"reflect"
 	"sort"
@@ -24,6 +26,7 @@ import (
 func mockDNS(t *testing.T) (addr string, queried func() []string) {
 	var mu sync.Mutex
 	var names []string
+	rot := 0
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +59,18 @@ func mockDNS(t *testing.T) (addr string, queried func() []string) {
 			if isA {
 				m.Answer = append(m.Answer, a(q.Name, "192.0.2.9"))
 			}
+		case name == "real.rot.test.":
+			if isA {
+				m.Answer = append(m.Answer, a(q.Name, "10.8.8.8"))
+			}
+		case strings.HasSuffix(name, ".rot.test."):
+			if isA { // 泛解析轮换 10.1.0.1–10.1.0.8
+				mu.Lock()
+				rot++
+				n := rot%8 + 1
+				mu.Unlock()
+				m.Answer = append(m.Answer, a(q.Name, fmt.Sprintf("10.1.0.%d", n)))
+			}
 		case name == "cdn.example.test.":
 			if isA {
 				rr, _ := dns.NewRR(q.Name + " 60 IN CNAME x.kunlunsl.com.")
@@ -72,7 +87,7 @@ func mockDNS(t *testing.T) (addr string, queried func() []string) {
 }
 
 func testResolver(addrs ...string) *resolver {
-	return newResolver(dnsConfig{Resolvers: addrs, Timeout: 500 * time.Millisecond, QPS: 10000, WildcardProbe: 3, Concurrency: 4})
+	return newResolver(dnsConfig{Resolvers: addrs, Timeout: 500 * time.Millisecond, QPS: 10000, WildcardProbe: 3, WildcardStable: 5, WildcardMax: 30, Concurrency: 4})
 }
 
 func TestResolveHostsMock(t *testing.T) {
@@ -105,6 +120,44 @@ func TestResolveHostsMock(t *testing.T) {
 		if !strings.HasSuffix(n, ".example.test") {
 			t.Errorf("queried outside root: %s", n)
 		}
+	}
+}
+
+// 泛解析轮换 IP：40 个随机子域全部标 wildcard，real.rot.test（10.8.8.8）不误杀。
+func TestWildcardRotatingIPs(t *testing.T) {
+	addr, queried := mockDNS(t)
+	r := testResolver(addr)
+	hosts := []string{"real.rot.test"}
+	for i := 0; i < 40; i++ {
+		b := make([]byte, 6)
+		cryptoRand(b)
+		hosts = append(hosts, fmt.Sprintf("r%x.rot.test", b))
+	}
+	before := len(queried())
+	marked := 0
+	for _, hd := range r.resolveHosts(context.Background(), "rot.test", hosts) {
+		if hd.Host == "real.rot.test" {
+			if hd.Wildcard || !hd.Resolved {
+				t.Errorf("real.rot.test misclassified: %+v", hd)
+			}
+			continue
+		}
+		if hd.Wildcard {
+			marked++
+		}
+	}
+	probes := 0
+	for _, n := range queried()[before:] {
+		if strings.HasPrefix(n, "wc-") {
+			probes++
+		}
+	}
+	t.Logf("wildcard marked %d/40; probe queries (A+AAAA) %d", marked, probes)
+	if marked != 40 {
+		t.Fatalf("marked %d/40", marked)
+	}
+	if probes > 2*30 {
+		t.Fatalf("probes %d exceed budget", probes)
 	}
 }
 
@@ -172,7 +225,18 @@ func TestDNSConfigFromEnv(t *testing.T) {
 	if c, _ = dnsConfigFromEnv(); c.QPS != 12.5 {
 		t.Fatalf("QPS override %v", c.QPS)
 	}
-	for k, vs := range map[string][]string{"DNS_TIMEOUT": {"0s", "x"}, "DNS_QPS": {"0", "-1", "NaN", "Inf", "x"}} {
+	if c.WildcardStable != 5 || c.WildcardMax != 30 {
+		t.Fatalf("wildcard defaults %+v", c)
+	}
+	t.Setenv("DNS_WILDCARD_STABLE", "10")
+	t.Setenv("DNS_WILDCARD_MAX", "5")
+	if _, err := dnsConfigFromEnv(); err == nil {
+		t.Error("MAX < STABLE should be rejected")
+	}
+	t.Setenv("DNS_WILDCARD_STABLE", "")
+	t.Setenv("DNS_WILDCARD_MAX", "")
+	for k, vs := range map[string][]string{"DNS_TIMEOUT": {"0s", "x"}, "DNS_QPS": {"0", "-1", "NaN", "Inf", "x"},
+		"DNS_WILDCARD_STABLE": {"0", "x"}, "DNS_WILDCARD_MAX": {"0", "-3"}} {
 		for _, v := range vs {
 			t.Setenv(k, v)
 			if _, err := dnsConfigFromEnv(); err == nil {
@@ -244,3 +308,5 @@ func TestDNSHandlerWildcardNoFakeAssets(t *testing.T) {
 	}
 	t.Logf("live(non-wildcard) assets: %d of %d candidates; %d wildcard marked", live, 24, wild)
 }
+
+func cryptoRand(b []byte) { crand.Read(b) }

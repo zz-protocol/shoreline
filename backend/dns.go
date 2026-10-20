@@ -21,15 +21,17 @@ import (
 
 // dnsConfig：DNS_RESOLVERS 逗号分隔 host:port；DNS_TIMEOUT 单次查询超时；DNS_QPS 每秒查询数（单实例）。
 type dnsConfig struct {
-	Resolvers     []string
-	Timeout       time.Duration
-	QPS           float64
-	WildcardProbe int // 每个父域探测的随机子域个数
-	Concurrency   int
+	Resolvers      []string
+	Timeout        time.Duration
+	QPS            float64
+	WildcardProbe  int // 前 N 次探测均无解析则判定无泛解析
+	WildcardStable int // DNS_WILDCARD_STABLE：连续 N 次无新 IP 停止初始探测（默认 5）
+	WildcardMax    int // DNS_WILDCARD_MAX：每个父域探测总上限，含补探（默认 30）
+	Concurrency    int
 }
 
 func dnsConfigFromEnv() (dnsConfig, error) {
-	c := dnsConfig{Resolvers: []string{"223.5.5.5:53", "119.29.29.29:53", "1.1.1.1:53"}, Timeout: 2 * time.Second, QPS: 50, WildcardProbe: 3, Concurrency: 20}
+	c := dnsConfig{Resolvers: []string{"223.5.5.5:53", "119.29.29.29:53", "1.1.1.1:53"}, Timeout: 2 * time.Second, QPS: 50, WildcardProbe: 3, WildcardStable: 5, WildcardMax: 30, Concurrency: 20}
 	if s := os.Getenv("DNS_RESOLVERS"); s != "" {
 		c.Resolvers = nil
 		for _, r := range strings.Split(s, ",") {
@@ -46,6 +48,18 @@ func dnsConfigFromEnv() (dnsConfig, error) {
 			return c, fmt.Errorf("DNS_TIMEOUT: invalid %q", s)
 		}
 		c.Timeout = d
+	}
+	for name, p := range map[string]*int{"DNS_WILDCARD_STABLE": &c.WildcardStable, "DNS_WILDCARD_MAX": &c.WildcardMax} {
+		if s := os.Getenv(name); s != "" {
+			n, err := strconv.Atoi(s)
+			if err != nil || n < 1 {
+				return c, fmt.Errorf("%s: invalid %q (integer >= 1)", name, s)
+			}
+			*p = n
+		}
+	}
+	if c.WildcardMax < c.WildcardStable {
+		return c, fmt.Errorf("DNS_WILDCARD_MAX (%d) must be >= DNS_WILDCARD_STABLE (%d)", c.WildcardMax, c.WildcardStable)
 	}
 	if s := os.Getenv("DNS_QPS"); s != "" {
 		f, err := strconv.ParseFloat(s, 64)
@@ -165,35 +179,85 @@ func (r *resolver) lookup(ctx context.Context, host string) (dnsResult, error) {
 	return res, nil
 }
 
-// wildcardIPs 用随机子域探测 parent 是否泛解析，返回泛解析 IP 集合（空表示无泛解析）；按 parent 缓存。
-type wildcardCache struct {
-	mu sync.Mutex
-	m  map[string]map[string]bool
+// 泛解析探测（自适应）：对每个父域用随机子域探测，探到新 IP 就继续，直到连续 WildcardStable 次无新 IP
+// 或总次数达 WildcardMax；前 WildcardProbe 次都无解析则视为无泛解析。遇到 IP 不在集合内的子域时，
+// 在剩余预算内补探（应对轮换 IP 的泛解析），预算用尽仍未覆盖则视为真实记录。
+type wildcardEntry struct {
+	mu     sync.Mutex
+	ips    map[string]bool
+	probes int
+	ready  bool
 }
 
-func (r *resolver) wildcardIPs(ctx context.Context, cache *wildcardCache, parent string) map[string]bool {
-	cache.mu.Lock()
-	if v, ok := cache.m[parent]; ok {
-		cache.mu.Unlock()
-		return v
+type wildcardCache struct {
+	mu sync.Mutex
+	m  map[string]*wildcardEntry
+}
+
+func (c *wildcardCache) entry(parent string) *wildcardEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e := c.m[parent]
+	if e == nil {
+		e = &wildcardEntry{ips: map[string]bool{}}
+		c.m[parent] = e
 	}
-	cache.mu.Unlock()
-	ips := map[string]bool{}
-	for i := 0; i < r.cfg.WildcardProbe; i++ {
-		b := make([]byte, 8)
-		rand.Read(b)
-		res, err := r.lookup(ctx, "wc-"+hex.EncodeToString(b)+"."+parent)
-		if err != nil {
-			continue
-		}
-		for _, ip := range res.IPs {
-			ips[ip] = true
+	return e
+}
+
+// probeOnce 探测一个随机子域，返回是否发现新 IP。调用方持有 e.mu。
+func (r *resolver) probeOnce(ctx context.Context, e *wildcardEntry, parent string) bool {
+	e.probes++
+	b := make([]byte, 8)
+	rand.Read(b)
+	res, err := r.lookup(ctx, "wc-"+hex.EncodeToString(b)+"."+parent)
+	if err != nil {
+		return false
+	}
+	found := false
+	for _, ip := range res.IPs {
+		if !e.ips[ip] {
+			e.ips[ip] = true
+			found = true
 		}
 	}
-	cache.mu.Lock()
-	cache.m[parent] = ips
-	cache.mu.Unlock()
-	return ips
+	return found
+}
+
+// isWildcard 判断 ips 是否全部落在 parent 的泛解析 IP 集合内（必要时补探）。
+func (r *resolver) isWildcard(ctx context.Context, cache *wildcardCache, parent string, ips []string) bool {
+	e := cache.entry(parent)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.ready {
+		e.ready = true
+		stable := 0
+		for e.probes < r.cfg.WildcardMax && stable < r.cfg.WildcardStable {
+			if r.probeOnce(ctx, e, parent) {
+				stable = 0
+			} else {
+				stable++
+			}
+			if len(e.ips) == 0 && e.probes >= r.cfg.WildcardProbe {
+				break // 无泛解析
+			}
+		}
+	}
+	if len(e.ips) == 0 {
+		return false
+	}
+	covered := func() bool {
+		for _, ip := range ips {
+			if !e.ips[ip] {
+				return false
+			}
+		}
+		return true
+	}
+	for !covered() && e.probes < r.cfg.WildcardMax {
+		r.probeOnce(ctx, e, parent)
+	}
+	return covered()
 }
 
 type hostDNS struct {
@@ -208,7 +272,7 @@ type hostDNS struct {
 // 只探测 root 本身或其子域作为父域（不对根域之外的域名发探测）。
 func (r *resolver) resolveHosts(ctx context.Context, root string, hosts []string) []hostDNS {
 	root = normalizeHost(root)
-	cache := &wildcardCache{m: map[string]map[string]bool{}}
+	cache := &wildcardCache{m: map[string]*wildcardEntry{}}
 	out := make([]hostDNS, len(hosts))
 	sem := make(chan struct{}, max(1, r.cfg.Concurrency))
 	var wg sync.WaitGroup
@@ -223,14 +287,7 @@ func (r *resolver) resolveHosts(ctx context.Context, root string, hosts []string
 			if err == nil && len(res.IPs) > 0 {
 				hd.Result, hd.Resolved = res, true
 				if dot := strings.IndexByte(h, '.'); dot > 0 && (h[dot+1:] == root || strings.HasSuffix(h[dot+1:], "."+root)) {
-					wc := r.wildcardIPs(ctx, cache, h[dot+1:])
-					if len(wc) > 0 {
-						all := true
-						for _, ip := range res.IPs {
-							all = all && wc[ip]
-						}
-						hd.Wildcard = all
-					}
+					hd.Wildcard = r.isWildcard(ctx, cache, h[dot+1:], res.IPs)
 				}
 				if hd.CDN = cdnOf(res.CNAMEs); hd.CDN == "" {
 					hd.CDN = cdnOfIPs(res.IPs)
