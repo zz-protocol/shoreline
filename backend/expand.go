@@ -90,19 +90,49 @@ type expandStats struct {
 	SkippedKnownRoot int `json:"skipped_known_root"`
 }
 
-// icpIsIP：ICP 记录的"域名"实为 IPv4/IPv6（可带 scheme/端口/方括号/path）。
+var hexLabelRe = regexp.MustCompile(`^0x[0-9a-f]*$`)
+
+// icpIsIP：ICP 记录的"域名"实为 IP。先去 scheme、path、userinfo（@ 前）、端口/方括号、IPv6 zone（%eth0）、末尾点，
+// 再判：能解析为 IP，或末级标签全数字 / 0x 十六进制（覆盖 127.1、0x7f.0.0.1、010.0.0.1 这类 inet_aton 写法）。
 func icpIsIP(s string) bool {
-	s = strings.TrimSpace(s)
+	s = strings.ToLower(strings.TrimSpace(s))
 	if i := strings.Index(s, "://"); i >= 0 {
 		s = s[i+3:]
 	}
 	if i := strings.IndexAny(s, "/?#"); i >= 0 {
 		s = s[:i]
 	}
-	if h, _, err := net.SplitHostPort(s); err == nil {
-		s = h
+	if i := strings.LastIndexByte(s, '@'); i >= 0 {
+		s = s[i+1:]
 	}
-	return net.ParseIP(strings.Trim(s, "[]")) != nil
+	switch {
+	case strings.HasPrefix(s, "["):
+		if i := strings.IndexByte(s, ']'); i >= 0 {
+			s = s[1:i]
+		}
+	case strings.Count(s, ":") == 1:
+		s = s[:strings.IndexByte(s, ':')]
+	}
+	if i := strings.IndexByte(s, '%'); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimSuffix(s, ".")
+	if s == "" {
+		return false
+	}
+	if net.ParseIP(s) != nil {
+		return true
+	}
+	last := s[strings.LastIndexByte(s, '.')+1:]
+	if hexLabelRe.MatchString(last) {
+		return true
+	}
+	for _, r := range last {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return last != ""
 }
 
 // normalizeICPDomain 规范化 ICP 返回的域名：去 scheme、path/query、端口、"*."、末尾点，转小写；非法返回 false。
@@ -257,8 +287,10 @@ func importSubsidiaries(ctx context.Context, d *pgxpool.Pool, vendorID int64, r 
 		}
 		rows = append(rows, row{name, ratio})
 	}
-	var err error
-	err = pgx.BeginFunc(ctx, d, func(tx pgx.Tx) error {
+	if len(rows) == 0 {
+		return 0, fmt.Errorf("no valid rows")
+	}
+	err := pgx.BeginFunc(ctx, d, func(tx pgx.Tx) error {
 		for _, r := range rows {
 			if _, err := tx.Exec(ctx, `INSERT INTO vendor_subsidiaries (vendor_id, name, ratio) VALUES ($1, $2, $3)
 				ON CONFLICT (vendor_id, name) DO UPDATE SET ratio = EXCLUDED.ratio`, vendorID, r.name, r.ratio); err != nil {

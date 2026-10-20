@@ -422,3 +422,42 @@ func TestImportSubsidiariesStrict(t *testing.T) {
 		}
 	}
 }
+
+// T11 复验：各种 IP 写法都进 skipped_ip，正常域名不受影响；CSV 无有效行 400。
+func TestICPIPVariants(t *testing.T) {
+	ips := []string{"1.2.3.4.", "user@1.2.3.4", "http://u:p@5.6.7.8/", "127.1", "0x7f.0.0.1", "010.0.0.1", "fe80::1%eth0",
+		"[fe80::1%25eth0]:443", "https://[2001:db8::1]:8443/x", "1.2.3.4:80", "4294967295"}
+	var recs []ICPRecord
+	for _, ip := range ips {
+		recs = append(recs, ICPRecord{ip, "甲", "L"})
+	}
+	okDoms := []string{"a1.test", "x.0x.test", "123.example.com", "www.test-01.cn", "0x7f.test", "user@ok.test"}
+	for _, d := range okDoms {
+		recs = append(recs, ICPRecord{d, "甲", "L"})
+	}
+	found, st, err := expandVendor(context.Background(), stubICP{company: map[string][]ICPRecord{"甲": recs}}, nil, 1, "甲", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doms []string
+	for d := range found {
+		doms = append(doms, d)
+	}
+	sort.Strings(doms)
+	want := []string{"0x7f.test", "123.example.com", "a1.test", "ok.test", "www.test-01.cn", "x.0x.test"}
+	if st.SkippedIP != len(ips) || !reflect.DeepEqual(doms, want) {
+		t.Fatalf("stats %+v doms %v", st, doms)
+	}
+	t.Logf("%d 种 IP 写法全部 skipped_ip=%d；正常域名候选 %v", len(ips), st.SkippedIP, doms)
+}
+
+func TestImportSubsidiariesNoRows(t *testing.T) {
+	e := newTestEnv(t)
+	for _, in := range []string{"子X,ratio\n", "名称,比例\n", "", "# 只有注释\n", "\ufeff名称,持股比例\n"} {
+		_, err := importSubsidiaries(context.Background(), e.pool, e.vendorID(), strings.NewReader(in))
+		if err == nil {
+			t.Fatalf("%q accepted", in)
+		}
+		t.Logf("%q → %v", in, err)
+	}
+}

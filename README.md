@@ -156,9 +156,9 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 | RATE_EXPAND | 1 | expand 任务速率（任务/秒，同 RATE_*） |
 
 - ICP 接口约定：`GET <ICP_API_URL>?company=<主体名>` 或 `?domain=<域名>`，响应 `{"records":[{"domain":"...","company":"...","license":"备案号"}]}`。对接具体服务商时需按此约定加一层转换。
-- 链路：厂商主体名（`vendors.company_name`）→ ICP；子公司（持股 >= 50%，只一层）→ ICP；已有根域 → ICP 反查主体 → 该主体的 ICP。ICP 返回的域名先规范化（去 `*.`、scheme、path/query、端口、末尾点，转小写），中文等 IDN 转 punycode（golang.org/x/net/idna，BSD-3）入库，非法的丢弃；IP（v4/v6）不生成候选；扫描结果 `scan_tasks.result` 记 `icp_failures`、`skipped_ip`、`skipped_invalid`、`skipped_known_root`；已有根域及其子域（如 www.corp.test）不进候选；同批同域名重复记录证据去重。
+- 链路：厂商主体名（`vendors.company_name`）→ ICP；子公司（持股 >= 50%，只一层）→ ICP；已有根域 → ICP 反查主体 → 该主体的 ICP。ICP 返回的域名先规范化（去 `*.`、scheme、path/query、端口、末尾点，转小写），中文等 IDN 转 punycode（golang.org/x/net/idna，BSD-3）入库，非法的丢弃；IP 不生成候选（先去 scheme、userinfo、端口、路径、IPv6 zone、末尾点，再判：可解析为 IPv4/IPv6，或末级标签全数字 / 0x 十六进制，覆盖 127.1、0x7f.0.0.1、010.0.0.1 等写法）；扫描结果 `scan_tasks.result` 记 `icp_failures`、`skipped_ip`、`skipped_invalid`、`skipped_known_root`；已有根域及其子域（如 www.corp.test）不进候选；同批同域名重复记录证据去重。
 - 子公司只查导入名单里的公司（不自动展开股权链）；孙公司是否被查询，取决于导入名单里是否列入了它。
-- 子公司源可插拔；当前实现为手工导入名单 `vendor_subsidiaries`（CSV：`名称,持股百分比`，# 开头为注释，同名覆盖比例；自动去掉 UTF-8 BOM；第一行所有列都是非数字列名、且比例列是已知列名（比例/持股/持股比例/持股百分比/ratio/share/percent/percentage 等）时才视为表头跳过，否则按数据校验；比例为十进制数字，可带 `%`/`％`（如 `51 %`、`51％`），范围 0-100；任一行非法整批拒绝并报行号（API 返回 400））。
+- 子公司源可插拔；当前实现为手工导入名单 `vendor_subsidiaries`（CSV：`名称,持股百分比`，# 开头为注释，同名覆盖比例；自动去掉 UTF-8 BOM；第一行所有列都是非数字列名、且比例列是已知列名（比例/持股/持股比例/持股百分比/ratio/share/percent/percentage 等）时才视为表头跳过，否则按数据校验；比例为十进制数字，可带 `%`/`％`（如 `51 %`、`51％`），范围 0-100；任一行非法整批拒绝并报行号（API 返回 400）；没有有效数据行（空文件、只有注释或表头）也返回 400）。
 - `root_candidates`：厂商、域名、来源（icp:company / icp:subsidiary / icp:reverse，可多种）、依据（主体、备案号、子公司及比例、反查的根域）、状态（pending 待确认 / confirmed 已确认 / ignored 已忽略）、时间。
   确认写入 `root_domains`（不自动扫描）；忽略后再次扩展也不再提示。确认/忽略的操作接口在 T12/T14，当前为函数 `confirmCandidate` / `ignoreCandidate`。
 - 每次 expand 把 found / new_candidates 写入 `scan_tasks.result`。
