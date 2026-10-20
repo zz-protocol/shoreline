@@ -32,6 +32,17 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 
 第三方依赖许可见 THIRD_PARTY_LICENSES。
 
+## DNS 解析（dns 扫描）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| DNS_RESOLVERS | 223.5.5.5:53,119.29.29.29:53,1.1.1.1:53 | 逗号分隔，依次回退；无端口默认 53 |
+| DNS_TIMEOUT | 2s | 单次查询超时 |
+
+查询 A/AAAA（记录 CNAME 链）。泛解析过滤：对子域的父域（仅限根域及其子域）各探测 3 个随机子域，
+若该子域全部 IP 都落在探测得到的 IP 集合内则标记 `wildcard`，不交给 http。CDN 按 CNAME 后缀识别（阿里、腾讯、字节、网宿、Cloudflare、Akamai、CloudFront、Fastly）。
+结果写入 assets 的 ips / cnames / resolved / wildcard / cdn / resolved_at。
+
 ## Certstream
 
 | 变量 | 默认 | 说明 |
