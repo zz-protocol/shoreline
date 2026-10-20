@@ -66,7 +66,12 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 任一协议页面不相似即视为真实主机（wildcard=false、入库 URL、此时才生成新增事件）；否则标 wildcard、不入库 URL。
 
 已知局限：泛解析页本身为空或全动态时，该父域下真实主机救不回、保持 wildcard。
-短页模式：两张对照页归一化后公共词 < 5（如 nginx 默认 404、正文 "not found"）时不比 3-gram，而是：候选状态码与（一致的）对照页状态码不同 → 真实；候选正文比两张对照页中较长的一张长出 64B 以上 → 真实（对照页长度/hash 都不稳定时也适用，如 "ok"+随机字母）；对照页正文长度稳定（相差 ≤10%）时候选长度相差 > max(64B,30%) → 真实；长度不稳定但归一化 hash 相同时 hash 不同 → 真实；否则保持 wildcard。对照页状态码不一致、为空或取不到 2 页时本轮保持 wildcard。已知局限：短泛解析页下，与泛解析页同状态码且长度相近的真实主机救不回。
+短页模式（T8 封版）：每个父域每协议取 3 张随机子域对照页（失败重取 1 次），三张都返回、状态码一致、非空才可用，否则本轮该父域候选保持 wildcard。三张对照页归一化后的公共词都 < 5（如 nginx 默认 404、正文 "not found"、"ok"+随机字母）时不比 3-gram，而是：
+- 候选状态码与对照页不同 → 真实（如泛解析 404、真实主机 200）。
+- 候选与对照页同状态码时：先取回本轮全部候选再判定；同父域同状态码的候选有 2 个及以上 → 父域视为不稳定，这些候选一律保持 wildcard（长度差异大说明泛解析页在变；长度相近说明是泛解析的另一种模板）。
+- 只有 1 个同状态码候选时才用长度/hash：比最长对照页长出 max(64B,30%)，或对照页长度稳定（相差 ≤10%）而候选长度差 > max(64B,30%)，或对照页 hash 一致而候选 hash 不同 → 真实；否则保持 wildcard。
+
+已知局限（原则：宁可漏救不误放）：泛解析返回短页且与真实主机同状态码时，同一轮里只要还有其它同状态码候选（通常都有），真实主机（如 lb/blog 返回 200 长页而泛解析返回 200 短页）救不回，保持 wildcard；只有它是本轮该父域唯一的同状态码候选时才可能救回。
 若子域全部 IP 都落在泛解析 IP 集合内则标记 `wildcard`、不交给 http；有 IP 不在集合内时在剩余预算内补探（应对轮换 IP），仍未覆盖则视为真实记录。
 共用泛解析 IP 的真实主机由 T8 页面相似度进一步区分。CDN 先按 CNAME 后缀识别（阿里、腾讯、字节、网宿、Cloudflare、Akamai、CloudFront、Fastly），未命中再用 cdncheck（MIT）内置 IP 段匹配 CDN/WAF（本地匹配，不发 DNS/HTTP 请求；数据随依赖版本更新）。注意：cdncheck 包初始化时会对 [2001:4860:4860::8888]:53 做一次 UDP connect 以探测本机 IPv6（UDP connect 不发包）。
 
@@ -190,6 +195,7 @@ Streamable HTTP（无状态、JSON 响应），地址 `POST /mcp`，认证同 AP
 **DNS rebinding 防护（保留，go-sdk 默认开启）**：请求如果经回环地址（127.0.0.1 / ::1）到达后端，而 Host 头不是回环地址（如 `assets.example.com`），`/mcp` 返回 403（纯文本，非 JSON）。只影响 `/mcp`，`/api/*` 不受影响。反代部署：
 - 反代与后端同机、后端监听 `ADDR=127.0.0.1:8080`：反代转发时把 Host 设为上游地址，nginx 用默认的 `proxy_set_header Host $proxy_host;`（即 `127.0.0.1:8080`），**不要**设成 `$host`；Caddy `reverse_proxy` 需加 `header_up Host {upstream_hostport}`。
 - 反代与后端不同机（后端监听内网地址如 `10.0.0.5:8080`）：请求不经回环，防护不触发，Host 可原样透传。
+- docker compose：前端 nginx（`frontend/nginx.conf` 的 `location /mcp`）经 compose 内网转发到 `backend:8080`，请求不经回环地址，**DNS rebinding 防护在这条路径上不生效**，由 Bearer token 认证兜底（宿主端口仍只绑定 127.0.0.1）。nginx 保持默认 `Host $proxy_host`、`proxy_http_version 1.1`、`proxy_buffering off`。
 - 不要为此关闭防护；客户端直连本机时用 `http://127.0.0.1:8080/mcp` 或 `http://localhost:8080/mcp`。
 
 业务错误返回工具结果 `isError: true`，文本 `{"error":"..."}`。curl 示例：

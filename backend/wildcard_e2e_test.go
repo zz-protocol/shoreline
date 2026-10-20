@@ -183,8 +183,8 @@ func TestControlPageFailure(t *testing.T) {
 		lbRescued bool
 		ctrlReqs  int64
 	}{
-		{"首个对照页失败、重取成功", 1, true, 3},
-		{"对照页一直失败", 1 << 30, false, 3},
+		{"首个对照页失败、重取成功", 1, true, 4},
+		{"对照页一直失败", 1 << 30, false, 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newTestEnv(t)
@@ -302,6 +302,7 @@ func TestShortWildcardPage(t *testing.T) {
 		status int
 		body   func() string
 	}{
+		// 404 场景：lb/blog 状态码不同，必须救回；200 场景：同状态码短页，按"宁可漏救"不要求救回（只要求 0 假资产）
 		{"nginx404", 404, func() string { return nginx404 }},
 		{"notfound404", 404, func() string { return "not found" }},
 		{"short200", 200, func() string { return "ok" }},
@@ -359,10 +360,89 @@ func TestShortWildcardPage(t *testing.T) {
 				(SELECT count(*) FROM urls WHERE host LIKE 'fake%.short.test'),
 				(SELECT count(*) FROM assets WHERE subdomain LIKE 'fake%.short.test' AND wildcard),
 				(SELECT count(*) FROM assets WHERE subdomain IN ('lb.short.test', 'blog.short.test') AND wildcard)`).Scan(&realURLs, &fakeURLs, &wildFakes, &realWild)
-			if realURLs != 2 || realWild != 0 || fakeURLs != 0 || wildFakes != 20 {
+			wantReal := 0
+			if tc.status != 200 {
+				wantReal = 2
+			}
+			if realURLs != wantReal || realWild != 2-wantReal || fakeURLs != 0 || wildFakes != 20 {
 				t.Fatalf("%s: real urls=%d real wildcard=%d fake urls=%d fake wildcard=%d/20", tc.name, realURLs, realWild, fakeURLs, wildFakes)
 			}
-			t.Logf("%s：lb/blog 救回（urls=%d），假主机 urls=%d wildcard=%d/20", tc.name, realURLs, fakeURLs, wildFakes)
+			t.Logf("%s：lb/blog urls=%d（救回 %d/2），假主机 urls=%d wildcard=%d/20", tc.name, realURLs, 2-realWild, fakeURLs, wildFakes)
+		})
+	}
+}
+
+// T8 封版反例：对照页都短，假主机返回长页（随机长度 / 同一长度 / 与对照交替 / 随机长短），45 个假主机 + lb，每种跑 15 轮：0 假资产。
+func TestShortControlsLongFakes(t *testing.T) {
+	long := func(n int) string {
+		return "<html><body>" + strings.Repeat("welcome to our parking page ", n) + "</body></html>"
+	}
+	modes := map[string]func(host string, i int64) (int, string){
+		"随机长度长页": func(_ string, _ int64) (int, string) { return 200, long(10 + mrand.Intn(40)) },
+		"同一长度长页": func(_ string, _ int64) (int, string) { return 200, long(20) },
+		"短长交替": func(_ string, i int64) (int, string) {
+			if i%2 == 0 {
+				return 200, "ok"
+			}
+			return 200, long(20)
+		},
+		"随机长短": func(_ string, _ int64) (int, string) {
+			if mrand.Intn(2) == 0 {
+				return 200, "ok" + strings.Repeat("x", mrand.Intn(8))
+			}
+			return 200, long(5 + mrand.Intn(40))
+		},
+	}
+	for name, mode := range modes {
+		t.Run(name, func(t *testing.T) {
+			lbSaved := 0
+			e := newTestEnv(t)
+			ctx := context.Background()
+			for round := 0; round < 15; round++ {
+				var n atomic.Int64
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					host, _, _ := net.SplitHostPort(r.Host)
+					if host == "" {
+						host = r.Host
+					}
+					switch {
+					case strings.HasPrefix(host, "wc-"):
+						fmt.Fprint(w, "ok"+strings.Repeat("y", mrand.Intn(8))) // 对照页都短
+					case strings.HasPrefix(host, "lb."):
+						fmt.Fprint(w, lbPage)
+					default:
+						code, body := mode(host, n.Add(1))
+						w.WriteHeader(code)
+						fmt.Fprint(w, body)
+					}
+				}))
+				cfg, _ := httpConfigFromEnv()
+				cfg.RPS, cfg.VerifyRPS, cfg.Schemes, cfg.Timeout = 1000, 1000, []string{"http"}, 2*time.Second
+				cfg.Dial = func(string) string { return srv.Listener.Addr().String() }
+				hosts := []string{"lb.lf.test"}
+				for i := 0; i < 45; i++ {
+					hosts = append(hosts, fmt.Sprintf("fake%02d.lf.test", i))
+				}
+				for i, h := range hosts {
+					e.pool.Exec(ctx, `INSERT INTO assets (root_id, subdomain, resolved, wildcard, parent_wildcard) VALUES ($1, $2, true, $3, true)`, e.rootID, h, i%3 != 0)
+				}
+				if _, err := httpHandler(e.pool, newProber(cfg))(ctx, 0, hosts); err != nil {
+					t.Fatal(err)
+				}
+				var fakeURLs, fakeWild, lbURLs int
+				e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM urls WHERE host LIKE 'fake%.lf.test'),
+					(SELECT count(*) FROM assets WHERE subdomain LIKE 'fake%.lf.test' AND wildcard),
+					(SELECT count(*) FROM urls WHERE host = 'lb.lf.test')`).Scan(&fakeURLs, &fakeWild, &lbURLs)
+				srv.Close()
+				e.pool.Exec(context.Background(), `DELETE FROM assets WHERE subdomain LIKE '%.lf.test'`)
+				if fakeURLs != 0 || fakeWild != 45 {
+					t.Fatalf("round %d: fake urls=%d wildcard=%d/45", round, fakeURLs, fakeWild)
+				}
+				if lbURLs > 0 {
+					lbSaved++
+				}
+			}
+			t.Logf("%s：15 轮假资产 0（假主机 wildcard 45/45）；lb 救回 %d/15", name, lbSaved)
 		})
 	}
 }

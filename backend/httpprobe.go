@@ -294,13 +294,18 @@ type wildcardTemplate struct {
 	sample   *probeResult
 	template []string
 	allowed  int
-	// 短页模式（模板公共词 < minTemplateWords）：候选状态码与对照页不同 → 真实；
-	// 两张对照页 hash 相同时，候选 hash 不同 → 真实；只有长度接近时，候选长度明显不同 → 真实；其余按泛解析。
+	// 短页模式（三张对照页公共词都 < minTemplateWords）：候选状态码与对照页不同 → 真实；
+	// 其余（同状态码）只在本轮同父域候选长度稳定时才用长度/hash 判真实，否则一律按泛解析（宁可漏救不误放）。
 	short                 bool
 	hash                  string
 	length                int
 	stableHash, stableLen bool
-	maxLen                int // 两张短对照页中较长的正文长度
+	maxLen                int // 三张短对照页中最长的正文长度
+}
+
+// lenDiffers：长度差超过 max(64B, 30%)。
+func lenDiffers(a, b int) bool {
+	return abs(a-b) > max(64, max(a, b)*3/10)
 }
 
 // pageHash 规范化后（去主机名与动态 token）的词序列 hash。
@@ -329,9 +334,9 @@ func (t *wildcardTemplate) similarity(r *probeResult) float64 {
 	if t.short {
 		// 对照页长度稳定时以长度为准（hash 可能因归一化后残留的随机片段而抖动）；仅 hash 稳定时才比 hash。
 		switch {
-		case bodyLen(r) > t.maxLen+64: // 比两张短对照页中较长的一张还长出 64B 以上：判真实（对照页长度/hash 都不稳定时也适用）
+		case bodyLen(r) > t.maxLen+max(64, t.maxLen*3/10): // 比最长的短对照页还长出 max(64B,30%)：判真实
 			return 0
-		case t.stableLen && abs(bodyLen(r)-t.length) > max(64, t.length*3/10):
+		case t.stableLen && lenDiffers(bodyLen(r), t.length):
 			return 0
 		case !t.stableLen && t.stableHash && pageHash(r) != t.hash:
 			return 0
@@ -355,6 +360,30 @@ type pageCache struct {
 	mu sync.Mutex
 	m  map[string]*wildcardTemplate
 	ok map[string]bool
+	// cands：本轮各 parent+scheme 的候选页面（先全部取回再判定），用于判断候选之间长度是否稳定。
+	cands map[string][]*probeResult
+}
+
+func pageKey(r *probeResult) (key, parent string, ok bool) {
+	dot := strings.IndexByte(r.Host, '.')
+	if dot < 0 {
+		return "", "", false
+	}
+	return r.Scheme + "://" + r.Host[dot+1:], r.Host[dot+1:], true
+}
+
+// candidatesUnstable：短页模式下本轮同父域、与对照页同状态码的候选有 2 条及以上时，父域视为不稳定：
+// 长度差异大（交替/随机）说明泛解析页本身不稳定；长度相近说明它们是泛解析的另一种模板。两种情况一律保持 wildcard。
+func (c *pageCache) candidatesUnstable(key string, status int) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, r := range c.cands[key] {
+		if r.Status == status {
+			n++
+		}
+	}
+	return n >= 2
 }
 
 func (p *prober) randomPage(ctx context.Context, scheme, parent string) *probeResult {
@@ -379,42 +408,60 @@ func (p *prober) controlTemplate(ctx context.Context, c *pageCache, scheme, pare
 	}
 	c.ok[key] = true
 	var pages []*probeResult
-	for tries := 0; tries < 3 && len(pages) < 2; tries++ { // 2 页 + 失败时重取 1 次
+	for tries := 0; tries < 4 && len(pages) < 3; tries++ { // 3 页 + 失败时重取 1 次
 		if r := p.randomPage(ctx, scheme, parent); r != nil {
 			pages = append(pages, r)
 		}
 	}
-	if len(pages) < 2 {
+	if len(pages) < 3 {
 		return nil, true
 	}
-	a, b := pages[0], pages[1]
-	wa, wb := pageWords(a), pageWords(b)
-	tpl := lcs(wa, wb)
-	redirectOnly := len(wa) == 0 && len(wb) == 0 && a.Redirect != "" && sameRedirect(a, b) == 1
-	if a.Status != b.Status || (len(a.body) == 0 || len(b.body) == 0) && !redirectOnly {
-		return nil, true // 对照页不可用（状态码不一致、空页）：不放行，候选保持 wildcard 留待下轮
+	a := pages[0]
+	var words [][]string
+	tpl := pageWords(a)
+	redirectOnly := true
+	maxWords := 0
+	for _, pg := range pages {
+		w := pageWords(pg)
+		words = append(words, w)
+		tpl = lcs(tpl, w)
+		maxWords = max(maxWords, len(w))
+		redirectOnly = redirectOnly && len(w) == 0 && pg.Redirect != "" && sameRedirect(pg, a) == 1
+	}
+	for _, pg := range pages {
+		if pg.Status != a.Status || len(pg.body) == 0 && !redirectOnly {
+			return nil, true // 对照页不可用（状态码不一致、空页）：不放行，候选保持 wildcard 留待下轮
+		}
 	}
 	if len(tpl) < minTemplateWords && !redirectOnly {
-		// 模板太短（如 nginx 默认 404、"not found"）：改用短页模式，见 wildcardTemplate.short
-		ha, hb := pageHash(a), pageHash(b)
-		la, lb := bodyLen(a), bodyLen(b)
-		c.m[key] = &wildcardTemplate{sample: a, short: true, hash: ha, length: la, maxLen: max(la, lb),
-			stableHash: ha == hb, stableLen: abs(la-lb) <= max(la, lb)/10}
-		return c.m[key], false
+		// 三张对照页的公共模板都太短（如 nginx 默认 404、"not found"）：短页模式，见 wildcardTemplate.short
+		t := &wildcardTemplate{sample: a, short: true, hash: pageHash(a), length: bodyLen(a), stableHash: true}
+		lo, hi := bodyLen(a), bodyLen(a)
+		for _, pg := range pages {
+			l := bodyLen(pg)
+			lo, hi = min(lo, l), max(hi, l)
+			t.stableHash = t.stableHash && pageHash(pg) == t.hash
+		}
+		t.maxLen, t.stableLen = hi, hi-lo <= hi/10
+		c.m[key] = t
+		return t, false
 	}
-	c.m[key] = &wildcardTemplate{sample: a, template: tpl, allowed: max(len(wa), len(wb)) - len(tpl)}
+	c.m[key] = &wildcardTemplate{sample: a, template: tpl, allowed: maxWords - len(tpl)}
 	return c.m[key], false
 }
 
 // isWildcardPage：结果与同 scheme 的父域泛解析模板相似度 >= 阈值；对照页不足 2 页时按泛解析处理（保持 wildcard）。
 func (p *prober) isWildcardPage(ctx context.Context, c *pageCache, r *probeResult) bool {
-	dot := strings.IndexByte(r.Host, '.')
-	if dot < 0 {
+	key, parent, ok := pageKey(r)
+	if !ok {
 		return false
 	}
-	t, insufficient := p.controlTemplate(ctx, c, r.Scheme, r.Host[dot+1:])
+	t, insufficient := p.controlTemplate(ctx, c, r.Scheme, parent)
 	if insufficient {
 		return true
+	}
+	if t.short && r.Status == t.sample.Status && c.candidatesUnstable(key, t.sample.Status) {
+		return true // 短页模式下本轮候选之间长度差异很大：父域不稳定，同状态码候选一律保持 wildcard
 	}
 	return t.similarity(r) >= p.cfg.Similarity
 }
@@ -425,7 +472,7 @@ func (p *prober) isWildcardPage(ctx context.Context, c *pageCache, r *probeResul
 // （wildcard=false、入库 URL、生成新增），否则标 wildcard、不入库 URL。超出上限的候选直接标 wildcard。
 func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 	return func(ctx context.Context, scanID int64, hosts []string) ([]string, error) {
-		cache := &pageCache{m: map[string]*wildcardTemplate{}, ok: map[string]bool{}}
+		cache := &pageCache{m: map[string]*wildcardTemplate{}, ok: map[string]bool{}, cands: map[string][]*probeResult{}}
 		type item struct {
 			host      string
 			assetID   int64
@@ -460,12 +507,14 @@ func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 			}
 			mu.Unlock()
 		}
+		// 第一阶段：并发取回全部页面（非候选直接入库）；候选页面先收集，供第二阶段判断同父域候选是否稳定。
 		sem := make(chan struct{}, p.cfg.Concurrency)
 		var wg sync.WaitGroup
-		for _, it := range items {
+		got := make([][]*probeResult, len(items))
+		for i, it := range items {
 			wg.Add(1)
 			sem <- struct{}{}
-			go func(it item) {
+			go func(i int, it item) {
 				defer wg.Done()
 				defer func() { <-sem }()
 				lim := p.limiter
@@ -473,13 +522,40 @@ func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 					lim = p.verify
 				}
 				results := p.probeHost(ctx, lim, it.host)
-				if len(results) == 0 {
+				if !it.candidate {
+					for _, r := range results {
+						if err := p.storeURL(ctx, d, it.assetID, r); err != nil {
+							fail(err)
+						}
+					}
 					return
 				}
-				if it.candidate {
+				got[i] = results
+				cache.mu.Lock()
+				for _, r := range results {
+					if key, _, ok := pageKey(r); ok {
+						cache.cands[key] = append(cache.cands[key], r)
+					}
+				}
+				cache.mu.Unlock()
+			}(i, it)
+		}
+		wg.Wait()
+		// 第二阶段：逐个判定候选。
+		for i, it := range items {
+			results := got[i]
+			if !it.candidate || len(results) == 0 {
+				continue
+			}
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(it item, results []*probeResult) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				{
 					allWild := true
 					for _, r := range results {
-						allWild = allWild && p.isWildcardPage(ctx, cache, r)
+						allWild = p.isWildcardPage(ctx, cache, r) && allWild
 					}
 					_, err := d.Exec(ctx, `UPDATE assets SET wildcard = $2, parent_wildcard = $2,
 						verified_real_at = CASE WHEN $2 THEN NULL ELSE now() END WHERE id = $1`, it.assetID, allWild)
@@ -498,7 +574,7 @@ func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 						fail(err)
 					}
 				}
-			}(it)
+			}(it, results)
 		}
 		wg.Wait()
 		return nil, firstErr
