@@ -80,7 +80,7 @@ func TestImportSubsidiaries(t *testing.T) {
 	if want := []Subsidiary{{"子公司乙", 30}, {"子公司甲", 65}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
-	for _, bad := range []string{"x,101\n", "x,-1\n", "x,abc\n", ",50\n", "x\n", "x,NaN\n"} {
+	for _, bad := range []string{"x,101\n", "x,-1\n", "y,10\nx,abc\n", ",50\n", "x\n", "x,NaN\n"} {
 		if _, err := importSubsidiaries(ctx, e.pool, vendorID, strings.NewReader(bad)); err == nil {
 			t.Fatalf("accepted %q", bad)
 		}
@@ -259,4 +259,111 @@ func TestCandidateOtherVendorReassignAndICPFailures(t *testing.T) {
 		t.Fatalf("fails=%d err=%v", fails, err)
 	}
 	t.Logf("证据厂商 %v，改归属 %d→%d 成功，非 pending 改归属被拒；ICP 失败次数 %d", vendors, v1, v2, fails)
+}
+
+// T11 打回 1/5：ICP 域名规范化、非法拒绝、已有根域及其子域丢弃、同批重复证据去重。
+func TestICPDomainNormalizeAndDedup(t *testing.T) {
+	cases := map[string]string{
+		"*.Corp-X.test": "corp-x.test", "https://Shop.Corp-X.test:8443/path?a=1": "shop.corp-x.test",
+		"http://user@a.test/": "a.test", "  B.TEST.  ": "b.test", "c.test:80": "c.test",
+		"bad_domain.test": "", "nodot": "", "": "", "http://": "", "a..test": "", "-a.test": "",
+	}
+	for in, want := range cases {
+		got, ok := normalizeICPDomain(in)
+		if (want == "") == ok || (ok && got != want) {
+			t.Fatalf("%q → %q %v, want %q", in, got, ok, want)
+		}
+	}
+	src := stubICP{company: map[string][]ICPRecord{"甲": {
+		{"*.New-A.test", "甲", "L1"}, {"https://new-a.test/x", "甲", "L1"}, {"NEW-A.test", "甲", "L1"}, // 规范化后同一条，证据去重
+		{"new-a.test", "甲", "L2"},                                  // 备案号不同，保留
+		{"www.corp.test", "甲", "L1"}, {"corp.test:443", "甲", "L1"}, // 已有根域及其子域：丢弃
+		{"bad_domain", "甲", "L1"}, {"http://", "甲", "L1"}, // 非法：丢弃
+	}}}
+	found, fails, err := expandVendor(context.Background(), src, nil, 1, "甲", []string{"corp.test"})
+	if err != nil || fails != 0 {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || len(found["new-a.test"]) != 2 {
+		t.Fatalf("found %v", found)
+	}
+	t.Logf("规范化 %d 例通过；候选 %v", len(cases), found)
+}
+
+type stubICP struct{ company map[string][]ICPRecord }
+
+func (s stubICP) ByCompany(_ context.Context, c string) ([]ICPRecord, error) {
+	return s.company[c], nil
+}
+func (s stubICP) ByDomain(context.Context, string) ([]ICPRecord, error) { return nil, nil }
+
+// 已是其它厂商根域的子域，入库层也丢弃。
+func TestStoreCandidatesSkipsSubdomainOfAnyRoot(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	root := ""
+	e.pool.QueryRow(ctx, `SELECT domain FROM root_domains WHERE id = $1`, e.rootID).Scan(&root)
+	n, err := storeCandidates(ctx, e.pool, e.vendorID(), map[string][]candidate{"www." + root: {{"icp:company", map[string]any{}}}, root: {{"icp:company", map[string]any{}}}})
+	if err != nil || n != 0 {
+		t.Fatalf("stored %d %v", n, err)
+	}
+}
+
+// T11 打回 2：ICP_API_URL/KEY 含控制字符启动拒绝（main 中 log.Fatal → exit 1）。
+func TestICPEnvControlChars(t *testing.T) {
+	for _, c := range []struct{ url, key string }{{"http://icp.local/q\n", ""}, {"http://icp.local/q", "k\r\nX-Evil: 1"}, {"http://icp.local/\tq", ""}} {
+		t.Setenv("ICP_API_URL", c.url)
+		t.Setenv("ICP_API_KEY", c.key)
+		if _, err := icpSourceFromEnv(); err == nil {
+			t.Fatalf("accepted %q %q", c.url, c.key)
+		}
+	}
+}
+
+// T11 打回 3：CSV 去 BOM、首行表头跳过。
+func TestImportSubsidiariesBOMHeader(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	v := e.vendorID()
+	n, err := importSubsidiaries(ctx, e.pool, v, strings.NewReader("\ufeff名称,持股比例\n子公司甲,60\n子公司乙,30%\n"))
+	if err != nil || n != 2 {
+		t.Fatalf("%d %v", n, err)
+	}
+	var names []string
+	rows, _ := e.pool.Query(ctx, `SELECT name || '=' || ratio::text FROM vendor_subsidiaries WHERE vendor_id = $1 ORDER BY name`, v)
+	names, _ = pgxCollectStrings(rows)
+	if strings.Join(names, ",") != "子公司乙=30.00,子公司甲=60.00" {
+		t.Fatalf("%v", names)
+	}
+	if _, err := importSubsidiaries(ctx, e.pool, v, strings.NewReader("子公司丙,60\n子公司丁,abc\n")); err == nil {
+		t.Fatal("non-numeric ratio on line 2 accepted")
+	}
+	n, err = importSubsidiaries(ctx, e.pool, v, strings.NewReader("\ufeff子公司丙,55\n"))
+	if err != nil || n != 1 {
+		t.Fatalf("BOM without header: %d %v", n, err)
+	}
+	t.Logf("BOM+表头 → 导入 %v；无表头带 BOM 首行为数据 → 1 行", names)
+}
+
+// T11 打回 4：pending 期间域名成了别厂商根域，函数层 confirm 返回错误，候选保持 pending。
+func TestConfirmCandidateTakenFunction(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	v := e.vendorID()
+	var v2, id int64
+	e.pool.QueryRow(ctx, `INSERT INTO vendors (name) VALUES ('t11-taken-other') RETURNING id`).Scan(&v2)
+	t.Cleanup(func() {
+		e.pool.Exec(context.Background(), `DELETE FROM root_candidates WHERE domain = 't11taken.test'`)
+		e.pool.Exec(context.Background(), `DELETE FROM vendors WHERE id = $1`, v2)
+	})
+	storeCandidates(ctx, e.pool, v, map[string][]candidate{"t11taken.test": {{"icp:company", map[string]any{}}}})
+	e.pool.QueryRow(ctx, `SELECT id FROM root_candidates WHERE domain = 't11taken.test'`).Scan(&id)
+	e.pool.Exec(ctx, `INSERT INTO root_domains (vendor_id, domain) VALUES ($1, 't11taken.test')`, v2)
+	err := confirmCandidate(ctx, e.pool, id)
+	var st string
+	e.pool.QueryRow(ctx, `SELECT status FROM root_candidates WHERE id = $1`, id).Scan(&st)
+	if !errors.Is(err, errRootTaken) || st != "pending" {
+		t.Fatalf("err %v status %s", err, st)
+	}
+	t.Logf("confirm → %v；候选 %s", err, st)
 }

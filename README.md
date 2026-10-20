@@ -147,12 +147,13 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | ICP_API_URL | 空（跳过扩展） | 通用 HTTP JSON ICP 接口地址，须 http/https；非法值启动即退出 |
-| ICP_API_KEY | 空 | 有值时请求带 `Authorization: Bearer <key>` |
+| ICP_API_KEY | 空 | 有值时请求带 `Authorization: Bearer <key>`；URL/KEY 含控制字符启动即退出（exit 1） |
 | RATE_EXPAND | 1 | expand 任务速率（任务/秒，同 RATE_*） |
 
 - ICP 接口约定：`GET <ICP_API_URL>?company=<主体名>` 或 `?domain=<域名>`，响应 `{"records":[{"domain":"...","company":"...","license":"备案号"}]}`。对接具体服务商时需按此约定加一层转换。
-- 链路：厂商主体名（`vendors.company_name`）→ ICP；子公司（持股 >= 50%，只一层）→ ICP；已有根域 → ICP 反查主体 → 该主体的 ICP。已是根域的不进候选。
-- 子公司源可插拔；当前实现为手工导入名单 `vendor_subsidiaries`（CSV：`名称,持股百分比`，# 开头为注释，同名覆盖比例）。
+- 链路：厂商主体名（`vendors.company_name`）→ ICP；子公司（持股 >= 50%，只一层）→ ICP；已有根域 → ICP 反查主体 → 该主体的 ICP。ICP 返回的域名先规范化（去 `*.`、scheme、path/query、端口、末尾点，转小写），非法的丢弃；已有根域及其子域（如 www.corp.test）不进候选；同批同域名重复记录证据去重。
+- 子公司只查导入名单里的公司（不自动展开股权链）；孙公司是否被查询，取决于导入名单里是否列入了它。
+- 子公司源可插拔；当前实现为手工导入名单 `vendor_subsidiaries`（CSV：`名称,持股百分比`，# 开头为注释，同名覆盖比例；自动去掉 UTF-8 BOM；首行比例列不是数字时视为表头跳过）。
 - `root_candidates`：厂商、域名、来源（icp:company / icp:subsidiary / icp:reverse，可多种）、依据（主体、备案号、子公司及比例、反查的根域）、状态（pending 待确认 / confirmed 已确认 / ignored 已忽略）、时间。
   确认写入 `root_domains`（不自动扫描）；忽略后再次扩展也不再提示。确认/忽略的操作接口在 T12/T14，当前为函数 `confirmCandidate` / `ignoreCandidate`。
 - 每次 expand 把 found / new_candidates 写入 `scan_tasks.result`。

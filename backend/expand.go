@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -59,10 +60,55 @@ func icpSourceFromEnv() (ICPSource, error) {
 	if base == "" {
 		return nil, nil // 未配置：跳过 ICP 扩展
 	}
+	if hasControl(base) || hasControl(os.Getenv("ICP_API_KEY")) {
+		return nil, fmt.Errorf("ICP_API_URL/ICP_API_KEY must not contain control characters")
+	}
 	if u, err := url.Parse(base); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, fmt.Errorf("ICP_API_URL: invalid %q", base)
 	}
 	return &httpICP{base: base, key: os.Getenv("ICP_API_KEY"), client: &http.Client{Timeout: 30 * time.Second}}, nil
+}
+
+func hasControl(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeICPDomain 规范化 ICP 返回的域名：去 scheme、path/query、端口、"*."、末尾点，转小写；非法返回 false。
+func normalizeICPDomain(s string) (string, bool) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	if i := strings.LastIndexByte(s, '@'); i >= 0 {
+		s = s[i+1:]
+	}
+	if i := strings.IndexByte(s, ':'); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimSuffix(strings.TrimPrefix(s, "*."), ".")
+	return s, validDomain(s)
+}
+
+// underRoot：d 是某个根域本身或其子域。
+func underRoot(d string, roots map[string]bool) bool {
+	for {
+		if roots[d] {
+			return true
+		}
+		i := strings.IndexByte(d, '.')
+		if i < 0 {
+			return false
+		}
+		d = d[i+1:]
+	}
 }
 
 func (h *httpICP) query(ctx context.Context, param, value string) ([]ICPRecord, error) {
@@ -119,7 +165,11 @@ func (s dbSubsidiaries) Subsidiaries(ctx context.Context, vendorID int64, _ stri
 
 // importSubsidiaries 手工导入子公司名单：CSV 每行 "名称,持股百分比(0-100)"，# 开头为注释；同名覆盖比例。返回导入行数。
 func importSubsidiaries(ctx context.Context, d *pgxpool.Pool, vendorID int64, r io.Reader) (int, error) {
-	cr := csv.NewReader(r)
+	br := bufio.NewReader(r)
+	if b, err := br.Peek(3); err == nil && string(b) == "\xef\xbb\xbf" { // 去 UTF-8 BOM
+		br.Discard(3)
+	}
+	cr := csv.NewReader(br)
 	cr.Comment = '#'
 	cr.FieldsPerRecord = 2
 	cr.TrimLeadingSpace = true
@@ -134,6 +184,11 @@ func importSubsidiaries(ctx context.Context, d *pgxpool.Pool, vendorID int64, r 
 	var rows []row
 	for i, rec := range recs {
 		name := strings.TrimSpace(rec[0])
+		if i == 0 { // 首行比例列不是数字：视为表头跳过
+			if _, err := strconv.ParseFloat(strings.TrimSuffix(strings.TrimSpace(rec[1]), "%"), 64); err != nil {
+				continue
+			}
+		}
 		ratio, err := strconv.ParseFloat(strings.TrimSuffix(strings.TrimSpace(rec[1]), "%"), 64)
 		if name == "" || err != nil || ratio < 0 || ratio > 100 || ratio != ratio {
 			return 0, fmt.Errorf("line %d: invalid %q", i+1, strings.Join(rec, ","))
@@ -169,16 +224,22 @@ func expandVendor(ctx context.Context, icp ICPSource, subs SubsidiarySource, ven
 	}
 	var errs []error
 	icpFails := 0
+	seen := map[string]bool{}
 	add := func(recs []ICPRecord, source string, extra map[string]any) {
 		for _, rec := range recs {
-			dom := normalizeHost(rec.Domain)
-			if dom == "" || !strings.Contains(dom, ".") || isRoot[dom] {
+			dom, ok := normalizeICPDomain(rec.Domain)
+			if !ok || underRoot(dom, isRoot) { // 非法，或已有根域及其子域：丢弃
 				continue
 			}
 			ev := map[string]any{"via": source, "company": rec.Company, "license": rec.License}
 			for k, v := range extra {
 				ev[k] = v
 			}
+			key, _ := json.Marshal([]any{source, ev})
+			if seen[dom+"\x00"+string(key)] { // 同批同域名重复记录：证据去重
+				continue
+			}
+			seen[dom+"\x00"+string(key)] = true
 			out[dom] = append(out[dom], candidate{source, ev})
 		}
 	}
@@ -254,7 +315,7 @@ func storeCandidates(ctx context.Context, d *pgxpool.Pool, vendorID int64, found
 		var inserted bool
 		err := d.QueryRow(ctx, `INSERT INTO root_candidates (vendor_id, domain, sources, evidence)
 			SELECT $1, $2, ARRAY(SELECT DISTINCT unnest($3::text[]) ORDER BY 1), $4
-			WHERE NOT EXISTS (SELECT 1 FROM root_domains WHERE domain = $2)
+			WHERE NOT EXISTS (SELECT 1 FROM root_domains WHERE domain = $2 OR right($2, length(domain) + 1) = '.' || domain)
 			ON CONFLICT (domain) DO UPDATE SET
 				sources = ARRAY(SELECT DISTINCT unnest(root_candidates.sources || EXCLUDED.sources) ORDER BY 1),
 				evidence = (SELECT jsonb_agg(DISTINCT e) FROM jsonb_array_elements(root_candidates.evidence || EXCLUDED.evidence) e),
