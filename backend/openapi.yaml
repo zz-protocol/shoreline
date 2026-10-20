@@ -226,6 +226,26 @@ paths:
         - {$ref: "#/components/parameters/limit"}
         - {$ref: "#/components/parameters/cursor"}
       responses: {"200": {description: "{items: Asset[], next_cursor}"}, "400": {$ref: "#/components/responses/Error"}}
+  /api/check-scope:
+    get:
+      summary: 范围检查（与 MCP check_scope 同一实现、输出一致）
+      parameters: [{name: host, in: query, required: true, schema: {type: string}, description: 主机名，大小写/末尾点忽略}]
+      responses:
+        "200":
+          description: 归属与范围
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  host: {type: string}
+                  in_scope: {type: boolean}
+                  vendor_id: {type: integer, nullable: true}
+                  vendor: {type: string, nullable: true}
+                  root_domain: {type: string, nullable: true, description: 最长匹配的根域}
+                  matched_rules: {type: array, items: {type: object, properties: {id: {type: integer}, kind: {type: string}, pattern: {type: string}}}}
+                  asset_id: {type: integer, nullable: true, description: 已是资产时的 id}
+        "400": {$ref: "#/components/responses/Error"}
   /api/assets/{id}:
     get:
       summary: 资产详情（含 urls）

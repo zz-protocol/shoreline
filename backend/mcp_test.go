@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -160,4 +161,55 @@ func TestMCPTools(t *testing.T) {
 		kinds = append(kinds, fmt.Sprintf("%s#%v", k, out["id"]))
 	}
 	t.Logf("trigger_scan：dns/http/nope 拒绝；active 未开关拒绝；开启后 %v 入队 pending", kinds)
+}
+
+// GET /api/check-scope 与 MCP check_scope 输出一致；非法 host 400；需认证。
+func TestCheckScopeRESTMatchesMCP(t *testing.T) {
+	e, c, _ := newAPITest(t, 500)
+	ctx := context.Background()
+	v := e.vendorID()
+	root := ""
+	e.pool.QueryRow(ctx, `SELECT domain FROM root_domains WHERE id = $1`, e.rootID).Scan(&root)
+	e.pool.Exec(ctx, `INSERT INTO scope_rules (vendor_id, kind, pattern) VALUES ($1, 'include', $2), ($1, 'exclude', $3)`, v, "*."+root, "admin."+root)
+	e.pool.Exec(ctx, `INSERT INTO assets (root_id, subdomain, in_scope) VALUES ($1, $2, true)`, e.rootID, "www."+root)
+	s, err := mcpSession(t, c.srv.URL, testBootstrap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, host := range []string{"WWW." + root + ".", "new.deep." + root, "admin." + root, root, "nobody-here.test"} {
+		rest := c.want(200, "GET", "/api/check-scope?host="+host, nil)
+		viaMCP, isErr := callTool(t, s, "check_scope", map[string]any{"host": host})
+		if isErr || !reflect.DeepEqual(rest, viaMCP) {
+			t.Fatalf("%s: rest %v mcp %v", host, rest, viaMCP)
+		}
+		t.Logf("%s → in_scope=%v root=%v rules=%d asset=%v（REST=MCP）", host, rest["in_scope"], rest["root_domain"], len(rest["matched_rules"].([]any)), rest["asset_id"])
+	}
+	for _, bad := range []string{"", "nodot", "a%20b.test", "bad_host.test", "-a.test", "a..test", "%00.test", "*.a.test", "http://a.test"} {
+		out := c.want(400, "GET", "/api/check-scope?host="+bad, nil)
+		t.Logf("host=%q → 400 %v", bad, out["error"])
+	}
+	(&apiClient{t: t, srv: c.srv}).want(401, "GET", "/api/check-scope?host="+root, nil)
+}
+
+// DNS rebinding 防护：经回环地址到达、Host 非回环 → 403；Host 为回环 → 正常。
+func TestMCPRebindingProtection(t *testing.T) {
+	_, c, _ := newAPITest(t, 500)
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
+	for host, want := range map[string]int{"evil.example.com": 403, "assets.example.com:443": 403, "127.0.0.1:8080": 200, "localhost": 200} {
+		req, _ := http.NewRequest("POST", c.srv.URL+"/mcp", strings.NewReader(body))
+		req.Host = host
+		req.Header.Set("Authorization", "Bearer "+testBootstrap)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Fatalf("Host %s: %d want %d", host, resp.StatusCode, want)
+		}
+		t.Logf("经 127.0.0.1 到达，Host=%s → %d", host, resp.StatusCode)
+	}
 }

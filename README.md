@@ -185,6 +185,13 @@ Streamable HTTP（无状态、JSON 响应），地址 `POST /mcp`，认证同 AP
 | check_scope | host | 归属厂商/根域（最长匹配）、in_scope、命中规则、已知资产 id；不要求已是资产 |
 | trigger_scan | root_id, kind | kind 只允许 passive/active/expand；active 需厂商开关 |
 
+`GET /api/check-scope?host=` 与 `check_scope` 共用同一实现，输出一致（非法 host 400）。
+
+**DNS rebinding 防护（保留，go-sdk 默认开启）**：请求如果经回环地址（127.0.0.1 / ::1）到达后端，而 Host 头不是回环地址（如 `assets.example.com`），`/mcp` 返回 403（纯文本，非 JSON）。只影响 `/mcp`，`/api/*` 不受影响。反代部署：
+- 反代与后端同机、后端监听 `ADDR=127.0.0.1:8080`：反代转发时把 Host 设为上游地址，nginx 用默认的 `proxy_set_header Host $proxy_host;`（即 `127.0.0.1:8080`），**不要**设成 `$host`；Caddy `reverse_proxy` 需加 `header_up Host {upstream_hostport}`。
+- 反代与后端不同机（后端监听内网地址如 `10.0.0.5:8080`）：请求不经回环，防护不触发，Host 可原样透传。
+- 不要为此关闭防护；客户端直连本机时用 `http://127.0.0.1:8080/mcp` 或 `http://localhost:8080/mcp`。
+
 业务错误返回工具结果 `isError: true`，文本 `{"error":"..."}`。curl 示例：
 
 ```

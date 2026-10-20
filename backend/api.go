@@ -74,6 +74,7 @@ func (a *api) routes() map[string]http.HandlerFunc {
 		"POST /api/root-candidates/{id}/reassign":   a.reassignCand,
 		"GET /api/scope-tasks/{id}":                 a.getScopeTask,
 		"GET /api/assets":                           a.listAssets,
+		"GET /api/check-scope":                      a.checkScopeHTTP,
 		"GET /api/assets/{id}":                      a.getAsset,
 		"GET /api/events":                           a.listEvents,
 		"POST /api/scans":                           a.createScan,
@@ -883,15 +884,17 @@ func (a *api) getScan(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ---- 范围检查（T13 check_scope，REST 暂不暴露）----
+// ---- 范围检查（REST GET /api/check-scope 与 MCP check_scope 共用 checkScope）----
 
 // checkScope：主机名属于哪个厂商/根域（最长匹配）、是否在范围内、命中哪些规则；不要求已是资产。
 func (a *api) checkScope(ctx context.Context, host string) (map[string]any, error) {
 	h := normalizeHost(host)
-	if strings.ContainsRune(h, 0) || !validScopePattern(h) {
+	if strings.ContainsRune(h, 0) {
+		return nil, errf(400, "NUL character not allowed")
+	}
+	if !validDomain(h) {
 		return nil, errf(400, "invalid host")
 	}
-	h = strings.TrimPrefix(h, "*.")
 	out := map[string]any{"host": h, "in_scope": false, "vendor_id": nil, "vendor": nil, "root_domain": nil, "matched_rules": []map[string]any{}, "asset_id": nil}
 	var vendorID int64
 	var vendor, root string
@@ -1012,4 +1015,13 @@ func (a *api) nestURLEvents(ctx context.Context, list []map[string]any) error {
 		}
 	}
 	return nil
+}
+
+func (a *api) checkScopeHTTP(w http.ResponseWriter, r *http.Request) {
+	out, err := a.checkScope(r.Context(), r.URL.Query().Get("host"))
+	if err != nil {
+		writeAnyErr(w, err)
+		return
+	}
+	writeJSON(w, 200, out)
 }
