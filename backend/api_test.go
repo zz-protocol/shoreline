@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const testBootstrap = "boot-secret"
@@ -425,4 +427,161 @@ func TestAPICandidatesSubsidiaries(t *testing.T) {
 		t.Fatalf("import %v n=%d", imp, n)
 	}
 	t.Logf("确认→root_domains 归属 %d；忽略后再确认 409；改归属→%v（证据 %v）；子公司导入 %v", rootOwner, re["vendor_id"], re["evidence"], imp)
+}
+
+// T12 小改 1：模拟重启——遗留 running/pending 任务在新进程启动时重跑，结果幂等。
+func TestAPIResumeScopeTasks(t *testing.T) {
+	e, c, a := newAPITest(t, 2)
+	ctx := context.Background()
+	v := e.vendorID()
+	root := ""
+	e.pool.QueryRow(ctx, `SELECT domain FROM root_domains WHERE id = $1`, e.rootID).Scan(&root)
+	for _, h := range []string{"a", "b", "c"} {
+		e.pool.Exec(ctx, `INSERT INTO assets (root_id, subdomain, in_scope) VALUES ($1, $2, false)`, e.rootID, h+"."+root)
+	}
+	e.pool.Exec(ctx, `INSERT INTO scope_rules (vendor_id, kind, pattern) VALUES ($1, 'include', $2)`, v, "*."+root)
+	// 上一个进程：一个跑到一半（running，processed=2）、一个还没开始（pending）就退出了
+	var t1, t2 int64
+	e.pool.QueryRow(ctx, `INSERT INTO scope_tasks (vendor_id, status, processed, changed) VALUES ($1, 'running', 2, 2) RETURNING id`, v).Scan(&t1)
+	e.pool.QueryRow(ctx, `INSERT INTO scope_tasks (vendor_id) VALUES ($1) RETURNING id`, v).Scan(&t2)
+	e.pool.Exec(ctx, `UPDATE assets SET in_scope = true WHERE subdomain = $1`, "a."+root) // 中断前已改了一行
+	n, err := a.resumeScopeTasks(ctx)
+	if err != nil || n < 2 {
+		t.Fatalf("resumed %d %v", n, err)
+	}
+	var sts []string
+	for _, id := range []int64{t1, t2} {
+		for i := 0; ; i++ {
+			st := c.want(200, "GET", fmt.Sprintf("/api/scope-tasks/%d", id), nil)
+			if st["status"] == "done" {
+				sts = append(sts, fmt.Sprintf("task%d=done processed=%v", id, st["processed"]))
+				if st["processed"].(float64) != 3 {
+					t.Fatalf("task %v", st)
+				}
+				break
+			}
+			if i > 100 {
+				t.Fatalf("task %d not done: %v", id, st)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	var in int
+	e.pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE root_id = $1 AND in_scope`, e.rootID).Scan(&in)
+	if in != 3 {
+		t.Fatalf("in_scope %d/3", in)
+	}
+	if n2, _ := a.resumeScopeTasks(ctx); n2 != 0 {
+		t.Fatalf("resumed again %d", n2)
+	}
+	t.Logf("模拟重启：重跑 %d 个遗留任务 %v，in_scope 3/3，再次启动无任务可重跑", n, sts)
+}
+
+// T12 小改 2/3：确认被占域名 409 且保持 pending；资产级 new 事件嵌套 url_events。
+func TestAPIConfirmTakenAndNestedURLEvents(t *testing.T) {
+	e, c, _ := newAPITest(t, 500)
+	ctx := context.Background()
+	v := e.vendorID()
+	var v2 int64
+	e.pool.QueryRow(ctx, `INSERT INTO vendors (name) VALUES ('t12-taken-other') RETURNING id`).Scan(&v2)
+	t.Cleanup(func() {
+		c := context.Background()
+		e.pool.Exec(c, `DELETE FROM root_candidates WHERE domain = 't12taken.test'`)
+		e.pool.Exec(c, `DELETE FROM vendors WHERE id = $1`, v2)
+	})
+	storeCandidates(ctx, e.pool, v, map[string][]candidate{"t12taken.test": {{"icp:company", map[string]any{}}}})
+	e.pool.Exec(ctx, `INSERT INTO root_domains (vendor_id, domain) VALUES ($1, 't12taken.test')`, v2)
+	var cid int64
+	e.pool.QueryRow(ctx, `SELECT id FROM root_candidates WHERE domain = 't12taken.test'`).Scan(&cid)
+	res := c.want(409, "POST", fmt.Sprintf("/api/root-candidates/%d/confirm", cid), nil)
+	var st string
+	e.pool.QueryRow(ctx, `SELECT status FROM root_candidates WHERE id = $1`, cid).Scan(&st)
+	if st != "pending" {
+		t.Fatalf("status %s", st)
+	}
+
+	root := ""
+	e.pool.QueryRow(ctx, `SELECT domain FROM root_domains WHERE id = $1`, e.rootID).Scan(&root)
+	var aid, aid2, u1, u2 int64
+	e.pool.QueryRow(ctx, `INSERT INTO assets (root_id, subdomain) VALUES ($1, $2) RETURNING id`, e.rootID, "www."+root).Scan(&aid)
+	e.pool.QueryRow(ctx, `INSERT INTO assets (root_id, subdomain) VALUES ($1, $2) RETURNING id`, e.rootID, "bare."+root).Scan(&aid2)
+	emitNew(ctx, e.pool, aid, nil, map[string]any{})
+	emitNew(ctx, e.pool, aid2, nil, map[string]any{})
+	for _, s := range []string{"http", "https"} {
+		var u int64
+		e.pool.QueryRow(ctx, `INSERT INTO urls (asset_id, scheme, host, port, status_code, title) VALUES ($1, $2, $3, 443, 200, 'Home') RETURNING id`,
+			aid, s, "www."+root).Scan(&u)
+		emitNew(ctx, e.pool, aid, &u, map[string]any{})
+		if u1 == 0 {
+			u1 = u
+		} else {
+			u2 = u
+		}
+	}
+	list := items(c.want(200, "GET", fmt.Sprintf("/api/events?vendor=%d", v), nil))
+	got := map[string]int{}
+	for _, m := range list {
+		got[strings.SplitN(m["subdomain"].(string), ".", 2)[0]] = len(m["url_events"].([]any))
+	}
+	urlOnly := items(c.want(200, "GET", fmt.Sprintf("/api/events?vendor=%d&level=url", v), nil))
+	if !reflect.DeepEqual(got, map[string]int{"www": 2, "bare": 0}) || len(urlOnly) != 2 {
+		t.Fatalf("nested %v urlOnly %d", got, len(urlOnly))
+	}
+	ue := list[len(list)-1]["url_events"].([]any)[0].(map[string]any)
+	t.Logf("被占域名确认 → 409 %q，候选仍 %s；资产级 new 嵌套 url_events 数 %v（url_id %d,%d），level=url 单独查 %d 条；样例 %v",
+		res["error"], st, got, u1, u2, len(urlOnly), ue)
+}
+
+// T12 打回：NUL 字符一律 400（不 500）；JSON 后跟多余内容 400。
+func TestAPIRejectNULAndTrailingJSON(t *testing.T) {
+	e, c, _ := newAPITest(t, 500)
+	t.Cleanup(func() {
+		e.pool.Exec(context.Background(), `DELETE FROM vendors WHERE name IN ('ok-trailing', 'ok2-trailing')`)
+	})
+	raw := func(method, path, body string) (int, string) {
+		req, _ := http.NewRequest(method, c.srv.URL+path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+testBootstrap)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, strings.TrimSpace(string(b))
+	}
+	v := e.vendorID()
+	cases := []struct{ m, p, b string }{
+		{"GET", "/api/assets?q=%00", ""},
+		{"GET", "/api/events?type=new%00", ""},
+		{"POST", "/api/vendors", `{"name":"a\u0000b"}`},
+		{"POST", "/api/vendors", "{\"name\":\"a\x00b\"}"},
+		{"PATCH", fmt.Sprintf("/api/vendors/%d", v), `{"company_name":"x\u0000"}`},
+		{"POST", "/api/tokens", `{"name":"t\u0000"}`},
+		{"POST", fmt.Sprintf("/api/vendors/%d/roots", v), `{"domain":"a\u0000.test"}`},
+		{"POST", fmt.Sprintf("/api/vendors/%d/subsidiaries", v), "a\x00,60\n"},
+		{"POST", "/api/vendors", `{"name":"ok-trailing"} trailing`},
+		{"POST", "/api/vendors", `{"name":"ok-trailing"}{"name":"ok2-trailing"}`},
+		{"POST", "/api/tokens", `{"name":"x"} 1`},
+		{"POST", "/api/scans", `{"root_id":1,"kind":"dns"} x`},
+	}
+	for _, cs := range cases {
+		code, body := raw(cs.m, cs.p, cs.b)
+		var m map[string]any
+		if code != 400 || json.Unmarshal([]byte(body), &m) != nil || m["error"] == nil || len(m) != 1 {
+			t.Fatalf("%s %s %q → %d %s", cs.m, cs.p, cs.b, code, body)
+		}
+		t.Logf("%s %s %q → %d %s", cs.m, cs.p, cs.b, code, body)
+	}
+	if code, body := raw("POST", "/api/vendors", "{\"name\":\"ok-trailing\"}\n  "); code != 201 {
+		t.Fatalf("trailing whitespace rejected: %d %s", code, body)
+	}
+}
+
+func TestDBErr22021(t *testing.T) {
+	rec := httptest.NewRecorder()
+	dbErr(rec, fmt.Errorf("wrap: %w", &pgconn.PgError{Code: "22021"}))
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), `"error"`) {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	t.Logf("SQLSTATE 22021 → %d %s", rec.Code, strings.TrimSpace(rec.Body.String()))
 }

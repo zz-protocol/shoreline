@@ -20,10 +20,9 @@ func TestMigrate(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { conn.Close(context.Background()) })
-	for _, tbl := range []string{"scan_tasks", "events", "urls", "assets", "scope_rules", "root_domains", "vendors", "schema_migrations"} {
-		if _, err := conn.Exec(ctx, "DROP TABLE IF EXISTS "+tbl+" CASCADE"); err != nil {
-			t.Fatal(err)
-		}
+	// 整个 schema 重建：只删部分表时 CASCADE 会把留存表（如 root_candidates）的外键删掉，而 CREATE TABLE IF NOT EXISTS 不会补回
+	if _, err := conn.Exec(ctx, "DROP SCHEMA public CASCADE; CREATE SCHEMA public"); err != nil {
+		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ { // 可重复执行
 		if err := migrate(ctx, conn); err != nil {
@@ -74,5 +73,18 @@ func TestMigrate(t *testing.T) {
 	}
 	if !firstSeen || !lastSeen || len(sources) != 1 || sources[0] != "crtsh" {
 		t.Fatalf("asset fields: %v %v %v", firstSeen, lastSeen, sources)
+	}
+}
+
+// 新库迁移后所有引用 vendors 的表都带外键（防止测试或迁移顺序把外键弄丢）。
+func TestMigrateForeignKeys(t *testing.T) {
+	e := newTestEnv(t)
+	var missing []string
+	rows, _ := e.pool.Query(context.Background(), `SELECT c.relname FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid
+		WHERE a.attname = 'vendor_id' AND c.relkind = 'r' AND c.relnamespace = 'public'::regnamespace
+		AND NOT EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conrelid = c.oid AND k.contype = 'f' AND a.attnum = ANY(k.conkey))`)
+	missing, _ = pgxCollectStrings(rows)
+	if len(missing) > 0 {
+		t.Fatalf("vendor_id without FK: %v", missing)
 	}
 }

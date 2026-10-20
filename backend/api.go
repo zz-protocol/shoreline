@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -10,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -100,6 +102,11 @@ func hashToken(t string) string {
 
 func (a *api) auth(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.ContainsRune(r.URL.Path, 0) || strings.ContainsRune(r.URL.RawQuery, 0) || hasNUL([]byte(r.URL.Query().Encode())) ||
+			strings.Contains(strings.ToLower(r.URL.RawQuery), "%00") || strings.Contains(strings.ToLower(r.URL.EscapedPath()), "%00") {
+			writeErr(w, 400, "NUL character not allowed")
+			return
+		}
 		tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		tok = strings.TrimSpace(tok)
 		if !ok || tok == "" {
@@ -141,6 +148,8 @@ func dbErr(w http.ResponseWriter, err error) {
 		writeErr(w, 404, "not found")
 	case errors.As(err, &pe) && pe.Code == "23505":
 		writeErr(w, 409, "already exists")
+	case errors.As(err, &pe) && pe.Code == "22021": // 非法字符（如 NUL）兜底
+		writeErr(w, 400, "invalid character in input")
 	case errors.As(err, &pe) && pe.Code == "23503":
 		writeErr(w, 404, "referenced resource not found")
 	default:
@@ -159,13 +168,31 @@ func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		writeErr(w, 400, "invalid body: "+err.Error())
+		return false
+	}
+	if hasNUL(raw) {
+		writeErr(w, 400, "NUL character not allowed")
+		return false
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		writeErr(w, 400, "invalid json: "+err.Error())
 		return false
 	}
+	if _, err := dec.Token(); err != io.EOF { // 第一个值之后只能是空白
+		writeErr(w, 400, "invalid json: trailing data after value")
+		return false
+	}
 	return true
+}
+
+// hasNUL：原始 NUL 字节或 JSON 转义 \u0000（Postgres 文本不接受 NUL）。
+func hasNUL(b []byte) bool {
+	return bytes.IndexByte(b, 0) >= 0 || bytes.Contains(bytes.ToLower(b), []byte(`\u0000`))
 }
 
 // rowsJSON 把查询结果转为 []map（列名为键）。
@@ -398,20 +425,42 @@ func (a *api) startScopeTask(ctx context.Context, vendorID int64) (int64, error)
 	if err := a.db.QueryRow(ctx, `INSERT INTO scope_tasks (vendor_id) VALUES ($1) RETURNING id`, vendorID).Scan(&id); err != nil {
 		return 0, err
 	}
-	go func() {
-		err := recalcInScope(a.bg, a.db, id, vendorID, a.cfg.ScopeBatch)
-		if err != nil {
-			log.Printf("scope task %d: %v", id, err)
-			a.db.Exec(a.bg, `UPDATE scope_tasks SET status = 'failed', error = $2, finished_at = now() WHERE id = $1`, id, err.Error())
-		}
-	}()
+	go a.runScopeTask(id, vendorID)
 	return id, nil
+}
+
+func (a *api) runScopeTask(id, vendorID int64) {
+	if err := recalcInScope(a.bg, a.db, id, vendorID, a.cfg.ScopeBatch); err != nil {
+		log.Printf("scope task %d: %v", id, err)
+		a.db.Exec(a.bg, `UPDATE scope_tasks SET status = 'failed', error = $2, finished_at = now() WHERE id = $1`, id, err.Error())
+	}
+}
+
+// resumeScopeTasks 启动时重跑上次进程退出时未完成（pending/running）的重算任务，返回重跑个数。
+func (a *api) resumeScopeTasks(ctx context.Context) (int, error) {
+	rows, err := a.db.Query(ctx, `SELECT id, vendor_id FROM scope_tasks WHERE status IN ('pending', 'running') ORDER BY id`)
+	if err != nil {
+		return 0, err
+	}
+	type task struct{ id, vendor int64 }
+	list, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (task, error) {
+		var t task
+		return t, r.Scan(&t.id, &t.vendor)
+	})
+	if err != nil {
+		return 0, err
+	}
+	for _, t := range list {
+		go a.runScopeTask(t.id, t.vendor)
+	}
+	return len(list), nil
 }
 
 // recalcInScope 按 id 分批（每批一个短语句，不长时间锁表）重算 in_scope，只更新有变化的行，进度写 scope_tasks。
 // 规则在每批开始时重新读取，过程中规则再变也以最新规则为准（新任务会再跑一遍）。
 func recalcInScope(ctx context.Context, d *pgxpool.Pool, taskID, vendorID int64, batch int) error {
-	if _, err := d.Exec(ctx, `UPDATE scope_tasks SET status = 'running' WHERE id = $1`, taskID); err != nil {
+	// 从头重算并清零计数：任务可重复执行（重启后续跑同一任务结果一致）
+	if _, err := d.Exec(ctx, `UPDATE scope_tasks SET status = 'running', processed = 0, changed = 0, error = NULL WHERE id = $1`, taskID); err != nil {
 		return err
 	}
 	var cursor int64
@@ -485,7 +534,12 @@ func (a *api) importSubs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "vendor not found")
 		return
 	}
-	n, err := importSubsidiaries(r.Context(), a.db, id, http.MaxBytesReader(w, r.Body, 1<<20))
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil || bytes.IndexByte(raw, 0) >= 0 {
+		writeErr(w, 400, "invalid body")
+		return
+	}
+	n, err := importSubsidiaries(r.Context(), a.db, id, bytes.NewReader(raw))
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -697,6 +751,9 @@ func (a *api) listEvents(w http.ResponseWriter, r *http.Request) {
 		  AND ($6::bigint IS NULL OR r.vendor_id = $6)
 		  AND (COALESCE($7::bool, false) OR NOT a.wildcard)
 		ORDER BY e.id DESC LIMIT $8`, cursor, level, typ, since, assetID, vendor, wild, limit))
+	if err == nil {
+		err = a.nestURLEvents(r.Context(), list)
+	}
 	paged(w, list, err, limit)
 }
 
@@ -790,4 +847,36 @@ func (a *api) deleteToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(204)
+}
+
+// nestURLEvents 给资产级 new 事件挂上该资产的 URL 级 new 事件（url_events 数组）。
+func (a *api) nestURLEvents(ctx context.Context, list []map[string]any) error {
+	var ids []int64
+	for _, m := range list {
+		if m["level"] == "asset" && m["type"] == "new" {
+			m["url_events"] = []map[string]any{}
+			ids = append(ids, m["asset_id"].(int64))
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	sub, err := rowsJSON(a.db.Query(ctx, `SELECT e.id, e.asset_id, e.url_id, u.scheme || '://' || u.host || ':' || u.port AS url,
+		u.status_code, u.title, e.detail, e.created_at
+		FROM events e JOIN urls u ON u.id = e.url_id WHERE e.asset_id = ANY($1) AND e.type = 'new' ORDER BY e.id`, ids))
+	if err != nil {
+		return err
+	}
+	by := map[int64][]map[string]any{}
+	for _, s := range sub {
+		by[s["asset_id"].(int64)] = append(by[s["asset_id"].(int64)], s)
+	}
+	for _, m := range list {
+		if v, ok := m["url_events"]; ok && v != nil {
+			if s := by[m["asset_id"].(int64)]; s != nil {
+				m["url_events"] = s
+			}
+		}
+	}
+	return nil
 }

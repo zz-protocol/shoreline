@@ -273,6 +273,8 @@ func storeCandidates(ctx context.Context, d *pgxpool.Pool, vendorID int64, found
 	return created, nil
 }
 
+var errRootTaken = errors.New("root domain already taken by another vendor")
+
 // confirmCandidate 确认：写入 root_domains（归属该厂商），状态改 confirmed。不自动触发扫描。
 func confirmCandidate(ctx context.Context, d *pgxpool.Pool, id int64) error {
 	return pgx.BeginFunc(ctx, d, func(tx pgx.Tx) error {
@@ -285,8 +287,18 @@ func confirmCandidate(ctx context.Context, d *pgxpool.Pool, id int64) error {
 			}
 			return err
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO root_domains (vendor_id, domain) VALUES ($1, $2) ON CONFLICT (domain) DO NOTHING`, vendorID, dom)
-		return err
+		tag, err := tx.Exec(ctx, `INSERT INTO root_domains (vendor_id, domain) VALUES ($1, $2) ON CONFLICT (domain) DO NOTHING`, vendorID, dom)
+		if err != nil || tag.RowsAffected() == 1 {
+			return err
+		}
+		var owner int64
+		if err := tx.QueryRow(ctx, `SELECT vendor_id FROM root_domains WHERE domain = $1`, dom).Scan(&owner); err != nil {
+			return err
+		}
+		if owner != vendorID { // 已被别的厂商占用：回滚，候选保持 pending
+			return fmt.Errorf("%w: %s belongs to vendor %d", errRootTaken, dom, owner)
+		}
+		return nil
 	})
 }
 

@@ -101,6 +101,19 @@ components:
         url: {type: string, nullable: true}
         detail: {type: object}
         created_at: {type: string, format: date-time}
+        url_events:
+          type: array
+          description: 仅资产级 new 事件带：该资产的 URL 级 new 事件（level=url 仍可单独查）
+          items:
+            type: object
+            properties:
+              id: {type: integer}
+              url_id: {type: integer}
+              url: {type: string}
+              status_code: {type: integer, nullable: true}
+              title: {type: string, nullable: true}
+              detail: {type: object}
+              created_at: {type: string, format: date-time}
     Scan:
       type: object
       properties:
@@ -187,7 +200,7 @@ paths:
       responses: {"200": {description: "{items: Candidate[]}"}}
   /api/root-candidates/{id}/confirm:
     post:
-      summary: 确认（写入 root_domains）；非 pending 409
+      summary: 确认（写入 root_domains）；非 pending 或域名已被别的厂商占用 409（候选保持 pending）
       parameters: [{$ref: "#/components/parameters/id"}]
       responses: {"200": {description: Candidate}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/root-candidates/{id}/ignore:
@@ -220,7 +233,7 @@ paths:
       responses: {"200": {description: Asset}, "404": {$ref: "#/components/responses/Error"}}
   /api/events:
     get:
-      summary: 事件（默认资产级；不传 type 返回 new/changed/recovered）
+      summary: 事件（默认资产级，资产级 new 事件嵌套 url_events；不传 type 返回 new/changed/recovered）
       parameters:
         - {name: type, in: query, schema: {type: string, enum: [new, changed, recovered]}}
         - {name: level, in: query, schema: {type: string, enum: [asset, url, all], default: asset}}

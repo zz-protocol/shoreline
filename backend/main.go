@@ -92,6 +92,11 @@ func main() {
 		log.Printf("API_BOOTSTRAP_TOKEN not set: only tokens in api_tokens are accepted")
 	}
 	a := &api{db: pool, client: asynq.NewClient(asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")}), cfg: apiCfg, bg: context.Background()}
+	if n, err := a.resumeScopeTasks(context.Background()); err != nil {
+		log.Fatalf("resume scope tasks: %v", err)
+	} else if n > 0 {
+		log.Printf("resumed %d unfinished scope tasks", n)
+	}
 	log.Printf("listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, newMux(checks, a)))
 }
