@@ -64,6 +64,8 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 再把两页之间不同的词视为动态内容掩码掉（两页最长公共词序列为模板，差异词数为动态配额），覆盖规则外的随机词、短 base64、文本日期等。
 候选页相似度 = 与模板的最长公共词数 /（模板词数 + 超出动态配额的多余词数），状态码须相同，>= HTTP_SIMILARITY 视为泛解析。
 任一协议页面不相似即视为真实主机（wildcard=false、入库 URL、此时才生成新增事件）；否则标 wildcard、不入库 URL。
+
+已知局限：泛解析页本身为空或全动态时，该父域下真实主机救不回、保持 wildcard。
 若子域全部 IP 都落在泛解析 IP 集合内则标记 `wildcard`、不交给 http；有 IP 不在集合内时在剩余预算内补探（应对轮换 IP），仍未覆盖则视为真实记录。
 共用泛解析 IP 的真实主机由 T8 页面相似度进一步区分。CDN 先按 CNAME 后缀识别（阿里、腾讯、字节、网宿、Cloudflare、Akamai、CloudFront、Fastly），未命中再用 cdncheck（MIT）内置 IP 段匹配 CDN/WAF（本地匹配，不发 DNS/HTTP 请求；数据随依赖版本更新）。注意：cdncheck 包初始化时会对 [2001:4860:4860::8888]:53 做一次 UDP connect 以探测本机 IPv6（UDP connect 不发包）。
 
@@ -130,3 +132,9 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 - 流程：批量用 DNS_RESOLVERS 解析 → 命中者用可信 resolver 复核（不通过视为投毒剔除）→ 按 T7 规则（父域随机子域 IP 集合）过滤泛解析 → 以本轮新增的非泛解析子域为父域再跑一层字典 → 入库。来源细分为 `active:wordlist`（字典 × 根域）、`active:mutation`（变形）、`active:recursive`（递归一层）；同一子域被多种方式生成或已有其他来源时，按现有 sources 语义合并去重。已入库子域不作候选。
 - 每次 active 扫描把统计写入 `scan_tasks.result`（candidates、first_layer、recursive、hits、trusted_rejected＝可信复核剔除数），并打一行日志。
 - 总速率仍按单实例 × 实例数计算。
+
+### 测试
+
+- 全量：`cd backend && TEST_DATABASE_URL=postgres://sam:sam@127.0.0.1:5432/sam?sslmode=disable go test ./...`（外部依赖全部本地 mock）。
+- 真实时间的重试间隔测试 `TestRetryIntervals` 依赖 asynq 调度时序，放在 `//go:build integration` 文件里，全量不含，单独跑：
+  `TEST_DATABASE_URL=... go test -tags integration -count=10 -run TestRetryIntervals .`
