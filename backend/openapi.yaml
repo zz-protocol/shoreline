@@ -108,6 +108,7 @@ components:
             type: object
             properties:
               id: {type: integer}
+              asset_id: {type: integer, description: 所属资产 id（与外层事件 asset_id 相同）}
               url_id: {type: integer}
               url: {type: string}
               status_code: {type: integer, nullable: true}
