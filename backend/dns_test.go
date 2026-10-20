@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,6 +24,12 @@ import (
 //	real.wild.example.test   A 192.0.2.2（泛解析下的真实记录）
 //	cdn.example.test         CNAME x.kunlunsl.com → A 192.0.2.3
 //	其他                     NXDOMAIN
+//
+// mvIP 是 mv.example.test 的当前解析结果（T9 变更测试用）。
+var mvIP atomic.Value
+
+func init() { mvIP.Store("192.0.2.10") }
+
 func mockDNS(t *testing.T) (addr string, queried func() []string) {
 	var mu sync.Mutex
 	var names []string
@@ -45,6 +52,10 @@ func mockDNS(t *testing.T) (addr string, queried func() []string) {
 		case name == "a.example.test.":
 			if isA {
 				m.Answer = append(m.Answer, a(q.Name, "192.0.2.1"))
+			}
+		case name == "mv.example.test.": // T9：IP 可在两轮之间变化
+			if isA {
+				m.Answer = append(m.Answer, a(q.Name, mvIP.Load().(string)))
 			}
 		case name == "v6.example.test.":
 			if isAAAA {

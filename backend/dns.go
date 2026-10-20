@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/miekg/dns"
 	"github.com/projectdiscovery/cdncheck"
@@ -322,9 +324,28 @@ func dnsHandler(d *pgxpool.Pool, r *resolver) ScanHandler {
 			if cnames == nil {
 				cnames = []string{}
 			}
-			if _, err := d.Exec(ctx, `UPDATE assets SET ips = $2, cnames = $3, resolved = $4, wildcard = $5, cdn = $6,
-				resolved_at = now() WHERE subdomain = $1`, normalizeHost(hd.Host), ips, cnames, hd.Resolved, hd.Wildcard, cdn); err != nil {
+			var assetID int64
+			var oldIPs []string
+			var oldResolved, oldWild bool
+			err := d.QueryRow(ctx, `WITH old AS (SELECT id, ips, resolved, wildcard FROM assets WHERE subdomain = $1)
+				UPDATE assets a SET ips = $2, cnames = $3, resolved = $4, wildcard = $5, cdn = $6, resolved_at = now()
+				FROM old WHERE a.id = old.id RETURNING a.id, old.ips, COALESCE(old.resolved, false), COALESCE(old.wildcard, false)`,
+				normalizeHost(hd.Host), ips, cnames, hd.Resolved, hd.Wildcard, cdn).Scan(&assetID, &oldIPs, &oldResolved, &oldWild)
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
+			} else if err != nil {
 				return nil, err
+			}
+			if hd.Resolved && !hd.Wildcard { // wildcard=true 不生成事件
+				if err := emitNew(ctx, d, assetID, nil, map[string]any{"subdomain": normalizeHost(hd.Host), "ips": ips}); err != nil {
+					return nil, err
+				}
+				if oldResolved && !oldWild && !sameSet(oldIPs, ips) {
+					if err := emitChanged(ctx, d, assetID, nil, map[string]any{"subdomain": normalizeHost(hd.Host),
+						"changes": map[string]change{"ips": {oldIPs, ips}}}); err != nil {
+						return nil, err
+					}
+				}
 			}
 			if hd.Resolved { // 泛解析候选也交给 http，由页面相似度最终判定（T8）
 				next = append(next, hd.Host)

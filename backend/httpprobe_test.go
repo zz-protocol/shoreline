@@ -186,3 +186,12 @@ func TestHTTPHandlerWildcardRealHostKept(t *testing.T) {
 	}
 	t.Logf("%v; lb https: %d %q tech=%v; requests=%d", got, status, title, tech, hits.Load())
 }
+
+// localTitleServer：第 1 轮标题 "A v1"，第 2 轮 "A v2"。
+func localTitleServer(t *testing.T, round *atomic.Int64) string {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "<html><head><title>A v%d</title></head><body>app</body></html>", round.Load())
+	}))
+	t.Cleanup(s.Close)
+	return s.Listener.Addr().String()
+}

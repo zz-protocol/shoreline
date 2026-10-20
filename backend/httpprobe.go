@@ -262,7 +262,12 @@ func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 					if allWild {
 						return // 确认泛解析：不入库 URL
 					}
-					if _, err := d.Exec(ctx, `UPDATE assets SET wildcard = false WHERE id = $1`, it.assetID); err != nil {
+					_, err := d.Exec(ctx, `UPDATE assets SET wildcard = false WHERE id = $1`, it.assetID)
+					if err == nil {
+						// 页面复核为真实主机：此时才算新增资产
+						err = emitNew(ctx, d, it.assetID, nil, map[string]any{"subdomain": it.host, "rescued_from_wildcard": true})
+					}
+					if err != nil {
 						mu.Lock()
 						firstErr = err
 						mu.Unlock()
@@ -270,12 +275,7 @@ func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 					}
 				}
 				for _, r := range results {
-					_, err := d.Exec(ctx, `INSERT INTO urls (asset_id, scheme, host, port, status_code, title, fingerprint_hash, redirect_to, tech, sources)
-						VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, '{http}')
-						ON CONFLICT (scheme, host, port) DO UPDATE SET asset_id = EXCLUDED.asset_id, status_code = EXCLUDED.status_code,
-							title = EXCLUDED.title, fingerprint_hash = EXCLUDED.fingerprint_hash, redirect_to = EXCLUDED.redirect_to,
-							tech = EXCLUDED.tech, last_seen = now()`,
-						it.assetID, r.Scheme, r.Host, r.Port, r.Status, r.Title, r.Fingerprint, nullIfEmpty(r.Redirect), nonNil(r.Tech))
+					err := p.storeURL(ctx, d, it.assetID, r)
 					if err != nil {
 						mu.Lock()
 						firstErr = err
@@ -301,4 +301,42 @@ func nonNil(s []string) []string {
 		return []string{}
 	}
 	return s
+}
+
+// storeURL upsert URL，并按新增/变更生成事件（状态码、标题、指纹 hash 任一变化为变更）。
+func (p *prober) storeURL(ctx context.Context, d *pgxpool.Pool, assetID int64, r *probeResult) error {
+	var urlID int64
+	var inserted bool
+	var oldStatus *int
+	var oldTitle, oldFP *string
+	err := d.QueryRow(ctx, `WITH old AS (SELECT status_code, title, fingerprint_hash FROM urls WHERE scheme = $2 AND host = $3 AND port = $4)
+		INSERT INTO urls (asset_id, scheme, host, port, status_code, title, fingerprint_hash, redirect_to, tech, sources)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, '{http}')
+		ON CONFLICT (scheme, host, port) DO UPDATE SET asset_id = EXCLUDED.asset_id, status_code = EXCLUDED.status_code,
+			title = EXCLUDED.title, fingerprint_hash = EXCLUDED.fingerprint_hash, redirect_to = EXCLUDED.redirect_to,
+			tech = EXCLUDED.tech, last_seen = now()
+		RETURNING id, xmax = 0, (SELECT status_code FROM old), (SELECT title FROM old), (SELECT fingerprint_hash FROM old)`,
+		assetID, r.Scheme, r.Host, r.Port, r.Status, r.Title, r.Fingerprint, nullIfEmpty(r.Redirect), nonNil(r.Tech)).
+		Scan(&urlID, &inserted, &oldStatus, &oldTitle, &oldFP)
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprintf("%s://%s:%d", r.Scheme, r.Host, r.Port)
+	if inserted {
+		return emitNew(ctx, d, assetID, &urlID, map[string]any{"url": url, "status_code": r.Status, "title": r.Title})
+	}
+	changes := map[string]change{}
+	if oldStatus == nil || *oldStatus != r.Status {
+		changes["status_code"] = change{oldStatus, r.Status}
+	}
+	if oldTitle == nil || *oldTitle != r.Title {
+		changes["title"] = change{oldTitle, r.Title}
+	}
+	if oldFP == nil || *oldFP != r.Fingerprint {
+		changes["fingerprint_hash"] = change{oldFP, r.Fingerprint}
+	}
+	if len(changes) == 0 {
+		return nil
+	}
+	return emitChanged(ctx, d, assetID, &urlID, map[string]any{"url": url, "changes": changes})
 }
