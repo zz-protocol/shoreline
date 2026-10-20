@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,7 +26,7 @@ import (
 )
 
 // httpConfig：HTTP_RPS 每秒请求数（单实例，含泛解析对照请求）；HTTP_TIMEOUT 单请求超时；
-// HTTP_SIMILARITY 泛解析页面相似度阈值（0–1）。
+// HTTP_SIMILARITY 泛解析页面相似度阈值（0–1）；HTTP_CONCURRENCY 单个扫描任务内同时探测的主机数。
 type httpConfig struct {
 	RPS         float64
 	Timeout     time.Duration
@@ -33,12 +34,14 @@ type httpConfig struct {
 	Schemes     []string
 	MaxBody     int64
 	Concurrency int
+	VerifyRPS   float64 // HTTP_VERIFY_RPS：泛解析页面复核单独限速（含对照页）
+	VerifyMax   int     // HTTP_VERIFY_MAX：每根域每轮最多复核主机数，超出的标 wildcard
 	// Dial 仅测试用：改写拨号地址（把任意主机指向本地 httptest 服务）。
 	Dial func(addr string) string
 }
 
 func httpConfigFromEnv() (httpConfig, error) {
-	c := httpConfig{RPS: 10, Timeout: 10 * time.Second, Similarity: 0.9, Schemes: []string{"https", "http"}, MaxBody: 1 << 20, Concurrency: 10}
+	c := httpConfig{RPS: 10, Timeout: 10 * time.Second, Similarity: 0.9, Schemes: []string{"https", "http"}, MaxBody: 1 << 20, Concurrency: 10, VerifyRPS: 3, VerifyMax: 200}
 	if s := os.Getenv("HTTP_RPS"); s != "" {
 		f, err := strconv.ParseFloat(s, 64)
 		if !validPositive(f, err) {
@@ -52,6 +55,27 @@ func httpConfigFromEnv() (httpConfig, error) {
 			return c, fmt.Errorf("HTTP_TIMEOUT: invalid %q", s)
 		}
 		c.Timeout = d
+	}
+	if s := os.Getenv("HTTP_CONCURRENCY"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n <= 0 {
+			return c, fmt.Errorf("HTTP_CONCURRENCY: invalid %q (integer >= 1)", s)
+		}
+		c.Concurrency = n
+	}
+	if s := os.Getenv("HTTP_VERIFY_RPS"); s != "" {
+		f, err := strconv.ParseFloat(s, 64)
+		if !validPositive(f, err) {
+			return c, fmt.Errorf("HTTP_VERIFY_RPS: invalid %q", s)
+		}
+		c.VerifyRPS = f
+	}
+	if s := os.Getenv("HTTP_VERIFY_MAX"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 0 {
+			return c, fmt.Errorf("HTTP_VERIFY_MAX: invalid %q (integer >= 0)", s)
+		}
+		c.VerifyMax = n
 	}
 	if s := os.Getenv("HTTP_SIMILARITY"); s != "" {
 		f, err := strconv.ParseFloat(s, 64)
@@ -67,6 +91,7 @@ type prober struct {
 	cfg     httpConfig
 	client  *http.Client
 	limiter *rate.Limiter
+	verify  *rate.Limiter // 泛解析复核专用
 }
 
 var wappalyzerClient = sync.OnceValues(wappalyzer.New)
@@ -88,6 +113,7 @@ func newProber(cfg httpConfig) *prober {
 		client: &http.Client{Timeout: cfg.Timeout, Transport: tr,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, // 不跟随跳转
 		limiter: rate.NewLimiter(rate.Limit(cfg.RPS), 1),
+		verify:  rate.NewLimiter(rate.Limit(cfg.VerifyRPS), 1),
 	}
 }
 
@@ -104,9 +130,13 @@ type probeResult struct {
 
 var titleRe = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
 
-// get 只发 GET /，读取至多 MaxBody 字节。
+// get 只发 GET /（普通限速），读取至多 MaxBody 字节。
 func (p *prober) get(ctx context.Context, scheme, host string) (*probeResult, error) {
-	if err := p.limiter.Wait(ctx); err != nil {
+	return p.getWith(ctx, p.limiter, scheme, host)
+}
+
+func (p *prober) getWith(ctx context.Context, lim *rate.Limiter, scheme, host string) (*probeResult, error) {
+	if err := lim.Wait(ctx); err != nil {
 		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", scheme+"://"+host+"/", nil)
@@ -137,23 +167,26 @@ func (p *prober) get(ctx context.Context, scheme, host string) (*probeResult, er
 }
 
 // probeHost 对每个 scheme 发一次 GET /，返回成功的结果。
-func (p *prober) probeHost(ctx context.Context, host string) []*probeResult {
+func (p *prober) probeHost(ctx context.Context, lim *rate.Limiter, host string) []*probeResult {
 	var out []*probeResult
 	for _, s := range p.cfg.Schemes {
-		if r, err := p.get(ctx, s, host); err == nil {
+		if r, err := p.getWith(ctx, lim, s, host); err == nil {
 			out = append(out, r)
 		}
 	}
 	return out
 }
 
-// pageTokens 规范化页面：去掉主机名本身（泛解析页常回显 Host），按词切分取 3-gram 集合。
+// pageTokens 规范化页面后按词切分取 3-gram 集合。规范化：去掉主机名本身（泛解析页常回显 Host），
+// 再去掉动态 token——uuid、>= 8 位十六进制串、含数字的词（时间戳、数字、多数随机 ID）、长度 >= 20 的词（长随机串）。
 func pageTokens(r *probeResult) map[string]bool {
 	text := strings.ToLower(string(r.body))
 	text = strings.ReplaceAll(text, strings.ToLower(r.Host), "")
+	text = dynamicRe.ReplaceAllString(text, " ")
 	words := strings.FieldsFunc(text, func(c rune) bool {
 		return !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c > 127)
 	})
+	words = slices.DeleteFunc(words, dynamicToken)
 	set := map[string]bool{}
 	for i := 0; i+3 <= len(words); i++ {
 		set[strings.Join(words[i:i+3], " ")] = true
@@ -162,6 +195,14 @@ func pageTokens(r *probeResult) map[string]bool {
 		set[strings.Join(words, " ")] = true
 	}
 	return set
+}
+
+// dynamicRe：uuid（含各段纯字母的情况）与 >= 8 位十六进制串。
+var dynamicRe = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\b[0-9a-f]{8,}\b`)
+
+// dynamicToken：含数字的词（时间戳、数字、多数随机 ID）或长度 >= 20 的词（长随机串）。
+func dynamicToken(w string) bool {
+	return len(w) >= 20 || strings.ContainsAny(w, "0123456789")
 }
 
 // similarity 页面相似度：状态码不同为 0；否则为 3-gram Jaccard（两者都无内容时比较跳转目标）。
@@ -203,7 +244,7 @@ func (p *prober) controlPage(ctx context.Context, c *pageCache, scheme, parent s
 	}
 	b := make([]byte, 8)
 	rand.Read(b)
-	r, err := p.get(ctx, scheme, "wc-"+hex.EncodeToString(b)+"."+parent)
+	r, err := p.getWith(ctx, p.verify, scheme, "wc-"+hex.EncodeToString(b)+"."+parent)
 	if err != nil {
 		r = nil
 	}
@@ -222,27 +263,47 @@ func (p *prober) isWildcardPage(ctx context.Context, c *pageCache, r *probeResul
 }
 
 // httpHandler 是 http 类扫描：对每个主机 GET /，记录状态码/标题/指纹/跳转并 upsert urls。
-// DNS 阶段被标为泛解析（IP 落在泛解析集合）的主机也会探测：页面与父域随机子域对照页不相似则
-// 视为真实主机（wildcard=false 并入库 URL），相似则保持 wildcard、不入库 URL。
+// 泛解析候选（DNS 标 wildcard，或父域存在泛解析——轮换 IP 可能漏标）走复核：用 HTTP_VERIFY_RPS 单独限速，
+// 每根域每轮最多 HTTP_VERIFY_MAX 个，与父域随机子域的对照页比较；任一协议页面不相似即为真实主机
+// （wildcard=false、入库 URL、生成新增），否则标 wildcard、不入库 URL。超出上限的候选直接标 wildcard。
 func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 	return func(ctx context.Context, scanID int64, hosts []string) ([]string, error) {
 		cache := &pageCache{m: map[string]*probeResult{}, ok: map[string]bool{}}
 		type item struct {
-			host    string
-			assetID int64
-			dnsWild bool
+			host      string
+			assetID   int64
+			candidate bool
 		}
 		var items []item
+		verified := 0
 		for _, h := range hosts {
 			it := item{host: normalizeHost(h)}
-			if err := d.QueryRow(ctx, `SELECT id, wildcard FROM assets WHERE subdomain = $1`, it.host).Scan(&it.assetID, &it.dnsWild); err != nil {
+			var wild, parentWild bool
+			if err := d.QueryRow(ctx, `SELECT id, wildcard, parent_wildcard FROM assets WHERE subdomain = $1`, it.host).
+				Scan(&it.assetID, &wild, &parentWild); err != nil {
 				continue // 未入库的主机不探测
+			}
+			if it.candidate = wild || parentWild; it.candidate {
+				if verified >= p.cfg.VerifyMax {
+					if _, err := d.Exec(ctx, `UPDATE assets SET wildcard = true WHERE id = $1`, it.assetID); err != nil {
+						return nil, err
+					}
+					continue
+				}
+				verified++
 			}
 			items = append(items, it)
 		}
 		var mu sync.Mutex
 		var firstErr error
-		sem := make(chan struct{}, max(1, p.cfg.Concurrency))
+		fail := func(err error) {
+			mu.Lock()
+			if firstErr == nil {
+				firstErr = err
+			}
+			mu.Unlock()
+		}
+		sem := make(chan struct{}, p.cfg.Concurrency)
 		var wg sync.WaitGroup
 		for _, it := range items {
 			wg.Add(1)
@@ -250,36 +311,33 @@ func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 			go func(it item) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				results := p.probeHost(ctx, it.host)
+				lim := p.limiter
+				if it.candidate {
+					lim = p.verify
+				}
+				results := p.probeHost(ctx, lim, it.host)
 				if len(results) == 0 {
 					return
 				}
-				if it.dnsWild {
+				if it.candidate {
 					allWild := true
 					for _, r := range results {
 						allWild = allWild && p.isWildcardPage(ctx, cache, r)
 					}
-					if allWild {
+					_, err := d.Exec(ctx, `UPDATE assets SET wildcard = $2 WHERE id = $1`, it.assetID, allWild)
+					if err == nil && !allWild { // 页面复核为真实主机：此时才算新增资产
+						err = emitNew(ctx, d, it.assetID, nil, map[string]any{"subdomain": it.host, "verified_real": true})
+					}
+					if err != nil || allWild {
+						if err != nil {
+							fail(err)
+						}
 						return // 确认泛解析：不入库 URL
-					}
-					_, err := d.Exec(ctx, `UPDATE assets SET wildcard = false WHERE id = $1`, it.assetID)
-					if err == nil {
-						// 页面复核为真实主机：此时才算新增资产
-						err = emitNew(ctx, d, it.assetID, nil, map[string]any{"subdomain": it.host, "rescued_from_wildcard": true})
-					}
-					if err != nil {
-						mu.Lock()
-						firstErr = err
-						mu.Unlock()
-						return
 					}
 				}
 				for _, r := range results {
-					err := p.storeURL(ctx, d, it.assetID, r)
-					if err != nil {
-						mu.Lock()
-						firstErr = err
-						mu.Unlock()
+					if err := p.storeURL(ctx, d, it.assetID, r); err != nil {
+						fail(err)
 					}
 				}
 			}(it)

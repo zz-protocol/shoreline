@@ -4,6 +4,7 @@ import (
 	"context"
 	crand "crypto/rand"
 	"fmt"
+	mrand "math/rand/v2"
 	"net"
 	"reflect"
 	"sort"
@@ -34,6 +35,7 @@ func mockDNS(t *testing.T) (addr string, queried func() []string) {
 	var mu sync.Mutex
 	var names []string
 	rot := 0
+	rotZone := map[string]int{}
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -69,6 +71,22 @@ func mockDNS(t *testing.T) (addr string, queried func() []string) {
 		case strings.HasSuffix(name, ".wild.example.test."):
 			if isA {
 				m.Answer = append(m.Answer, a(q.Name, "192.0.2.9"))
+			}
+		case strings.HasSuffix(name, ".s1.test.") || strings.HasSuffix(name, ".r8.test.") || strings.HasSuffix(name, ".r60.test."):
+			if isA { // T8 端到端：lb.* 与泛解析共用 IP；s1 单 IP，r8/r60 轮换 8/60 个
+				zone := name[strings.Index(name, ".")+1:]
+				n := map[string]int{"s1.test.": 1, "r8.test.": 8, "r60.test.": 60}[zone]
+				base := map[string]string{"s1.test.": "10.4.0.", "r8.test.": "10.5.0.", "r60.test.": "10.6.0."}[zone]
+				ip := 1
+				switch {
+				case strings.HasPrefix(name, "lb."):
+				case zone == "r60.test." && (strings.HasPrefix(name, "fake00.") || strings.HasPrefix(name, "fake01.")):
+					ip = 99 // 泛解析返回、但随机子域探测从未见过的 IP：确定性复现 DNS 漏标
+				case n > 1:
+					ip = mrand.IntN(n) + 1 // 随机轮换
+				}
+				_ = rotZone
+				m.Answer = append(m.Answer, a(q.Name, fmt.Sprintf("%s%d", base, ip)))
 			}
 		case name == "real.rot.test.":
 			if isA {

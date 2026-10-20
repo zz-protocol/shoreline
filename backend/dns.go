@@ -227,7 +227,8 @@ func (r *resolver) probeOnce(ctx context.Context, e *wildcardEntry, parent strin
 }
 
 // isWildcard 判断 ips 是否全部落在 parent 的泛解析 IP 集合内（必要时补探）。
-func (r *resolver) isWildcard(ctx context.Context, cache *wildcardCache, parent string, ips []string) bool {
+// isWildcard 返回 host 的 IP 是否全部落在泛解析集合内（wild），以及父域是否存在泛解析（parentWild）。
+func (r *resolver) isWildcard(ctx context.Context, cache *wildcardCache, parent string, ips []string) (wild, parentWild bool) {
 	e := cache.entry(parent)
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -246,7 +247,7 @@ func (r *resolver) isWildcard(ctx context.Context, cache *wildcardCache, parent 
 		}
 	}
 	if len(e.ips) == 0 {
-		return false
+		return false, false
 	}
 	covered := func() bool {
 		for _, ip := range ips {
@@ -259,7 +260,7 @@ func (r *resolver) isWildcard(ctx context.Context, cache *wildcardCache, parent 
 	for !covered() && e.probes < r.cfg.WildcardMax {
 		r.probeOnce(ctx, e, parent)
 	}
-	return covered()
+	return covered(), true
 }
 
 type hostDNS struct {
@@ -267,7 +268,9 @@ type hostDNS struct {
 	Result   dnsResult
 	Resolved bool
 	Wildcard bool
-	CDN      string
+	// ParentWild：父域存在泛解析。即使 IP 未全部命中（轮换 IP 可能漏标），也交 HTTP 页面复核。
+	ParentWild bool
+	CDN        string
 }
 
 // resolveHosts 解析并做泛解析过滤与 CDN 标记。泛解析判定：host 的全部 IP 都落在其父域随机子域的解析 IP 集合内。
@@ -289,7 +292,7 @@ func (r *resolver) resolveHosts(ctx context.Context, root string, hosts []string
 			if err == nil && len(res.IPs) > 0 {
 				hd.Result, hd.Resolved = res, true
 				if dot := strings.IndexByte(h, '.'); dot > 0 && (h[dot+1:] == root || strings.HasSuffix(h[dot+1:], "."+root)) {
-					hd.Wildcard = r.isWildcard(ctx, cache, h[dot+1:], res.IPs)
+					hd.Wildcard, hd.ParentWild = r.isWildcard(ctx, cache, h[dot+1:], res.IPs)
 				}
 				if hd.CDN = cdnOf(res.CNAMEs); hd.CDN == "" {
 					hd.CDN = cdnOfIPs(res.IPs)
@@ -328,15 +331,16 @@ func dnsHandler(d *pgxpool.Pool, r *resolver) ScanHandler {
 			var oldIPs []string
 			var oldResolved, oldWild bool
 			err := d.QueryRow(ctx, `WITH old AS (SELECT id, ips, resolved, wildcard FROM assets WHERE subdomain = $1)
-				UPDATE assets a SET ips = $2, cnames = $3, resolved = $4, wildcard = $5, cdn = $6, resolved_at = now()
+				UPDATE assets a SET ips = $2, cnames = $3, resolved = $4, wildcard = $5, cdn = $6, parent_wildcard = $7, resolved_at = now()
 				FROM old WHERE a.id = old.id RETURNING a.id, old.ips, COALESCE(old.resolved, false), COALESCE(old.wildcard, false)`,
-				normalizeHost(hd.Host), ips, cnames, hd.Resolved, hd.Wildcard, cdn).Scan(&assetID, &oldIPs, &oldResolved, &oldWild)
+				normalizeHost(hd.Host), ips, cnames, hd.Resolved, hd.Wildcard, cdn, hd.ParentWild).Scan(&assetID, &oldIPs, &oldResolved, &oldWild)
 			if errors.Is(err, pgx.ErrNoRows) {
 				continue
 			} else if err != nil {
 				return nil, err
 			}
-			if hd.Resolved && !hd.Wildcard { // wildcard=true 不生成事件
+			// wildcard=true 不生成事件；父域有泛解析的主机等 HTTP 页面复核为真实后再生成
+			if hd.Resolved && !hd.Wildcard && !hd.ParentWild {
 				if err := emitNew(ctx, d, assetID, nil, map[string]any{"subdomain": normalizeHost(hd.Host), "ips": ips}); err != nil {
 					return nil, err
 				}

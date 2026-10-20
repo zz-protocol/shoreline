@@ -34,7 +34,7 @@ func localProbeServers(t *testing.T, hits *atomic.Int64) httpConfig {
 			host = r.Host
 		}
 		switch {
-		case host == "lb.wild.test":
+		case host == "lb.wild.test" || host == "real.wild.example.test":
 			w.Header().Set("Server", "nginx")
 			fmt.Fprint(w, lbPage)
 		case host == "redir.plain.test":
@@ -52,7 +52,7 @@ func localProbeServers(t *testing.T, hits *atomic.Int64) httpConfig {
 	t.Cleanup(plain.Close)
 	t.Cleanup(tls.Close)
 	cfg, _ := httpConfigFromEnv()
-	cfg.RPS = 1000
+	cfg.RPS, cfg.VerifyRPS = 1000, 1000
 	cfg.Timeout = 2 * time.Second
 	cfg.Dial = func(addr string) string {
 		if strings.HasSuffix(addr, ":443") {
@@ -194,4 +194,66 @@ func localTitleServer(t *testing.T, round *atomic.Int64) string {
 	}))
 	t.Cleanup(s.Close)
 	return s.Listener.Addr().String()
+}
+
+func TestHTTPConfigFromEnv(t *testing.T) {
+	c, err := httpConfigFromEnv()
+	if err != nil || c.Concurrency != 10 || c.VerifyRPS != 3 || c.VerifyMax != 200 || c.RPS != 10 || c.Similarity != 0.9 {
+		t.Fatalf("defaults %+v %v", c, err)
+	}
+	t.Setenv("HTTP_CONCURRENCY", "3")
+	if c, _ := httpConfigFromEnv(); c.Concurrency != 3 {
+		t.Fatalf("concurrency %d", c.Concurrency)
+	}
+	for k, vs := range map[string][]string{"HTTP_CONCURRENCY": {"0", "-1", "1.5", "x", "NaN"},
+		"HTTP_RPS": {"0", "NaN", "Inf"}, "HTTP_SIMILARITY": {"0", "1.1", "NaN"}, "HTTP_TIMEOUT": {"0s", "x"}, "HTTP_VERIFY_RPS": {"0", "NaN", "Inf"}, "HTTP_VERIFY_MAX": {"-1", "x"}} {
+		for _, v := range vs {
+			t.Setenv("HTTP_CONCURRENCY", "")
+			t.Setenv(k, v)
+			if _, err := httpConfigFromEnv(); err == nil {
+				t.Fatalf("%s=%q accepted", k, v)
+			}
+			t.Setenv(k, "")
+		}
+	}
+}
+
+// HTTP_CONCURRENCY 限制单个任务内同时在途的探测数。
+func TestHTTPConcurrencyLimit(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	var inflight, peak atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := inflight.Add(1)
+		for {
+			p := peak.Load()
+			if n <= p || peak.CompareAndSwap(p, n) {
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+		inflight.Add(-1)
+		fmt.Fprint(w, "<title>c</title>")
+	}))
+	t.Cleanup(srv.Close)
+	var hosts []string
+	for i := 0; i < 12; i++ {
+		h := fmt.Sprintf("c%d.conc.test", i)
+		hosts = append(hosts, h)
+		e.pool.Exec(ctx, `INSERT INTO assets (root_id, subdomain, resolved, wildcard) VALUES ($1, $2, true, false) ON CONFLICT DO NOTHING`, e.rootID, h)
+	}
+	t.Cleanup(func() { e.pool.Exec(context.Background(), `DELETE FROM assets WHERE subdomain LIKE '%.conc.test'`) })
+	for _, n := range []int{3, 1} {
+		peak.Store(0)
+		cfg, _ := httpConfigFromEnv()
+		cfg.RPS, cfg.Concurrency, cfg.Schemes = 1000, n, []string{"http"}
+		cfg.Dial = func(string) string { return srv.Listener.Addr().String() }
+		if _, err := httpHandler(e.pool, newProber(cfg))(ctx, 0, hosts); err != nil {
+			t.Fatal(err)
+		}
+		if peak.Load() != int64(n) {
+			t.Fatalf("HTTP_CONCURRENCY=%d peak in-flight %d", n, peak.Load())
+		}
+		t.Logf("HTTP_CONCURRENCY=%d: peak in-flight %d over %d hosts", n, peak.Load(), len(hosts))
+	}
 }

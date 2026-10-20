@@ -52,11 +52,17 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 | HTTP_RPS | 10 | 每实例每秒 HTTP 请求数（含泛解析对照请求），>0 |
 | HTTP_TIMEOUT | 10s | 单请求超时（Go duration） |
 | HTTP_SIMILARITY | 0.9 | 泛解析页面相似度阈值，0 < x <= 1 |
+| HTTP_CONCURRENCY | 10 | 单个扫描任务内同时探测的主机数，整数 >= 1；非法值启动即退出 |
+| HTTP_VERIFY_RPS | 3 | 泛解析页面复核的单独限速（每实例，含对照页请求），>0 |
+| HTTP_VERIFY_MAX | 200 | 每根域每轮最多复核的候选主机数，超出的直接标 wildcard，整数 >= 0 |
 
 对每个主机按 https、http 各发一次 `GET /`，不跟随跳转（记录 Location 为 redirect_to），不校验证书，正文最多读 1MB；
 记录状态码、标题、技术栈（wappalyzergo）和指纹 fingerprint_hash = sha256(状态码|标题|技术栈)。
-DNS 阶段 IP 落在泛解析集合的主机也会探测：与父域随机子域 `wc-<随机>.<父域>` 的同 scheme 页面比较（状态码相同且去掉主机名后的 3-gram Jaccard >= 阈值），
-相似则保持 wildcard、不入库 URL；不相似视为与泛解析共用 IP 的真实主机，置 wildcard=false 并入库 URL。
+泛解析候选走页面复核：DNS 阶段 IP 落在泛解析集合的主机，以及父域存在泛解析但 IP 未命中的主机（轮换 IP 时 DNS 可能漏标，记 assets.parent_wildcard）。
+复核用 HTTP_VERIFY_RPS 单独限速，每根域每轮最多 HTTP_VERIFY_MAX 个，与父域随机子域 `wc-<随机>.<父域>` 的同 scheme 页面比较：
+先规范化（去掉主机名、uuid、>= 8 位十六进制串、含数字的词、长度 >= 20 的词，即时间戳/随机 ID/uuid 等动态 token），
+再要求状态码相同且 3-gram Jaccard >= HTTP_SIMILARITY。任一协议页面不相似即视为真实主机（wildcard=false、入库 URL、此时才生成新增事件）；
+否则标 wildcard、不入库 URL。纯字母的随机 token（无数字、非十六进制）不会被去掉，会拉低相似度。
 若子域全部 IP 都落在泛解析 IP 集合内则标记 `wildcard`、不交给 http；有 IP 不在集合内时在剩余预算内补探（应对轮换 IP），仍未覆盖则视为真实记录。
 共用泛解析 IP 的真实主机由 T8 页面相似度进一步区分。CDN 先按 CNAME 后缀识别（阿里、腾讯、字节、网宿、Cloudflare、Akamai、CloudFront、Fastly），未命中再用 cdncheck（MIT）内置 IP 段匹配 CDN/WAF（本地匹配，不发 DNS/HTTP 请求；数据随依赖版本更新）。注意：cdncheck 包初始化时会对 [2001:4860:4860::8888]:53 做一次 UDP connect 以探测本机 IPv6（UDP connect 不发包）。
 
