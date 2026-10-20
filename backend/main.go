@@ -18,20 +18,20 @@ func main() {
 	if addr == "" {
 		addr = ":8080"
 	}
+	cfg, err := configFromEnv() // 配置非法时启动即退出
+	if err != nil {
+		log.Fatal(err)
+	}
 	dbURL := os.Getenv("DATABASE_URL")
 	if err := runMigrations(dbURL); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
 	rdb := redis.NewClient(&redis.Options{Addr: os.Getenv("REDIS_ADDR")})
-	rates, err := ratesFromEnv()
-	if err != nil {
-		log.Fatal(err)
-	}
 	pool, err := pgxpool.New(context.Background(), dbURL)
 	if err != nil {
 		log.Fatal(err)
 	}
-	srv, wmux := newWorker(asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")}, pool, rates, nil)
+	srv, wmux := newWorker(asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")}, pool, cfg, nil)
 	go func() { log.Fatal(srv.Run(wmux)) }()
 	checks := map[string]func(context.Context) error{
 		"postgres": func(ctx context.Context) error {
