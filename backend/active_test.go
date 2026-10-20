@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -99,23 +100,36 @@ func TestMutations(t *testing.T) {
 func TestDiscoverMockDNS(t *testing.T) {
 	a, nb, nt := activeTestScanner(t, testWords)
 	known := []string{"app2.act.test"}
-	hits, tried := a.discover(context.Background(), "act.test", known, known)
+	hits, st := a.discover(context.Background(), "act.test", known, known)
 	want := []string{"api.act.test", "app2-dev.act.test", "app3.act.test", "cdn.act.test", "dev.api.act.test", "www.act.test"}
-	if !reflect.DeepEqual(hits, want) {
-		t.Fatalf("hits %v\nwant %v", hits, want)
+	if !reflect.DeepEqual(hits, want) || st.TrustedRejected != 1 {
+		t.Fatalf("hits %v\nwant %v; rejected %d", hits, want, st.TrustedRejected)
 	}
-	t.Logf("候选 %d 个，命中 %v；批量 resolver 查询 %d 次，可信 resolver 查询 %d 次（poison 被复核剔除，cdn 下泛解析被过滤）",
-		tried, hits, nb.Load(), nt.Load())
+	t.Logf("%+v，命中 %v；批量 resolver 查询 %d 次，可信 resolver 查询 %d 次（poison 被复核剔除，cdn 下泛解析被过滤）",
+		st, hits, nb.Load(), nt.Load())
 }
 
+// 候选配额：递归层预留 20%，第一层没用完的额度转给递归层。
 func TestDiscoverCandidateCap(t *testing.T) {
-	a, nb, _ := activeTestScanner(t, testWords)
-	a.cfg.MaxCandidates = 3
-	_, tried := a.discover(context.Background(), "act.test", nil, nil)
-	if tried != 3 || nb.Load() > 6 { // 3 个候选 × A/AAAA
-		t.Fatalf("tried=%d bulk queries=%d", tried, nb.Load())
+	a, _, _ := activeTestScanner(t, testWords)
+	a.cfg.MaxCandidates = 10 // 第一层上限 8；testWords 只有 7 个 → 剩余 3 个给递归层
+	_, st := a.discover(context.Background(), "act.test", nil, nil)
+	if st.FirstLayer != 7 || st.Recursive != 3 || st.Candidates != 10 {
+		t.Fatalf("unused first-layer budget not passed on: %+v", st)
 	}
-	t.Logf("ACTIVE_MAX_CANDIDATES=3：候选 %d，批量查询 %d 次", tried, nb.Load())
+	t.Logf("MAX=10、字典 7 词：%+v", st)
+
+	many := append([]string{}, testWords...)
+	for i := 0; i < 20; i++ {
+		many = append(many, fmt.Sprintf("nx%02d", i))
+	}
+	a2, nb, _ := activeTestScanner(t, many)
+	a2.cfg.MaxCandidates = 10 // 第一层被截在 8，递归层保留 2
+	_, st2 := a2.discover(context.Background(), "act.test", nil, nil)
+	if st2.FirstLayer != 8 || st2.Recursive != 2 || st2.Candidates != 10 {
+		t.Fatalf("reserve not kept: %+v", st2)
+	}
+	t.Logf("MAX=10、字典 27 词：%+v，批量查询 %d 次", st2, nb.Load())
 }
 
 func TestActiveQPS(t *testing.T) {
@@ -220,7 +234,12 @@ func TestActiveSwitchEndToEnd(t *testing.T) {
 	if len(httpIn) != len(want) {
 		t.Fatalf("http got %v", httpIn)
 	}
-	t.Logf("开关打开：入库 %v，经 dns 交 http %d 个", got, len(httpIn))
+	var result string
+	e.pool.QueryRow(ctx, `SELECT result::text FROM scan_tasks WHERE root_id = $1 AND kind = 'active' AND result IS NOT NULL`, rootID).Scan(&result)
+	if !strings.Contains(result, `"trusted_rejected": 1`) {
+		t.Fatalf("scan result %q", result)
+	}
+	t.Logf("开关打开：入库 %v，经 dns 交 http %d 个；scan result %s", got, len(httpIn), result)
 }
 
 func pgxCollectStrings(rows interface {

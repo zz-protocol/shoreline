@@ -118,7 +118,7 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | ACTIVE_QPS | 20 | 主动发现所有 DNS 查询（批量解析、可信复核、泛解析探测）共享的每秒查询数（单实例），>0 |
-| ACTIVE_MAX_CANDIDATES | 20000 | 每根域每轮候选上限（含递归一层），整数 >= 1 |
+| ACTIVE_MAX_CANDIDATES | 20000 | 每根域每轮候选上限（含递归一层；递归层预留 20%，第一层没用完的额度转给递归层），整数 >= 1 |
 | ACTIVE_TRUSTED_RESOLVERS | 223.5.5.5,119.29.29.29,1.1.1.1,8.8.8.8 | 可信 resolver，逗号分隔，未写端口默认 53 |
 | ACTIVE_WORDLIST | 内置 | 外部字典文件（每行一词，# 开头为注释），设置后替换内置字典 |
 | RATE_ACTIVE | 1 | active 任务速率（任务/秒，同 RATE_*） |
@@ -128,4 +128,5 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 - 字典：内置 SecLists `Discovery/DNS/subdomains-top1million-5000.txt`（MIT，取自 commit 6106054），转小写、跳过不合法标签与重复。
 - 变形：对已解析、非泛解析的已知子域首个标签做数字 ±1、dev/test/staging/api 前后缀（`-` 连接）及作为新一级前缀，每子域最多 50 个。
 - 流程：批量用 DNS_RESOLVERS 解析 → 命中者用可信 resolver 复核（不通过视为投毒剔除）→ 按 T7 规则（父域随机子域 IP 集合）过滤泛解析 → 以本轮新增的非泛解析子域为父域再跑一层字典 → 入库（来源 active）。已入库子域不作候选。
+- 每次 active 扫描把统计写入 `scan_tasks.result`（candidates、first_layer、recursive、hits、trusted_rejected＝可信复核剔除数），并打一行日志。
 - 总速率仍按单实例 × 实例数计算。
