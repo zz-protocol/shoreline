@@ -179,9 +179,10 @@ func (p *prober) probeHost(ctx context.Context, lim *rate.Limiter, host string) 
 	return out
 }
 
-// pageTokens 规范化页面后按词切分取 3-gram 集合。规范化：去掉主机名本身（泛解析页常回显 Host），
-// 再去掉动态 token——uuid、>= 8 位十六进制串、含数字的词（时间戳、数字、多数随机 ID）、长度 >= 20 的词（长随机串）。
-func pageTokens(r *probeResult) map[string]bool {
+// pageWords 规范化页面并切词（最多 maxPageWords 个）：去掉主机名本身（泛解析页常回显 Host），
+// 再去掉规则内的动态 token——uuid、>= 8 位十六进制串、含数字的词（时间戳、数字、多数随机 ID）、
+// 长度 >= 20 的词（长随机串）、英文星期/月份名（文本日期）。规则外的动态内容由两张对照页的差异掩码处理。
+func pageWords(r *probeResult) []string {
 	text := strings.ToLower(string(r.body))
 	text = strings.ReplaceAll(text, strings.ToLower(r.Host), "")
 	text = dynamicRe.ReplaceAllString(text, " ")
@@ -189,6 +190,17 @@ func pageTokens(r *probeResult) map[string]bool {
 		return !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c > 127)
 	})
 	words = slices.DeleteFunc(words, dynamicToken)
+	if len(words) > maxPageWords {
+		words = words[:maxPageWords]
+	}
+	return words
+}
+
+const maxPageWords = 3000
+
+// pageTokens：pageWords 的 3-gram 集合。
+func pageTokens(r *probeResult) map[string]bool {
+	words := pageWords(r)
 	set := map[string]bool{}
 	for i := 0; i+3 <= len(words); i++ {
 		set[strings.Join(words[i:i+3], " ")] = true
@@ -202,24 +214,28 @@ func pageTokens(r *probeResult) map[string]bool {
 // dynamicRe：uuid（含各段纯字母的情况）与 >= 8 位十六进制串。
 var dynamicRe = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\b[0-9a-f]{8,}\b`)
 
-// dynamicToken：含数字的词（时间戳、数字、多数随机 ID）或长度 >= 20 的词（长随机串）。
-func dynamicToken(w string) bool {
-	return len(w) >= 20 || strings.ContainsAny(w, "0123456789")
+var dateWords = map[string]bool{}
+
+func init() {
+	for _, w := range strings.Fields(`monday tuesday wednesday thursday friday saturday sunday mon tue tues wed thu thur thurs fri sat sun
+		january february march april june july august september october november december jan feb mar apr jun jul aug sep sept oct nov dec`) {
+		dateWords[w] = true
+	}
 }
 
-// similarity 页面相似度：状态码不同为 0；否则为 3-gram Jaccard（两者都无内容时比较跳转目标）。
+// dynamicToken：含数字的词、长度 >= 20 的词、英文星期/月份名。
+func dynamicToken(w string) bool {
+	return len(w) >= 20 || strings.ContainsAny(w, "0123456789") || dateWords[w]
+}
+
+// similarity 两页的 3-gram Jaccard：状态码不同为 0（两者都无内容时比较跳转目标）。
 func similarity(a, b *probeResult) float64 {
 	if a.Status != b.Status {
 		return 0
 	}
 	ta, tb := pageTokens(a), pageTokens(b)
 	if len(ta) == 0 && len(tb) == 0 {
-		ra := strings.ReplaceAll(strings.ToLower(a.Redirect), strings.ToLower(a.Host), "")
-		rb := strings.ReplaceAll(strings.ToLower(b.Redirect), strings.ToLower(b.Host), "")
-		if ra == rb {
-			return 1
-		}
-		return 0
+		return sameRedirect(a, b)
 	}
 	inter := 0
 	for k := range ta {
@@ -230,38 +246,123 @@ func similarity(a, b *probeResult) float64 {
 	return float64(inter) / float64(len(ta)+len(tb)-inter)
 }
 
-// wildcardPage 取父域随机子域的对照页（按 parent+scheme 缓存）。
+func sameRedirect(a, b *probeResult) float64 {
+	ra := strings.ReplaceAll(strings.ToLower(a.Redirect), strings.ToLower(a.Host), "")
+	rb := strings.ReplaceAll(strings.ToLower(b.Redirect), strings.ToLower(b.Host), "")
+	if ra == rb {
+		return 1
+	}
+	return 0
+}
+
+// lcs 返回两个词序列的最长公共子序列。
+func lcs(a, b []string) []string {
+	dp := make([][]int32, len(a)+1)
+	for i := range dp {
+		dp[i] = make([]int32, len(b)+1)
+	}
+	for i := len(a) - 1; i >= 0; i-- {
+		for j := len(b) - 1; j >= 0; j-- {
+			if a[i] == b[j] {
+				dp[i][j] = dp[i+1][j+1] + 1
+			} else {
+				dp[i][j] = max(dp[i+1][j], dp[i][j+1])
+			}
+		}
+	}
+	var out []string
+	for i, j := 0, 0; i < len(a) && j < len(b); {
+		switch {
+		case a[i] == b[j]:
+			out = append(out, a[i])
+			i, j = i+1, j+1
+		case dp[i+1][j] >= dp[i][j+1]:
+			i++
+		default:
+			j++
+		}
+	}
+	return out
+}
+
+// wildcardTemplate 由同一父域两个随机子域的页面构成：两页共同的词序列为模板，
+// 两页之间不同的词（规则外的随机词、base64、日期等）视为动态内容被掩码，allowed 为每页动态词数。
+type wildcardTemplate struct {
+	sample   *probeResult
+	template []string
+	allowed  int
+}
+
+// templateSimilarity 候选页与模板的相似度：模板覆盖率，超出动态词配额的多余词计入分母。
+func (t *wildcardTemplate) similarity(r *probeResult) float64 {
+	if r.Status != t.sample.Status {
+		return 0
+	}
+	words := pageWords(r)
+	if len(t.template) == 0 {
+		if len(words) == 0 {
+			return sameRedirect(r, t.sample)
+		}
+		return 0
+	}
+	common := len(lcs(words, t.template))
+	extra := max(0, len(words)-common-t.allowed)
+	return float64(common) / float64(len(t.template)+extra)
+}
+
+// pageCache 缓存每个 parent+scheme 的泛解析模板。
 type pageCache struct {
 	mu sync.Mutex
-	m  map[string]*probeResult
+	m  map[string]*wildcardTemplate
 	ok map[string]bool
 }
 
-func (p *prober) controlPage(ctx context.Context, c *pageCache, scheme, parent string) *probeResult {
+func (p *prober) randomPage(ctx context.Context, scheme, parent string) *probeResult {
+	b := make([]byte, 8)
+	rand.Read(b)
+	r, err := p.getWith(ctx, p.verify, scheme, "wc-"+hex.EncodeToString(b)+"."+parent)
+	if err != nil {
+		return nil
+	}
+	return r
+}
+
+// controlTemplate 取父域 2 个随机子域的对照页建立模板（按 parent+scheme 缓存）。
+func (p *prober) controlTemplate(ctx context.Context, c *pageCache, scheme, parent string) *wildcardTemplate {
 	key := scheme + "://" + parent
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.ok[key] {
 		return c.m[key]
 	}
-	b := make([]byte, 8)
-	rand.Read(b)
-	r, err := p.getWith(ctx, p.verify, scheme, "wc-"+hex.EncodeToString(b)+"."+parent)
-	if err != nil {
-		r = nil
+	c.ok[key] = true
+	a, b := p.randomPage(ctx, scheme, parent), p.randomPage(ctx, scheme, parent)
+	if a == nil || b == nil {
+		if a == nil {
+			a = b
+		}
+		if a != nil {
+			c.m[key] = &wildcardTemplate{sample: a, template: pageWords(a)}
+		}
+		return c.m[key]
 	}
-	c.m[key], c.ok[key] = r, true
-	return r
+	if a.Status != b.Status {
+		return nil // 两个随机子域状态码都不一致：不按泛解析处理
+	}
+	wa, wb := pageWords(a), pageWords(b)
+	tpl := lcs(wa, wb)
+	c.m[key] = &wildcardTemplate{sample: a, template: tpl, allowed: max(len(wa), len(wb)) - len(tpl)}
+	return c.m[key]
 }
 
-// isWildcardPage：结果与同 scheme 的父域随机子域页面相似度 >= 阈值。
+// isWildcardPage：结果与同 scheme 的父域泛解析模板相似度 >= 阈值。
 func (p *prober) isWildcardPage(ctx context.Context, c *pageCache, r *probeResult) bool {
 	dot := strings.IndexByte(r.Host, '.')
 	if dot < 0 {
 		return false
 	}
-	ctrl := p.controlPage(ctx, c, r.Scheme, r.Host[dot+1:])
-	return ctrl != nil && similarity(r, ctrl) >= p.cfg.Similarity
+	t := p.controlTemplate(ctx, c, r.Scheme, r.Host[dot+1:])
+	return t != nil && t.similarity(r) >= p.cfg.Similarity
 }
 
 // httpHandler 是 http 类扫描：对每个主机 GET /，记录状态码/标题/指纹/跳转并 upsert urls。
@@ -270,7 +371,7 @@ func (p *prober) isWildcardPage(ctx context.Context, c *pageCache, r *probeResul
 // （wildcard=false、入库 URL、生成新增），否则标 wildcard、不入库 URL。超出上限的候选直接标 wildcard。
 func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 	return func(ctx context.Context, scanID int64, hosts []string) ([]string, error) {
-		cache := &pageCache{m: map[string]*probeResult{}, ok: map[string]bool{}}
+		cache := &pageCache{m: map[string]*wildcardTemplate{}, ok: map[string]bool{}}
 		type item struct {
 			host      string
 			assetID   int64

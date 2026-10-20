@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -28,10 +29,20 @@ func randomTokenWildcardServer(t *testing.T) httpConfig {
 		rand.Read(b)
 		vid, rid := hex.EncodeToString(b[:8]), hex.EncodeToString(b[8:])
 		uuid := rid[:8] + "-" + rid[8:12] + "-" + rid[12:16] + "-" + rid[16:20] + "-" + rid[20:]
+		// 规则外动态内容（交付复现）：10 位纯字母随机词、短 base64、文本星期/月份日期
+		letters := make([]byte, 10)
+		for i := range letters {
+			letters[i] = 'a' + b[i%len(b)]%26
+		}
+		b64 := base64.StdEncoding.EncodeToString(b[:7])
+		days := []string{"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"}
+		months := []string{"January", "March", "May", "July", "October", "December"}
+		date := days[int(b[0])%7] + ", " + months[int(b[1])%6] + " " + fmt.Sprint(1+int(b[2])%28)
 		fmt.Fprintf(w, `<html><head><title>Welcome</title></head><body>
 <h1>Welcome %s</h1><p>This domain is parked by the hosting provider. If you are the owner of this
 domain please log in to the control panel to configure your website.</p>
-<p>visitor id: %s</p><p>request-id: %s</p><p>generated at %d</p></body></html>`, host, vid, uuid, time.Now().UnixNano())
+<p>visitor id: %s</p><p>request-id: %s</p><p>generated at %d</p>
+<p>session %s token %s</p><p>Last updated %s</p></body></html>`, host, vid, uuid, time.Now().UnixNano(), letters, b64, date)
 	})
 	plain, tls := httptest.NewServer(h), httptest.NewTLSServer(h)
 	t.Cleanup(plain.Close)
@@ -123,13 +134,16 @@ func TestPageNormalization(t *testing.T) {
 	a, _ := p.get(ctx, "http", "x1.s1.test")
 	b, _ := p.get(ctx, "http", "wc-0011223344556677.s1.test")
 	lb, _ := p.get(ctx, "http", "lb.s1.test")
-	if s := similarity(a, b); s < 0.9 {
-		t.Fatalf("random-token wildcard pages similarity %.3f", s)
+	cache := &pageCache{m: map[string]*wildcardTemplate{}, ok: map[string]bool{}}
+	tpl := p.controlTemplate(ctx, cache, "http", "s1.test")
+	if s := tpl.similarity(a); s < 0.9 {
+		t.Fatalf("random-token wildcard page vs template %.3f", s)
 	}
-	if s := similarity(lb, b); s >= 0.3 {
-		t.Fatalf("lb similarity %.3f", s)
+	if s := tpl.similarity(lb); s >= 0.3 {
+		t.Fatalf("lb vs template %.3f", s)
 	}
-	t.Logf("随机 token 泛解析页 sim=%.3f；lb vs 对照 sim=%.3f", similarity(a, b), similarity(lb, b))
+	t.Logf("两页直接 Jaccard=%.3f（规则外随机词/base64/日期拉低）；掩码模板：泛解析页 sim=%.3f，lb sim=%.3f（模板 %d 词，动态配额 %d）",
+		similarity(a, b), tpl.similarity(a), tpl.similarity(lb), len(tpl.template), tpl.allowed)
 }
 
 // 复核单独限速与每轮上限：超出上限的候选不探测、直接标 wildcard。
