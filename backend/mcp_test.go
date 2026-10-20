@@ -213,3 +213,42 @@ func TestMCPRebindingProtection(t *testing.T) {
 		t.Logf("经 127.0.0.1 到达，Host=%s → %d", host, resp.StatusCode)
 	}
 }
+
+// 同一组非法参数在 REST 与 MCP 上都拒绝，且错误信息一致。
+func TestMCPRESTSameValidation(t *testing.T) {
+	_, c, _ := newAPITest(t, 500)
+	s, err := mcpSession(t, c.srv.URL, testBootstrap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	cases := []struct {
+		tool, rest string
+		args       map[string]any
+	}{
+		{"search_assets", "/api/assets?vendor=-1", map[string]any{"vendor": -1}},
+		{"search_assets", "/api/assets?vendor=0", map[string]any{"vendor": 0}},
+		{"search_assets", "/api/assets?limit=0", map[string]any{"limit": 0}},
+		{"search_assets", "/api/assets?limit=501", map[string]any{"limit": 501}},
+		{"search_assets", "/api/assets?cursor=x", map[string]any{"cursor": "x"}},
+		{"search_assets", "/api/assets?cursor=-5", map[string]any{"cursor": "-5"}},
+		{"search_assets", "/api/assets?new_since=yesterday", map[string]any{"new_since": "yesterday"}},
+		{"list_new_assets", "/api/events?type=new&vendor=-1", map[string]any{"vendor": -1}},
+		{"list_new_assets", "/api/events?type=new&limit=0", map[string]any{"limit": 0}},
+		{"list_new_assets", "/api/events?type=new&limit=501", map[string]any{"limit": 501}},
+		{"list_new_assets", "/api/events?type=new&cursor=abc", map[string]any{"cursor": "abc"}},
+		{"list_new_assets", "/api/events?type=new&since=2026-13-01", map[string]any{"since": "2026-13-01"}},
+	}
+	for _, cs := range cases {
+		rest := c.want(400, "GET", cs.rest, nil)
+		out, isErr := callTool(t, s, cs.tool, cs.args)
+		if !isErr || out["error"] != rest["error"] {
+			t.Fatalf("%s %v: mcp %v (isError=%v) rest %v", cs.tool, cs.args, out, isErr, rest)
+		}
+		t.Logf("%s %v / GET %s → %q（两边一致）", cs.tool, cs.args, cs.rest, rest["error"])
+	}
+	// 未传 limit 用默认值，不报错
+	if out, isErr := callTool(t, s, "search_assets", map[string]any{}); isErr {
+		t.Fatalf("default limit: %v", out)
+	}
+}

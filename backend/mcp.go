@@ -13,20 +13,20 @@ import (
 // MCP server（T13）：Streamable HTTP 挂在 /mcp，复用 API 的 Bearer token 认证；四个工具复用 T12 的查询逻辑。
 
 type listNewAssetsIn struct {
-	Vendor          int64  `json:"vendor,omitempty" jsonschema:"only this vendor id"`
+	Vendor          *int64 `json:"vendor,omitempty" jsonschema:"only this vendor id (>= 1)"`
 	Since           string `json:"since,omitempty" jsonschema:"RFC3339; only new events at or after this time"`
 	IncludeWildcard bool   `json:"include_wildcard,omitempty" jsonschema:"include wildcard assets (default false)"`
-	Limit           int    `json:"limit,omitempty" jsonschema:"1..500, default 50"`
+	Limit           *int   `json:"limit,omitempty" jsonschema:"1..500, default 50"`
 	Cursor          string `json:"cursor,omitempty" jsonschema:"next_cursor from the previous page"`
 }
 
 type searchAssetsIn struct {
 	Q               string `json:"q,omitempty" jsonschema:"substring of subdomain or URL title (case-insensitive)"`
-	Vendor          int64  `json:"vendor,omitempty" jsonschema:"only this vendor id"`
+	Vendor          *int64 `json:"vendor,omitempty" jsonschema:"only this vendor id (>= 1)"`
 	InScope         *bool  `json:"in_scope,omitempty" jsonschema:"filter by in_scope"`
 	NewSince        string `json:"new_since,omitempty" jsonschema:"RFC3339; asset new event at or after this time"`
 	IncludeWildcard bool   `json:"include_wildcard,omitempty" jsonschema:"include wildcard assets (default false)"`
-	Limit           int    `json:"limit,omitempty" jsonschema:"1..500, default 50"`
+	Limit           *int   `json:"limit,omitempty" jsonschema:"1..500, default 50"`
 	Cursor          string `json:"cursor,omitempty" jsonschema:"next_cursor from the previous page"`
 }
 
@@ -46,9 +46,11 @@ type pageOut struct {
 
 type mapOut map[string]any
 
-func parsePage(limit int, cursor string) (int, int64, error) {
-	if limit == 0 {
-		limit = 50
+// parsePage：未传 limit 用默认 50；传了（含 0）按 REST 同样规则校验。
+func parsePage(limit *int, cursor string) (int, int64, error) {
+	l := 50
+	if limit != nil {
+		l = *limit
 	}
 	var c int64
 	if cursor != "" {
@@ -58,7 +60,7 @@ func parsePage(limit int, cursor string) (int, int64, error) {
 		}
 		c = n
 	}
-	return limit, c, nil
+	return l, c, checkPage(l, c)
 }
 
 func parseTime(name, s string) (*time.Time, error) {
@@ -70,13 +72,6 @@ func parseTime(name, s string) (*time.Time, error) {
 		return nil, errf(400, "%s must be RFC3339", name)
 	}
 	return &t, nil
-}
-
-func optID(v int64) *int64 {
-	if v == 0 {
-		return nil
-	}
-	return &v
 }
 
 // toolErr：业务错误作为工具错误结果返回（isError=true，文本为 {"error":...}），其它错误交给 SDK。
@@ -102,7 +97,7 @@ func (a *api) mcpServer() *mcp.Server {
 			if err != nil {
 				return toolErr[pageOut](err)
 			}
-			list, err := a.queryEvents(ctx, eventFilter{"asset", "new", since, nil, optID(in.Vendor), in.IncludeWildcard, limit, cursor})
+			list, err := a.queryEvents(ctx, eventFilter{"asset", "new", since, nil, in.Vendor, in.IncludeWildcard, limit, cursor})
 			if err != nil {
 				return toolErr[pageOut](err)
 			}
@@ -118,7 +113,7 @@ func (a *api) mcpServer() *mcp.Server {
 			if err != nil {
 				return toolErr[pageOut](err)
 			}
-			list, err := a.queryAssets(ctx, assetFilter{optID(in.Vendor), in.InScope, in.IncludeWildcard, in.Q, since, limit, cursor})
+			list, err := a.queryAssets(ctx, assetFilter{in.Vendor, in.InScope, in.IncludeWildcard, in.Q, since, limit, cursor})
 			if err != nil {
 				return toolErr[pageOut](err)
 			}

@@ -682,6 +682,14 @@ type assetFilter struct {
 	Cursor          int64
 }
 
+// checkVendor：传了 vendor 必须 >= 1（REST 与 MCP 共用）。
+func checkVendor(v *int64) error {
+	if v != nil && *v < 1 {
+		return errf(400, "invalid vendor")
+	}
+	return nil
+}
+
 func checkPage(limit int, cursor int64) error {
 	if limit < 1 || limit > 500 {
 		return errf(400, "limit must be 1..500")
@@ -701,6 +709,9 @@ func nextCursor(list []map[string]any, limit int) any {
 
 // queryAssets：vendor / in_scope / q（子域名或 URL 标题子串）/ new_since（资产 new 事件时间）/ include_wildcard（默认过滤）。
 func (a *api) queryAssets(ctx context.Context, f assetFilter) ([]map[string]any, error) {
+	if err := checkVendor(f.Vendor); err != nil {
+		return nil, err
+	}
 	if err := checkPage(f.Limit, f.Cursor); err != nil {
 		return nil, err
 	}
@@ -778,6 +789,9 @@ type eventFilter struct {
 
 // queryEvents：level=asset（默认，资产级）|url|all；type 不传返回 new/changed/recovered；资产级 new 事件嵌套 url_events。
 func (a *api) queryEvents(ctx context.Context, f eventFilter) ([]map[string]any, error) {
+	if err := checkVendor(f.Vendor); err != nil {
+		return nil, err
+	}
 	if err := checkPage(f.Limit, f.Cursor); err != nil {
 		return nil, err
 	}
