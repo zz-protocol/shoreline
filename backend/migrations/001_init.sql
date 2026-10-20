@@ -2,6 +2,7 @@
 CREATE TABLE IF NOT EXISTS vendors (
     id         BIGSERIAL PRIMARY KEY,
     name       TEXT NOT NULL UNIQUE,
+    active_enabled BOOLEAN NOT NULL DEFAULT false, -- 主动发现总开关（T10，默认关）
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -71,7 +72,7 @@ CREATE TABLE IF NOT EXISTS scan_tasks (
     id          BIGSERIAL PRIMARY KEY,
     vendor_id   BIGINT REFERENCES vendors(id) ON DELETE CASCADE,
     root_id     BIGINT REFERENCES root_domains(id) ON DELETE CASCADE,
-    kind        TEXT NOT NULL CHECK (kind IN ('passive', 'dns', 'http')),
+    kind        TEXT NOT NULL CHECK (kind IN ('passive', 'active', 'dns', 'http')),
     status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'done', 'failed')),
     error       TEXT,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),

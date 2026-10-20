@@ -30,6 +30,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	acfg, err := activeConfigFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
 	hcfg, err := httpConfigFromEnv()
 	if err != nil {
 		log.Fatal(err)
@@ -51,6 +55,7 @@ func main() {
 		"passive": passiveHandler(pool, passiveSources(pcfg)),
 		"dns":     dnsHandler(pool, newResolver(dcfg)),
 		"http":    httpHandler(pool, newProber(hcfg)),
+		"active":  activeHandler(pool, newActiveScanner(acfg, dcfg)),
 	}
 	srv, wmux := newWorker(asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")}, pool, cfg, handlers)
 	go func() { log.Fatal(srv.Run(wmux)) }()

@@ -141,3 +141,9 @@
 | nginx:1.27-alpine | BSD-2-Clause |
 | 0rickyy0/certstream-server-go:v1.10.1（可选 profile） | MIT |
 | golang / node / alpine（仅构建） | BSD-3 / MIT / MIT 等 |
+
+## 数据文件
+
+| 文件 | 来源 | 许可 |
+|---|---|---|
+| backend/wordlists/subdomains-top1million-5000.txt | SecLists（https://github.com/danielmiessler/SecLists）Discovery/DNS/subdomains-top1million-5000.txt，commit 61060549893d | MIT，Copyright (c) 2018 Daniel Miessler |

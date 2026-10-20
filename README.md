@@ -109,3 +109,22 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 - 新旧值比较在 `SELECT ... FOR UPDATE` 事务里做，并发同结果同一字段只记一条 changed；`new` 另由唯一部分索引（迁移 008，建索引前先去重存量重复）保证只生成一次。
 
 迁移编号：004 含大小写重复根域合并（先合并再加约束）；008 事件去重+唯一索引；009 assets.parent_wildcard / verified_real_at。首个公开版本发布前允许原地修改迁移，开发库需重建。
+
+### 主动发现（T10）
+
+按厂商总开关 `vendors.active_enabled`（默认关）；关闭时 active 任务直接跳过、不发任何 DNS 查询。只支持手动触发（`TriggerScan(..., "active", ...)`），定时在 T15。产出交 dns → http。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| ACTIVE_QPS | 20 | 主动发现所有 DNS 查询（批量解析、可信复核、泛解析探测）共享的每秒查询数（单实例），>0 |
+| ACTIVE_MAX_CANDIDATES | 20000 | 每根域每轮候选上限（含递归一层），整数 >= 1 |
+| ACTIVE_TRUSTED_RESOLVERS | 223.5.5.5,119.29.29.29,1.1.1.1,8.8.8.8 | 可信 resolver，逗号分隔，未写端口默认 53 |
+| ACTIVE_WORDLIST | 内置 | 外部字典文件（每行一词，# 开头为注释），设置后替换内置字典 |
+| RATE_ACTIVE | 1 | active 任务速率（任务/秒，同 RATE_*） |
+
+非法值启动即退出。
+
+- 字典：内置 SecLists `Discovery/DNS/subdomains-top1million-5000.txt`（MIT，取自 commit 6106054），转小写、跳过不合法标签与重复。
+- 变形：对已解析、非泛解析的已知子域首个标签做数字 ±1、dev/test/staging/api 前后缀（`-` 连接）及作为新一级前缀，每子域最多 50 个。
+- 流程：批量用 DNS_RESOLVERS 解析 → 命中者用可信 resolver 复核（不通过视为投毒剔除）→ 按 T7 规则（父域随机子域 IP 集合）过滤泛解析 → 以本轮新增的非泛解析子域为父域再跑一层字典 → 入库（来源 active）。已入库子域不作候选。
+- 总速率仍按单实例 × 实例数计算。

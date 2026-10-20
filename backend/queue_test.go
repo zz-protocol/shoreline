@@ -153,7 +153,7 @@ func testConfig(rates map[string]rate.Limit) workerConfig {
 	return workerConfig{Rates: rates, MaxRetry: 3, RetryBase: time.Second, Concurrent: 10, PollDelay: 100 * time.Millisecond}
 }
 
-var fastRates = map[string]rate.Limit{"passive": 100, "dns": 100, "http": 100}
+var fastRates = map[string]rate.Limit{"passive": 100, "active": 100, "dns": 100, "http": 100}
 
 // 手动触发三类扫描，全部 done，http 受限速。
 func TestTriggerScanEndToEnd(t *testing.T) {
