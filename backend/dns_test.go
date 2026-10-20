@@ -15,11 +15,11 @@ import (
 
 // mockDNS 在 127.0.0.1 起本地 UDP DNS 服务。zone：
 //
-//	a.example.test           A 1.1.1.1
+//	a.example.test           A 192.0.2.1
 //	v6.example.test          AAAA 2001:db8::1
-//	*.wild.example.test      A 9.9.9.9（泛解析）
-//	real.wild.example.test   A 2.2.2.2（泛解析下的真实记录）
-//	cdn.example.test         CNAME x.kunlunsl.com → A 3.3.3.3
+//	*.wild.example.test      A 192.0.2.9（泛解析）
+//	real.wild.example.test   A 192.0.2.2（泛解析下的真实记录）
+//	cdn.example.test         CNAME x.kunlunsl.com → A 192.0.2.3
 //	其他                     NXDOMAIN
 func mockDNS(t *testing.T) (addr string, queried func() []string) {
 	var mu sync.Mutex
@@ -41,7 +41,7 @@ func mockDNS(t *testing.T) (addr string, queried func() []string) {
 		switch {
 		case name == "a.example.test.":
 			if isA {
-				m.Answer = append(m.Answer, a(q.Name, "1.1.1.1"))
+				m.Answer = append(m.Answer, a(q.Name, "192.0.2.1"))
 			}
 		case name == "v6.example.test.":
 			if isAAAA {
@@ -50,16 +50,16 @@ func mockDNS(t *testing.T) (addr string, queried func() []string) {
 			}
 		case name == "real.wild.example.test.":
 			if isA {
-				m.Answer = append(m.Answer, a(q.Name, "2.2.2.2"))
+				m.Answer = append(m.Answer, a(q.Name, "192.0.2.2"))
 			}
 		case strings.HasSuffix(name, ".wild.example.test."):
 			if isA {
-				m.Answer = append(m.Answer, a(q.Name, "9.9.9.9"))
+				m.Answer = append(m.Answer, a(q.Name, "192.0.2.9"))
 			}
 		case name == "cdn.example.test.":
 			if isA {
 				rr, _ := dns.NewRR(q.Name + " 60 IN CNAME x.kunlunsl.com.")
-				m.Answer = append(m.Answer, rr, a("x.kunlunsl.com.", "3.3.3.3"))
+				m.Answer = append(m.Answer, rr, a("x.kunlunsl.com.", "192.0.2.3"))
 			}
 		default:
 			m.Rcode = dns.RcodeNameError
@@ -72,7 +72,7 @@ func mockDNS(t *testing.T) (addr string, queried func() []string) {
 }
 
 func testResolver(addrs ...string) *resolver {
-	return newResolver(dnsConfig{Resolvers: addrs, Timeout: 500 * time.Millisecond, WildcardProbe: 3, Concurrency: 4})
+	return newResolver(dnsConfig{Resolvers: addrs, Timeout: 500 * time.Millisecond, QPS: 10000, WildcardProbe: 3, Concurrency: 4})
 }
 
 func TestResolveHostsMock(t *testing.T) {
@@ -91,12 +91,12 @@ func TestResolveHostsMock(t *testing.T) {
 			t.Errorf("%s: %+v", h, g)
 		}
 	}
-	check("a.example.test", true, false, []string{"1.1.1.1"}, "")
+	check("a.example.test", true, false, []string{"192.0.2.1"}, "")
 	check("v6.example.test", true, false, []string{"2001:db8::1"}, "")
-	check("real.wild.example.test", true, false, []string{"2.2.2.2"}, "")
-	check("fake1.wild.example.test", true, true, []string{"9.9.9.9"}, "")
-	check("fake2.wild.example.test", true, true, []string{"9.9.9.9"}, "")
-	check("cdn.example.test", true, false, []string{"3.3.3.3"}, "aliyun")
+	check("real.wild.example.test", true, false, []string{"192.0.2.2"}, "")
+	check("fake1.wild.example.test", true, true, []string{"192.0.2.9"}, "")
+	check("fake2.wild.example.test", true, true, []string{"192.0.2.9"}, "")
+	check("cdn.example.test", true, false, []string{"192.0.2.3"}, "aliyun")
 	check("nx.example.test", false, false, nil, "")
 	if c := got["cdn.example.test"].Result.CNAMEs; !reflect.DeepEqual(c, []string{"x.kunlunsl.com"}) {
 		t.Errorf("cnames %v", c)
@@ -114,7 +114,7 @@ func TestResolverFallback(t *testing.T) {
 	defer dead.Close()
 	r := testResolver(dead.LocalAddr().String(), addr)
 	res, err := r.lookup(context.Background(), "a.example.test")
-	if err != nil || !reflect.DeepEqual(res.IPs, []string{"1.1.1.1"}) {
+	if err != nil || !reflect.DeepEqual(res.IPs, []string{"192.0.2.1"}) {
 		t.Fatalf("fallback: %+v %v", res, err)
 	}
 }
@@ -129,6 +129,35 @@ func TestCDNOf(t *testing.T) {
 	}
 }
 
+// cdncheck 内置 IP 段：本地匹配，不联网（IP 取自其内置数据 cloudfront 段）。
+func TestCDNOfIPs(t *testing.T) {
+	if got := cdnOfIPs([]string{"192.0.2.1", "120.52.22.100"}); got != "cloudfront" {
+		t.Errorf("cdnOfIPs = %q, want cloudfront", got)
+	}
+	if got := cdnOfIPs([]string{"192.0.2.1", "not-an-ip"}); got != "" {
+		t.Errorf("non-CDN = %q", got)
+	}
+}
+
+// QPS 限速：30 次查询 @20/s（burst 1）应约 1.45s。
+func TestDNSQPS(t *testing.T) {
+	addr, queried := mockDNS(t)
+	r := newResolver(dnsConfig{Resolvers: []string{addr}, Timeout: time.Second, QPS: 20, WildcardProbe: 0, Concurrency: 10})
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i := 0; i < 15; i++ { // 每个 host 查 A + AAAA = 2 次
+		wg.Add(1)
+		go func() { defer wg.Done(); r.lookup(context.Background(), "a.example.test") }()
+	}
+	wg.Wait()
+	el := time.Since(start)
+	n := len(queried())
+	t.Logf("%d queries @20qps took %v", n, el.Round(time.Millisecond))
+	if n != 30 || el < 1300*time.Millisecond || el > 2200*time.Millisecond {
+		t.Fatalf("%d queries in %v, want 30 in ~1.45s", n, el)
+	}
+}
+
 func TestDNSConfigFromEnv(t *testing.T) {
 	t.Setenv("DNS_RESOLVERS", "127.0.0.1:5353, 10.0.0.1")
 	t.Setenv("DNS_TIMEOUT", "1s")
@@ -136,9 +165,21 @@ func TestDNSConfigFromEnv(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(c.Resolvers, []string{"127.0.0.1:5353", "10.0.0.1:53"}) || c.Timeout != time.Second {
 		t.Fatalf("%+v %v", c, err)
 	}
-	t.Setenv("DNS_TIMEOUT", "0s")
-	if _, err := dnsConfigFromEnv(); err == nil {
-		t.Fatal("DNS_TIMEOUT=0s should be rejected")
+	if c.QPS != 50 {
+		t.Fatalf("default QPS %v", c.QPS)
+	}
+	t.Setenv("DNS_QPS", "12.5")
+	if c, _ = dnsConfigFromEnv(); c.QPS != 12.5 {
+		t.Fatalf("QPS override %v", c.QPS)
+	}
+	for k, vs := range map[string][]string{"DNS_TIMEOUT": {"0s", "x"}, "DNS_QPS": {"0", "-1", "NaN", "Inf", "x"}} {
+		for _, v := range vs {
+			t.Setenv(k, v)
+			if _, err := dnsConfigFromEnv(); err == nil {
+				t.Errorf("%s=%s should be rejected", k, v)
+			}
+		}
+		t.Setenv(k, "")
 	}
 }
 
@@ -198,7 +239,7 @@ func TestDNSHandlerWildcardNoFakeAssets(t *testing.T) {
 	var cdn string
 	var ips []string
 	e.pool.QueryRow(ctx, `SELECT cdn, ips FROM assets WHERE subdomain = 'cdn.example.test'`).Scan(&cdn, &ips)
-	if cdn != "aliyun" || !reflect.DeepEqual(ips, []string{"3.3.3.3"}) {
+	if cdn != "aliyun" || !reflect.DeepEqual(ips, []string{"192.0.2.3"}) {
 		t.Fatalf("cdn asset: %s %v", cdn, ips)
 	}
 	t.Logf("live(non-wildcard) assets: %d of %d candidates; %d wildcard marked", live, 24, wild)

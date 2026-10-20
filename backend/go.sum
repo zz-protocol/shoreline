@@ -194,6 +194,8 @@ github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 h1:o4JXh1EVt
 github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55/go.mod h1:OmDBASR4679mdNQnz2pUhc2G8CO2JrUAVFDRBDP/hJE=
 github.com/projectdiscovery/blackrock v0.0.2 h1:mxXdu0uM8P2L2Qi210COlU8QiICPFW/Rxk5QUhlPO2k=
 github.com/projectdiscovery/blackrock v0.0.2/go.mod h1:ANUtjDfaVrqB453bzToU+YB4cUbvBRpLvEwoWIwlTss=
+github.com/projectdiscovery/cdncheck v1.3.2 h1:I453ZWNBeG0WWIy3wi9412l4PTzorLgebEnqmbcpSfo=
+github.com/projectdiscovery/cdncheck v1.3.2/go.mod h1:5IkUMMlcGaeg1DWW5oJVd3r9X3EpJ88j5HxBeF4Me9M=
 github.com/projectdiscovery/chaos-client v0.5.2 h1:dN+7GXEypsJAbCD//dBcUxzAEAEH1fjc/7Rf4F/RiNU=
 github.com/projectdiscovery/chaos-client v0.5.2/go.mod h1:KnoJ/NJPhll42uaqlDga6oafFfNw5l2XI2ajRijtDuU=
 github.com/projectdiscovery/fastdialer v0.5.22 h1:necWFAay30bTSB1A3qshT6aopqM7jn32c8o+k3NfIIc=

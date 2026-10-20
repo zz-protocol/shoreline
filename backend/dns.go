@@ -5,26 +5,31 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/miekg/dns"
+	"github.com/projectdiscovery/cdncheck"
+	"golang.org/x/time/rate"
 )
 
-// dnsConfig：DNS_RESOLVERS 逗号分隔 host:port；DNS_TIMEOUT 单次查询超时。
+// dnsConfig：DNS_RESOLVERS 逗号分隔 host:port；DNS_TIMEOUT 单次查询超时；DNS_QPS 每秒查询数（单实例）。
 type dnsConfig struct {
 	Resolvers     []string
 	Timeout       time.Duration
+	QPS           float64
 	WildcardProbe int // 每个父域探测的随机子域个数
 	Concurrency   int
 }
 
 func dnsConfigFromEnv() (dnsConfig, error) {
-	c := dnsConfig{Resolvers: []string{"223.5.5.5:53", "119.29.29.29:53", "1.1.1.1:53"}, Timeout: 2 * time.Second, WildcardProbe: 3, Concurrency: 20}
+	c := dnsConfig{Resolvers: []string{"223.5.5.5:53", "119.29.29.29:53", "1.1.1.1:53"}, Timeout: 2 * time.Second, QPS: 50, WildcardProbe: 3, Concurrency: 20}
 	if s := os.Getenv("DNS_RESOLVERS"); s != "" {
 		c.Resolvers = nil
 		for _, r := range strings.Split(s, ",") {
@@ -42,6 +47,13 @@ func dnsConfigFromEnv() (dnsConfig, error) {
 		}
 		c.Timeout = d
 	}
+	if s := os.Getenv("DNS_QPS"); s != "" {
+		f, err := strconv.ParseFloat(s, 64)
+		if !validPositive(f, err) {
+			return c, fmt.Errorf("DNS_QPS: invalid %q", s)
+		}
+		c.QPS = f
+	}
 	return c, nil
 }
 
@@ -53,6 +65,28 @@ var cdnCNAMESuffixes = map[string]string{
 	"wscdns.com": "wangsu", "chinanetcenter.com": "wangsu", "lxdns.com": "wangsu",
 	"cloudflare.net": "cloudflare", "akamaiedge.net": "akamai", "edgekey.net": "akamai", "akamaitechnologies.com": "akamai",
 	"cloudfront.net": "cloudfront", "fastly.net": "fastly", "edgesuite.net": "akamai",
+}
+
+// cdnIPs 用 cdncheck（MIT）内置 IP 段数据识别 CDN/WAF，只做本地匹配，不发起网络请求。
+var cdnIPs = sync.OnceValue(func() *cdncheck.Client {
+	c, _ := cdncheck.NewWithOpts(1, []string{"127.0.0.1:53"}) // resolver 不会被使用（只调 CheckCDN/CheckWAF）
+	return c
+})
+
+func cdnOfIPs(ips []string) string {
+	for _, s := range ips {
+		ip := net.ParseIP(s)
+		if ip == nil {
+			continue
+		}
+		if ok, v, err := cdnIPs().CheckCDN(ip); err == nil && ok && v != "" {
+			return v
+		}
+		if ok, v, err := cdnIPs().CheckWAF(ip); err == nil && ok && v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func cdnOf(cnames []string) string {
@@ -73,12 +107,16 @@ type dnsResult struct {
 }
 
 type resolver struct {
-	cfg    dnsConfig
-	client *dns.Client
+	cfg     dnsConfig
+	client  *dns.Client
+	limiter *rate.Limiter // 所有查询（含泛解析探测、回退重试）共享
 }
 
 func newResolver(cfg dnsConfig) *resolver {
-	return &resolver{cfg: cfg, client: &dns.Client{Timeout: cfg.Timeout}}
+	if cfg.QPS <= 0 {
+		cfg.QPS = 50
+	}
+	return &resolver{cfg: cfg, client: &dns.Client{Timeout: cfg.Timeout}, limiter: rate.NewLimiter(rate.Limit(cfg.QPS), 1)}
 }
 
 // lookup 查询 A 与 AAAA；依次尝试各 resolver，NXDOMAIN/无记录返回空结果。
@@ -91,6 +129,9 @@ func (r *resolver) lookup(ctx context.Context, host string) (dnsResult, error) {
 		var in *dns.Msg
 		var err error
 		for _, srv := range r.cfg.Resolvers {
+			if err = r.limiter.Wait(ctx); err != nil {
+				return res, err
+			}
 			if in, _, err = r.client.ExchangeContext(ctx, m, srv); err == nil && in.Rcode != dns.RcodeServerFailure {
 				break
 			}
@@ -191,7 +232,9 @@ func (r *resolver) resolveHosts(ctx context.Context, root string, hosts []string
 						hd.Wildcard = all
 					}
 				}
-				hd.CDN = cdnOf(res.CNAMEs)
+				if hd.CDN = cdnOf(res.CNAMEs); hd.CDN == "" {
+					hd.CDN = cdnOfIPs(res.IPs)
+				}
 			}
 			out[i] = hd
 		}(i, h)

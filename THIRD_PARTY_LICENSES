@@ -67,6 +67,7 @@
 | github.com/muesli/termenv | MIT |
 | github.com/pkg/errors | BSD-2-Clause |
 | github.com/projectdiscovery/blackrock | MIT |
+| github.com/projectdiscovery/cdncheck | MIT |
 | github.com/projectdiscovery/chaos-client/pkg/chaos | MIT |
 | github.com/projectdiscovery/fastdialer/fastdialer | MIT |
 | github.com/projectdiscovery/gologger | MIT |
@@ -135,7 +136,7 @@
 | 镜像 | 许可 |
 |---|---|
 | postgres:16-alpine | PostgreSQL License |
-| redis:7-alpine | **注意**：该标签当前指向 7.4.x，许可为 RSALv2 / SSPLv1（非 OSI 开源）；仅作为独立服务运行，不随本项目代码分发。7.2.x 及以前为 BSD-3-Clause（待架构决定是否固定 7.2 或换 Valkey） |
+| valkey/valkey:8-alpine（Redis 兼容，替代 Redis） | BSD-3-Clause |
 | nginx:1.27-alpine | BSD-2-Clause |
 | 0rickyy0/certstream-server-go:v1.10.1（可选 profile） | MIT |
 | golang / node / alpine（仅构建） | BSD-3 / MIT / MIT 等 |
