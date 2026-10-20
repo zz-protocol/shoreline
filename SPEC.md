@@ -73,3 +73,6 @@
 - 组件库：Ant Design 5（深色算法主题）。
 - /healthz 检查 Postgres 和 Redis 连通，任一不通返回 503。
 - 前端容器用生产构建 + nginx 托管；本地开发仍可用 Vite dev。
+- 限速按单进程计，总速率 = 单实例速率 × 实例数（写进 README）。
+- 扫描链路自动串联：passive → dns → http（只传解析成功、非泛解析的）。
+- 失败重试最多 3 次，指数退避，可配置；重试期间状态记为 retrying，用尽后记 failed，failed 是终态。
