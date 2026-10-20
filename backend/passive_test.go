@@ -118,6 +118,24 @@ func TestPassiveConfigFromEnv(t *testing.T) {
 	if _, err := passiveConfigFromEnv(); err == nil {
 		t.Fatal("PASSIVE_PAGES=0 should be rejected")
 	}
+	t.Setenv("PASSIVE_PAGES", "")
+	if c, _ = passiveConfigFromEnv(); c.SubfinderMaxTime != 5*time.Minute || c.SubfinderTimeout != 30*time.Second {
+		t.Fatalf("subfinder defaults %+v", c)
+	}
+	t.Setenv("SUBFINDER_MAX_TIME", "2m")
+	t.Setenv("SUBFINDER_TIMEOUT", "10s")
+	if c, _ = passiveConfigFromEnv(); c.SubfinderMaxTime != 2*time.Minute || c.SubfinderTimeout != 10*time.Second {
+		t.Fatalf("subfinder overrides %+v", c)
+	}
+	for _, v := range []string{"abc", "0s", "-5s", "500ms", "1.5s"} {
+		for _, k := range []string{"SUBFINDER_MAX_TIME", "SUBFINDER_TIMEOUT"} {
+			t.Setenv(k, v)
+			if _, err := passiveConfigFromEnv(); err == nil {
+				t.Errorf("%s=%s should be rejected", k, v)
+			}
+			t.Setenv(k, "30s")
+		}
+	}
 }
 
 func TestSubfinderFreeSources(t *testing.T) {
@@ -212,7 +230,7 @@ func TestPassiveHandlerStores(t *testing.T) {
 	ctx := context.Background()
 	var root string
 	var vendorA int64
-	e.pool.QueryRow(ctx, `UPDATE root_domains SET domain = lower(domain) WHERE id = $1 RETURNING domain, vendor_id`, e.rootID).Scan(&root, &vendorA)
+	e.pool.QueryRow(ctx, `SELECT domain, vendor_id FROM root_domains WHERE id = $1`, e.rootID).Scan(&root, &vendorA) // 入库层已小写
 	e.pool.Exec(ctx, `INSERT INTO scope_rules (vendor_id, kind, pattern) VALUES ($1, 'include', $2), ($1, 'exclude', $3)`,
 		vendorA, "*."+root, "dev."+root)
 	// 另一厂商拥有更长的根域 sub.<root>
@@ -280,4 +298,43 @@ func TestPassiveHandlerStores(t *testing.T) {
 	t.Cleanup(func() {
 		e.pool.Exec(context.Background(), `DELETE FROM assets WHERE subdomain LIKE '%' || $1`, root)
 	})
+}
+
+// 入库层规范化：大写/末尾点的根域按小写存储，被动收集能匹配并入库。
+func TestUppercaseRootMatches(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	var vendorID int64
+	e.pool.QueryRow(ctx, `SELECT vendor_id FROM root_domains WHERE id = $1`, e.rootID).Scan(&vendorID)
+	e.pool.Exec(ctx, `DELETE FROM root_domains WHERE domain = 'upper.test'`)
+	var rootID int64
+	var stored string
+	if err := e.pool.QueryRow(ctx, `INSERT INTO root_domains (vendor_id, domain) VALUES ($1, ' UPPER.Test. ') RETURNING id, domain`,
+		vendorID).Scan(&rootID, &stored); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { e.pool.Exec(context.Background(), `DELETE FROM root_domains WHERE id = $1`, rootID) })
+	if stored != "upper.test" {
+		t.Fatalf("stored root %q", stored)
+	}
+	if _, err := e.pool.Exec(ctx, `INSERT INTO root_domains (vendor_id, domain) VALUES ($1, 'upper.TEST')`, vendorID); err == nil {
+		t.Fatal("case-variant duplicate root should violate unique key")
+	}
+	var scanID int64
+	e.pool.QueryRow(ctx, `INSERT INTO scan_tasks (vendor_id, root_id, kind) VALUES ($1, $2, 'passive') RETURNING id`, vendorID, rootID).Scan(&scanID)
+	src := Source{"crtsh", func(context.Context, string) ([]string, error) { return []string{"WWW.Upper.Test."}, nil }}
+	if _, err := passiveHandler(e.pool, []Source{src})(ctx, scanID, nil); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	e.pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE subdomain = 'www.upper.test' AND root_id = $1`, rootID).Scan(&n)
+	if n != 1 {
+		t.Fatalf("www.upper.test not stored under root (n=%d)", n)
+	}
+	// 直接写入大写子域也被规范化
+	e.pool.Exec(ctx, `INSERT INTO assets (root_id, subdomain) VALUES ($1, 'API.UPPER.TEST.')`, rootID)
+	e.pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE subdomain = 'api.upper.test'`).Scan(&n)
+	if n != 1 {
+		t.Fatal("asset subdomain not normalized")
+	}
 }

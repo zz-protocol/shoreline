@@ -21,8 +21,16 @@ SRC 资产发现与新增监控。MIT 许可。规格见 SPEC.md，任务见 TAS
 | FOFA_KEY / QUAKE_KEY / HUNTER_KEY | 空 | 测绘 API key；为空则跳过该源 |
 | PASSIVE_PAGES | 1 | 测绘源每次查询最多翻页数 |
 | PASSIVE_PAGE_SIZE | 100 | 每页条数 |
+| SUBFINDER_MAX_TIME | 5m | subfinder 单次枚举最长时间（Go duration，整秒，>= 1s） |
+| SUBFINDER_TIMEOUT | 30s | subfinder 单源请求超时（整秒，>= 1s） |
+
+> ⚠️ 测绘 API（FOFA/Quake/Hunter）的请求与响应格式按公开文档实现，**尚未用真实 key 核对**，测试仅基于 mock。
 
 crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录全部来源。
+
+主机名（根域、子域、URL host）在入库层统一为小写并去掉末尾点（数据库触发器），大写录入的根域也能正确匹配。
+
+第三方依赖许可见 THIRD_PARTY_LICENSES。
 
 ## Certstream
 

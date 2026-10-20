@@ -33,6 +33,7 @@ type passiveConfig struct {
 	Pages, PageSize                      int
 	CrtshURL, FofaURL, QuakeURL, HuntURL string
 	Subfinder                            bool
+	SubfinderMaxTime, SubfinderTimeout   time.Duration // SUBFINDER_MAX_TIME（默认 5m）/ SUBFINDER_TIMEOUT（默认 30s，整秒）
 	HTTP                                 *http.Client
 }
 
@@ -41,8 +42,8 @@ func passiveConfigFromEnv() (passiveConfig, error) {
 		FofaKey: os.Getenv("FOFA_KEY"), QuakeKey: os.Getenv("QUAKE_KEY"), HunterKey: os.Getenv("HUNTER_KEY"),
 		Pages: 1, PageSize: 100,
 		CrtshURL: "https://crt.sh", FofaURL: "https://fofa.info", QuakeURL: "https://quake.360.net", HuntURL: "https://hunter.qianxin.com",
-		Subfinder: true,
-		HTTP:      &http.Client{Timeout: 60 * time.Second},
+		Subfinder: true, SubfinderMaxTime: 5 * time.Minute, SubfinderTimeout: 30 * time.Second,
+		HTTP: &http.Client{Timeout: 60 * time.Second},
 	}
 	for name, p := range map[string]*int{"PASSIVE_PAGES": &c.Pages, "PASSIVE_PAGE_SIZE": &c.PageSize} {
 		if s := os.Getenv(name); s != "" {
@@ -53,6 +54,15 @@ func passiveConfigFromEnv() (passiveConfig, error) {
 			*p = n
 		}
 	}
+	for name, p := range map[string]*time.Duration{"SUBFINDER_MAX_TIME": &c.SubfinderMaxTime, "SUBFINDER_TIMEOUT": &c.SubfinderTimeout} {
+		if s := os.Getenv(name); s != "" {
+			d, err := time.ParseDuration(s)
+			if err != nil || d < time.Second || d%time.Second != 0 { // subfinder 超时参数为整秒
+				return c, fmt.Errorf("%s: invalid %q (whole seconds, >= 1s, e.g. 30s, 5m)", name, s)
+			}
+			*p = d
+		}
+	}
 	return c, nil
 }
 
@@ -60,7 +70,7 @@ func passiveConfigFromEnv() (passiveConfig, error) {
 func passiveSources(c passiveConfig) []Source {
 	srcs := []Source{{"crtsh", c.crtsh}}
 	if c.Subfinder {
-		srcs = append(srcs, Source{"subfinder", subfinderEnum})
+		srcs = append(srcs, Source{"subfinder", c.subfinderEnum})
 	}
 	if c.FofaKey != "" {
 		srcs = append(srcs, Source{"fofa", c.fofa})
@@ -221,10 +231,10 @@ func subfinderFreeSources() []string {
 	return names
 }
 
-func subfinderEnum(ctx context.Context, domain string) ([]string, error) {
+func (c passiveConfig) subfinderEnum(ctx context.Context, domain string) ([]string, error) {
 	agent := passive.NewWithProviderConfig(subfinderFreeSources(), nil, false, false, nil)
 	var out []string
-	for r := range agent.EnumerateSubdomainsWithCtx(ctx, domain, "", 0, 30, 5*time.Minute) {
+	for r := range agent.EnumerateSubdomainsWithCtx(ctx, domain, "", 0, int(c.SubfinderTimeout/time.Second), c.SubfinderMaxTime) {
 		if r.Type == subscraping.Subdomain {
 			out = append(out, r.Value)
 		}

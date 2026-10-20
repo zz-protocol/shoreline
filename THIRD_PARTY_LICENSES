@@ -1,0 +1,140 @@
+# Third-party licenses
+
+本项目（MIT）使用的第三方依赖及其许可。由 `go-licenses report ./backend` 与 frontend/package.json 生成，依赖变更时请更新。
+
+注意：**github.com/projectdiscovery/retryablehttp-go 为 MPL-2.0**（文件级弱 copyleft，经 subfinder 间接引入；仅修改其源文件时需公开该文件修改，不影响本项目以 MIT 发布）。无 GPL/AGPL 依赖。
+
+## Backend (Go)
+
+| 模块 | 许可 |
+|---|---|
+| **github.com/projectdiscovery/retryablehttp-go** | MPL-2.0 |
+| aead.dev/minisign | MIT |
+| github.com/Masterminds/semver/v3 | MIT |
+| github.com/Mzack9999/gcache | MIT |
+| github.com/Mzack9999/go-http-digest-auth-client | BSD-2-Clause |
+| github.com/VividCortex/ewma | MIT |
+| github.com/akrylysov/pogreb | Apache-2.0 |
+| github.com/alecthomas/chroma/v2 | MIT |
+| github.com/andybalholm/brotli | MIT |
+| github.com/asaskevich/govalidator | MIT |
+| github.com/aymanbagabas/go-osc52/v2 | MIT |
+| github.com/aymerick/douceur | MIT |
+| github.com/cespare/xxhash/v2 | MIT |
+| github.com/charmbracelet/glamour | MIT |
+| github.com/charmbracelet/lipgloss | MIT |
+| github.com/charmbracelet/x/ansi | MIT |
+| github.com/cheggaaa/pb/v3 | BSD-3-Clause |
+| github.com/coder/websocket | ISC |
+| github.com/corpix/uarand | Unlicense |
+| github.com/dimchansky/utfbom | Apache-2.0 |
+| github.com/djherbis/times | MIT |
+| github.com/dlclark/regexp2 | MIT |
+| github.com/docker/go-units | Apache-2.0 |
+| github.com/dsnet/compress | BSD-3-Clause |
+| github.com/fatih/color | MIT |
+| github.com/gaissmai/bart | MIT |
+| github.com/golang/snappy | BSD-3-Clause |
+| github.com/google/go-github/v92/github | BSD-3-Clause |
+| github.com/google/go-querystring/query | BSD-3-Clause |
+| github.com/google/uuid | BSD-3-Clause |
+| github.com/gorilla/css/scanner | BSD-3-Clause |
+| github.com/hibiken/asynq | MIT |
+| github.com/jackc/pgpassfile | MIT |
+| github.com/jackc/pgservicefile | MIT |
+| github.com/jackc/pgx/v5 | MIT |
+| github.com/jackc/puddle/v2 | MIT |
+| github.com/json-iterator/go | MIT |
+| github.com/klauspost/compress | Apache-2.0 |
+| github.com/klauspost/compress | BSD-3-Clause |
+| github.com/klauspost/compress | MIT |
+| github.com/klauspost/compress/internal/snapref | BSD-3-Clause |
+| github.com/klauspost/compress/zstd/internal/xxhash | MIT |
+| github.com/lib/pq | MIT |
+| github.com/logrusorgru/aurora/v4 | Unlicense |
+| github.com/lucasb-eyer/go-colorful | MIT |
+| github.com/mattn/go-colorable | MIT |
+| github.com/mattn/go-isatty | MIT |
+| github.com/mattn/go-runewidth | MIT |
+| github.com/microcosm-cc/bluemonday | BSD-3-Clause |
+| github.com/miekg/dns | BSD-3-Clause |
+| github.com/minio/selfupdate | Apache-2.0 |
+| github.com/minio/selfupdate/internal/binarydist | MIT |
+| github.com/minio/selfupdate/internal/osext | BSD-3-Clause |
+| github.com/modern-go/concurrent | Apache-2.0 |
+| github.com/modern-go/reflect2 | Apache-2.0 |
+| github.com/muesli/reflow | MIT |
+| github.com/muesli/termenv | MIT |
+| github.com/pkg/errors | BSD-2-Clause |
+| github.com/projectdiscovery/blackrock | MIT |
+| github.com/projectdiscovery/chaos-client/pkg/chaos | MIT |
+| github.com/projectdiscovery/fastdialer/fastdialer | MIT |
+| github.com/projectdiscovery/gologger | MIT |
+| github.com/projectdiscovery/hmap/store | MIT |
+| github.com/projectdiscovery/machineid | MIT |
+| github.com/projectdiscovery/networkpolicy | MIT |
+| github.com/projectdiscovery/ratelimit | MIT |
+| github.com/projectdiscovery/retryabledns | MIT |
+| github.com/projectdiscovery/subfinder/v2/pkg | MIT |
+| github.com/projectdiscovery/utils | MIT |
+| github.com/redis/go-redis/v9 | BSD-2-Clause |
+| github.com/refraction-networking/utls | BSD-3-Clause |
+| github.com/refraction-networking/utls/dicttls | BSD-3-Clause |
+| github.com/rivo/uniseg | MIT |
+| github.com/robfig/cron/v3 | MIT |
+| github.com/saintfish/chardet | MIT |
+| github.com/shirou/gopsutil/v4 | BSD-3-Clause |
+| github.com/spf13/cast | MIT |
+| github.com/syndtr/goleveldb/leveldb | BSD-2-Clause |
+| github.com/tidwall/btree | MIT |
+| github.com/tidwall/buntdb | MIT |
+| github.com/tidwall/gjson | MIT |
+| github.com/tidwall/grect | MIT |
+| github.com/tidwall/match | MIT |
+| github.com/tidwall/pretty | MIT |
+| github.com/tidwall/rtred | MIT |
+| github.com/tidwall/tinyqueue | ISC |
+| github.com/tklauser/go-sysconf | BSD-3-Clause |
+| github.com/tklauser/numcpus | Apache-2.0 |
+| github.com/tomnomnom/linkheader | MIT |
+| github.com/weppos/publicsuffix-go/publicsuffix | MIT |
+| github.com/yuin/goldmark | MIT |
+| github.com/yuin/goldmark-emoji | MIT |
+| github.com/zcalusic/sysinfo | MIT |
+| github.com/zcalusic/sysinfo/cpuid | BSD-3-Clause |
+| github.com/zmap/rc2 | Apache-2.0 |
+| github.com/zmap/zcrypto | Apache-2.0 |
+| github.com/zmap/zcrypto | ISC |
+| github.com/zmap/zcrypto | MIT |
+| go.etcd.io/bbolt | MIT |
+| go.uber.org/atomic | MIT |
+| go.uber.org/multierr | MIT |
+| golang.org/x/crypto | BSD-3-Clause |
+| golang.org/x/exp | BSD-3-Clause |
+| golang.org/x/net | BSD-3-Clause |
+| golang.org/x/oauth2 | BSD-3-Clause |
+| golang.org/x/sync | BSD-3-Clause |
+| golang.org/x/sys | BSD-3-Clause |
+| golang.org/x/term | BSD-3-Clause |
+| golang.org/x/text | BSD-3-Clause |
+| golang.org/x/time/rate | BSD-3-Clause |
+| google.golang.org/protobuf | BSD-3-Clause |
+| gopkg.in/yaml.v3 | MIT |
+
+## Frontend (npm，直接依赖)
+
+| 包 | 许可 |
+|---|---|
+| react | MIT |
+| react-dom | MIT |
+| @vitejs/plugin-react | MIT |
+| vite | MIT |
+
+## 运行时镜像（docker compose）
+
+| 镜像 | 许可 |
+|---|---|
+| postgres:16-alpine | PostgreSQL License |
+| redis:7-alpine | **注意**：该标签当前指向 7.4.x，许可为 RSALv2 / SSPLv1（非 OSI 开源）；仅作为独立服务运行，不随本项目代码分发。7.2.x 及以前为 BSD-3-Clause（待架构决定是否固定 7.2 或换 Valkey） |
+| nginx:1.27-alpine | BSD-2-Clause |
+| golang / node / alpine（仅构建） | BSD-3 / MIT / MIT 等 |
