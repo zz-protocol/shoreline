@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	mrand "math/rand"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -308,6 +309,14 @@ func TestShortWildcardPage(t *testing.T) {
 			b := make([]byte, 12)
 			rand.Read(b)
 			return hex.EncodeToString(b)[:12] + "zz"
+		}},
+		{"okRandom200", 200, func() string { // 交付复现："ok"+4~12 个随机字母（6~14B，对照页长度差常 >10%、hash 也不同）
+			n := 4 + mrand.Intn(9)
+			b := make([]byte, n)
+			for i := range b {
+				b[i] = byte('a' + mrand.Intn(26))
+			}
+			return "ok" + string(b)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

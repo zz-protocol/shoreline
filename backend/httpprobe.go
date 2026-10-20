@@ -300,6 +300,7 @@ type wildcardTemplate struct {
 	hash                  string
 	length                int
 	stableHash, stableLen bool
+	maxLen                int // 两张短对照页中较长的正文长度
 }
 
 // pageHash 规范化后（去主机名与动态 token）的词序列 hash。
@@ -328,6 +329,8 @@ func (t *wildcardTemplate) similarity(r *probeResult) float64 {
 	if t.short {
 		// 对照页长度稳定时以长度为准（hash 可能因归一化后残留的随机片段而抖动）；仅 hash 稳定时才比 hash。
 		switch {
+		case bodyLen(r) > t.maxLen+64: // 比两张短对照页中较长的一张还长出 64B 以上：判真实（对照页长度/hash 都不稳定时也适用）
+			return 0
 		case t.stableLen && abs(bodyLen(r)-t.length) > max(64, t.length*3/10):
 			return 0
 		case !t.stableLen && t.stableHash && pageHash(r) != t.hash:
@@ -395,7 +398,7 @@ func (p *prober) controlTemplate(ctx context.Context, c *pageCache, scheme, pare
 		// 模板太短（如 nginx 默认 404、"not found"）：改用短页模式，见 wildcardTemplate.short
 		ha, hb := pageHash(a), pageHash(b)
 		la, lb := bodyLen(a), bodyLen(b)
-		c.m[key] = &wildcardTemplate{sample: a, short: true, hash: ha, length: la,
+		c.m[key] = &wildcardTemplate{sample: a, short: true, hash: ha, length: la, maxLen: max(la, lb),
 			stableHash: ha == hb, stableLen: abs(la-lb) <= max(la, lb)/10}
 		return c.m[key], false
 	}
