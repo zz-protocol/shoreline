@@ -1,0 +1,256 @@
+openapi: 3.0.3
+info:
+  title: src-asset-monitor API
+  version: "1.0"
+  description: |
+    所有 /api 接口（除本文档）需要 `Authorization: Bearer <token>`。token 为 API_BOOTSTRAP_TOKEN 或 POST /api/tokens 生成的 token。
+    错误统一返回 `{"error": "..."}`。列表分页：limit 默认 50、最大 500；按 id 倒序，下一页传 cursor=上页 next_cursor（无更多时为 null）。
+security:
+  - bearer: []
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+  parameters:
+    id: {name: id, in: path, required: true, schema: {type: integer}}
+    limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500, default: 50}}
+    cursor: {name: cursor, in: query, schema: {type: string}, description: 上一页的 next_cursor}
+  schemas:
+    Error:
+      type: object
+      properties: {error: {type: string}}
+    Vendor:
+      type: object
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        company_name: {type: string, nullable: true}
+        active_enabled: {type: boolean}
+        created_at: {type: string, format: date-time}
+    VendorInput:
+      type: object
+      properties:
+        name: {type: string}
+        company_name: {type: string}
+        active_enabled: {type: boolean}
+    Root:
+      type: object
+      properties:
+        id: {type: integer}
+        vendor_id: {type: integer}
+        domain: {type: string}
+        created_at: {type: string, format: date-time}
+    ScopeRule:
+      type: object
+      properties:
+        id: {type: integer}
+        vendor_id: {type: integer}
+        kind: {type: string, enum: [include, exclude]}
+        pattern: {type: string, example: "*.example.com"}
+    ScopeAccepted:
+      type: object
+      properties:
+        rule_id: {type: integer}
+        task_id: {type: integer, description: GET /api/scope-tasks/{id} 查询 in_scope 重算进度}
+    ScopeTask:
+      type: object
+      properties:
+        id: {type: integer}
+        vendor_id: {type: integer}
+        status: {type: string, enum: [pending, running, done, failed]}
+        processed: {type: integer}
+        changed: {type: integer}
+        error: {type: string, nullable: true}
+    Candidate:
+      type: object
+      properties:
+        id: {type: integer}
+        vendor_id: {type: integer}
+        domain: {type: string}
+        sources: {type: array, items: {type: string}}
+        evidence: {type: array, items: {type: object}, description: 每条含 vendor_id（发现该域名的厂商）}
+        status: {type: string, enum: [pending, confirmed, ignored]}
+    Asset:
+      type: object
+      properties:
+        id: {type: integer}
+        subdomain: {type: string}
+        root_id: {type: integer}
+        root_domain: {type: string}
+        vendor_id: {type: integer}
+        ips: {type: array, items: {type: string}}
+        cnames: {type: array, items: {type: string}}
+        cdn: {type: string, nullable: true}
+        resolved: {type: boolean, nullable: true}
+        wildcard: {type: boolean}
+        in_scope: {type: boolean, nullable: true}
+        sources: {type: array, items: {type: string}}
+        first_seen: {type: string, format: date-time}
+        last_seen: {type: string, format: date-time}
+        urls: {type: array, items: {type: object}, description: 仅 GET /api/assets/{id} 返回}
+    Event:
+      type: object
+      properties:
+        id: {type: integer}
+        type: {type: string, enum: [new, changed, recovered]}
+        level: {type: string, enum: [asset, url]}
+        asset_id: {type: integer}
+        subdomain: {type: string}
+        url_id: {type: integer, nullable: true}
+        url: {type: string, nullable: true}
+        detail: {type: object}
+        created_at: {type: string, format: date-time}
+    Scan:
+      type: object
+      properties:
+        id: {type: integer}
+        vendor_id: {type: integer}
+        root_id: {type: integer}
+        kind: {type: string, enum: [passive, active, dns, http, expand]}
+        status: {type: string, enum: [pending, running, retrying, done, failed]}
+        error: {type: string, nullable: true}
+        result: {type: object, nullable: true}
+        parent_id: {type: integer, nullable: true}
+        root_scan_id: {type: integer, nullable: true}
+    Token:
+      type: object
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        created_at: {type: string, format: date-time}
+        last_used_at: {type: string, format: date-time, nullable: true}
+  responses:
+    Error:
+      description: 错误
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+paths:
+  /api/openapi.yaml:
+    get:
+      summary: 本文档（无需认证）
+      security: []
+      responses: {"200": {description: OpenAPI YAML}}
+  /api/vendors:
+    get:
+      summary: 厂商列表
+      responses: {"200": {description: "{items: Vendor[]}"}}
+    post:
+      summary: 新建厂商
+      requestBody: {content: {application/json: {schema: {$ref: "#/components/schemas/VendorInput"}}}}
+      responses: {"201": {description: Vendor}, "400": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/vendors/{id}:
+    patch:
+      summary: 修改厂商（名称、主体名 company_name、主动发现开关 active_enabled）
+      parameters: [{$ref: "#/components/parameters/id"}]
+      requestBody: {content: {application/json: {schema: {$ref: "#/components/schemas/VendorInput"}}}}
+      responses: {"200": {description: Vendor}, "404": {$ref: "#/components/responses/Error"}}
+  /api/vendors/{id}/roots:
+    get:
+      summary: 厂商根域列表
+      parameters: [{$ref: "#/components/parameters/id"}]
+      responses: {"200": {description: "{items: Root[]}"}}
+    post:
+      summary: 添加根域（格式校验；已被任一厂商占用返回 409）
+      parameters: [{$ref: "#/components/parameters/id"}]
+      requestBody: {content: {application/json: {schema: {type: object, properties: {domain: {type: string}}}}}}
+      responses: {"201": {description: Root}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/vendors/{id}/scopes:
+    get:
+      summary: 范围规则列表
+      parameters: [{$ref: "#/components/parameters/id"}]
+      responses: {"200": {description: "{items: ScopeRule[]}"}}
+    post:
+      summary: 添加范围规则（pattern 为 域名 或 *.域名）；异步重算 in_scope
+      parameters: [{$ref: "#/components/parameters/id"}]
+      requestBody: {content: {application/json: {schema: {type: object, properties: {kind: {type: string, enum: [include, exclude]}, pattern: {type: string}}}}}}
+      responses: {"202": {description: ScopeAccepted}, "400": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/vendors/{id}/scopes/{rule_id}:
+    delete:
+      summary: 删除范围规则；异步重算 in_scope
+      parameters: [{$ref: "#/components/parameters/id"}, {name: rule_id, in: path, required: true, schema: {type: integer}}]
+      responses: {"202": {description: ScopeAccepted}, "404": {$ref: "#/components/responses/Error"}}
+  /api/scope-tasks/{id}:
+    get:
+      summary: in_scope 重算任务状态
+      parameters: [{$ref: "#/components/parameters/id"}]
+      responses: {"200": {description: ScopeTask}, "404": {$ref: "#/components/responses/Error"}}
+  /api/vendors/{id}/subsidiaries:
+    post:
+      summary: 导入子公司名单（text/csv，每行 名称,持股比例；同名覆盖）
+      parameters: [{$ref: "#/components/parameters/id"}]
+      requestBody: {content: {text/csv: {schema: {type: string}}}}
+      responses: {"200": {description: "{imported: n}"}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/vendors/{id}/root-candidates:
+    get:
+      summary: 待确认根域（status=pending 默认 | confirmed | ignored | all）
+      parameters: [{$ref: "#/components/parameters/id"}, {name: status, in: query, schema: {type: string}}]
+      responses: {"200": {description: "{items: Candidate[]}"}}
+  /api/root-candidates/{id}/confirm:
+    post:
+      summary: 确认（写入 root_domains）；非 pending 409
+      parameters: [{$ref: "#/components/parameters/id"}]
+      responses: {"200": {description: Candidate}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/root-candidates/{id}/ignore:
+    post:
+      summary: 忽略（以后不再提示）；非 pending 409
+      parameters: [{$ref: "#/components/parameters/id"}]
+      responses: {"200": {description: Candidate}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/root-candidates/{id}/reassign:
+    post:
+      summary: 改归属到另一厂商（仅 pending）
+      parameters: [{$ref: "#/components/parameters/id"}]
+      requestBody: {content: {application/json: {schema: {type: object, properties: {vendor_id: {type: integer}}}}}}
+      responses: {"200": {description: Candidate}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/assets:
+    get:
+      summary: 资产列表（默认过滤 wildcard）
+      parameters:
+        - {name: vendor, in: query, schema: {type: integer}}
+        - {name: in_scope, in: query, schema: {type: boolean}}
+        - {name: q, in: query, schema: {type: string}, description: 子域名或 URL 标题子串（不区分大小写）}
+        - {name: new_since, in: query, schema: {type: string, format: date-time}, description: 资产 new 事件时间 >= 该值（RFC3339）}
+        - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
+        - {$ref: "#/components/parameters/limit"}
+        - {$ref: "#/components/parameters/cursor"}
+      responses: {"200": {description: "{items: Asset[], next_cursor}"}, "400": {$ref: "#/components/responses/Error"}}
+  /api/assets/{id}:
+    get:
+      summary: 资产详情（含 urls）
+      parameters: [{$ref: "#/components/parameters/id"}]
+      responses: {"200": {description: Asset}, "404": {$ref: "#/components/responses/Error"}}
+  /api/events:
+    get:
+      summary: 事件（默认资产级；不传 type 返回 new/changed/recovered）
+      parameters:
+        - {name: type, in: query, schema: {type: string, enum: [new, changed, recovered]}}
+        - {name: level, in: query, schema: {type: string, enum: [asset, url, all], default: asset}}
+        - {name: since, in: query, schema: {type: string, format: date-time}}
+        - {name: asset_id, in: query, schema: {type: integer}, description: 只看某资产（配合 level=url 查其 URL 事件）}
+        - {name: vendor, in: query, schema: {type: integer}}
+        - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
+        - {$ref: "#/components/parameters/limit"}
+        - {$ref: "#/components/parameters/cursor"}
+      responses: {"200": {description: "{items: Event[], next_cursor}"}, "400": {$ref: "#/components/responses/Error"}}
+  /api/scans:
+    post:
+      summary: 手动触发扫描（kind=active 需厂商 active_enabled，否则 409）
+      requestBody: {content: {application/json: {schema: {type: object, properties: {root_id: {type: integer}, kind: {type: string, enum: [passive, active, dns, http, expand]}}}}}}
+      responses: {"202": {description: Scan}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/scans/{id}:
+    get:
+      summary: 扫描任务状态
+      parameters: [{$ref: "#/components/parameters/id"}]
+      responses: {"200": {description: Scan}, "404": {$ref: "#/components/responses/Error"}}
+  /api/tokens:
+    get:
+      summary: token 列表（不含明文）
+      responses: {"200": {description: "{items: Token[]}"}}
+    post:
+      summary: 生成 token（明文只返回这一次，库里只存 sha256）
+      requestBody: {content: {application/json: {schema: {type: object, properties: {name: {type: string}}}}}}
+      responses: {"201": {description: "Token + token 明文"}, "400": {$ref: "#/components/responses/Error"}}
+  /api/tokens/{id}:
+    delete:
+      summary: 吊销 token
+      parameters: [{$ref: "#/components/parameters/id"}]
+      responses: {"204": {description: 已删除}, "404": {$ref: "#/components/responses/Error"}}

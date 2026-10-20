@@ -83,13 +83,26 @@ func main() {
 		},
 		"redis": func(ctx context.Context) error { return rdb.Ping(ctx).Err() },
 	}
+	apiCfg, err := apiConfigFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	apiCfg.MaxRetry = cfg.MaxRetry
+	if apiCfg.BootstrapToken == "" {
+		log.Printf("API_BOOTSTRAP_TOKEN not set: only tokens in api_tokens are accepted")
+	}
+	a := &api{db: pool, client: asynq.NewClient(asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")}), cfg: apiCfg, bg: context.Background()}
 	log.Printf("listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, newMux(checks)))
+	log.Fatal(http.ListenAndServe(addr, newMux(checks, a)))
 }
 
 // newMux 注册路由；checks 为依赖连通检查，任一失败 /healthz 返回 503。
-func newMux(checks map[string]func(context.Context) error) *http.ServeMux {
+// a 为 nil 时不挂 API。
+func newMux(checks map[string]func(context.Context) error, a *api) *http.ServeMux {
 	mux := http.NewServeMux()
+	if a != nil {
+		a.register(mux)
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()

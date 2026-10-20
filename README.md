@@ -156,3 +156,19 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 - `root_candidates`：厂商、域名、来源（icp:company / icp:subsidiary / icp:reverse，可多种）、依据（主体、备案号、子公司及比例、反查的根域）、状态（pending 待确认 / confirmed 已确认 / ignored 已忽略）、时间。
   确认写入 `root_domains`（不自动扫描）；忽略后再次扩展也不再提示。确认/忽略的操作接口在 T12/T14，当前为函数 `confirmCandidate` / `ignoreCandidate`。
 - 每次 expand 把 found / new_candidates 写入 `scan_tasks.result`。
+
+## REST API（T12）
+
+文档：`GET /api/openapi.yaml`（嵌入，无需认证；Swagger UI 留 T14）。其余 `/api/*` 需 `Authorization: Bearer <token>`。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| API_BOOTSTRAP_TOKEN | 空 | 初始 token，用它调 `POST /api/tokens` 生成正式 token（明文只返回一次，库里只存 sha256，不分权限）。为空时只认 api_tokens 里的 token |
+| SCOPE_BATCH_SIZE | 500 | 改范围规则后异步重算 in_scope 的每批行数（整数 >= 1，非法启动退出） |
+
+- 错误统一 `{"error":"..."}`；分页 `limit`（默认 50，最大 500）+ `cursor`（按 id 倒序，传上页 `next_cursor`）。
+- `GET /api/assets`：`vendor`、`in_scope`、`q`（子域名或 URL 标题子串）、`new_since`（资产 new 事件时间，RFC3339）、`include_wildcard`（默认过滤泛解析）。
+- `GET /api/events`：默认资产级（`level=asset`），`level=url|all` 查 URL 事件；不传 `type` 返回 new/changed/recovered；`since`、`asset_id`、`vendor`、`include_wildcard`。
+- 范围规则挂在厂商下（`/api/vendors/{id}/scopes`，pattern 为 `域名` 或 `*.域名`）；新增/删除返回 202 + `task_id`，`GET /api/scope-tasks/{id}` 查进度；按 id 分批更新、只改有变化的行，不长时间锁表。
+- 根域格式校验，被任一厂商占用返回 409。`POST /api/scans` 手动触发（kind=active 需厂商 `active_enabled`，否则 409）。
+- 待确认根域：`GET /api/vendors/{id}/root-candidates`，`POST /api/root-candidates/{id}/confirm|ignore|reassign`（仅 pending）。子公司导入：`POST /api/vendors/{id}/subsidiaries`（CSV：名称,持股比例）。

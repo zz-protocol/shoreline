@@ -21,7 +21,7 @@ func TestHealthz(t *testing.T) {
 	}
 	for _, c := range cases {
 		rec := httptest.NewRecorder()
-		newMux(c.checks).ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
+		newMux(c.checks, nil).ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
 		if rec.Code != c.want {
 			t.Errorf("%s: got %d want %d (%s)", c.name, rec.Code, c.want, rec.Body.String())
 		}
