@@ -4,7 +4,7 @@
 | 编号 | 任务 | 验收标准 | 状态 |
 |---|---|---|---|
 | T1 | 项目骨架：Go 后端、React+Vite 前端、docker compose（Postgres、Redis）、MIT LICENSE | compose up 后后端健康检查返回 200，前端首页可打开 | 待验收 |
-| T2 | 数据模型与迁移：厂商、根域、范围规则、资产、URL、事件、扫描任务 | 迁移可重复执行；含 first_seen/last_seen/来源字段与唯一键 | 待做 |
+| T2 | 数据模型与迁移：厂商、根域、范围规则、资产、URL、事件、扫描任务 | 迁移可重复执行；含 first_seen/last_seen/来源字段与唯一键 | 待验收 |
 | T3 | 范围判定模块（通配、排除） | 单测覆盖通配、多级、排除、大小写，全部通过 | 待做 |
 | T4 | 任务队列与 worker 框架（Asynq，被动/DNS/HTTP 三类，独立限速配置） | 可手动触发扫描；限速配置生效有测试 | 待做 |
 | T5 | 被动源：crt.sh + subfinder 免 key 源 + FOFA/Quake/Hunter（有 key 启用） | 对测试根域产出子域并入库，记录来源；无 key 时自动跳过 | 待做 |

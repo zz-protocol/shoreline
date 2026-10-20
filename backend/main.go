@@ -17,6 +17,9 @@ func main() {
 		addr = ":8080"
 	}
 	dbURL := os.Getenv("DATABASE_URL")
+	if err := runMigrations(dbURL); err != nil {
+		log.Fatalf("migrate: %v", err)
+	}
 	rdb := redis.NewClient(&redis.Options{Addr: os.Getenv("REDIS_ADDR")})
 	checks := map[string]func(context.Context) error{
 		"postgres": func(ctx context.Context) error {
@@ -48,4 +51,22 @@ func newMux(checks map[string]func(context.Context) error) *http.ServeMux {
 		w.Write([]byte("ok"))
 	})
 	return mux
+}
+
+// runMigrations 启动时执行迁移；数据库可能晚于后端就绪，重试 30 秒。
+func runMigrations(dbURL string) error {
+	ctx := context.Background()
+	var err error
+	for i := 0; i < 30; i++ {
+		var conn *pgx.Conn
+		if conn, err = pgx.Connect(ctx, dbURL); err == nil {
+			err = migrate(ctx, conn)
+			conn.Close(ctx)
+			if err == nil {
+				return nil
+			}
+		}
+		time.Sleep(time.Second)
+	}
+	return err
 }
