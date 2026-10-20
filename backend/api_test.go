@@ -108,7 +108,7 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 	for k := range a.routes() {
 		want = append(want, k)
 	}
-	want = append(want, "GET /api/openapi.yaml")
+	want = append(want, "GET /api/openapi.yaml", "POST /mcp")
 	sort.Strings(want)
 	var got []string
 	path := ""
@@ -363,7 +363,9 @@ func TestAPIAssetsEventsScans(t *testing.T) {
 	// 扫描：active 需开关
 	vp := fmt.Sprintf("/api/vendors/%d", v)
 	c.want(400, "POST", "/api/scans", map[string]any{"root_id": e.rootID, "kind": "nope"})
-	c.want(404, "POST", "/api/scans", map[string]any{"root_id": 999999999, "kind": "dns"})
+	c.want(404, "POST", "/api/scans", map[string]any{"root_id": 999999999, "kind": "passive"})
+	c.want(400, "POST", "/api/scans", map[string]any{"root_id": e.rootID, "kind": "dns"})
+	c.want(400, "POST", "/api/scans", map[string]any{"root_id": e.rootID, "kind": "http"})
 	c.want(409, "POST", "/api/scans", map[string]any{"root_id": e.rootID, "kind": "active"})
 	c.want(200, "PATCH", vp, map[string]any{"active_enabled": true})
 	s := c.want(202, "POST", "/api/scans", map[string]any{"root_id": e.rootID, "kind": "active"})

@@ -171,5 +171,24 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 - `GET /api/assets`：`vendor`、`in_scope`、`q`（子域名或 URL 标题子串）、`new_since`（资产 new 事件时间，RFC3339）、`include_wildcard`（默认过滤泛解析）。
 - `GET /api/events`：默认资产级（`level=asset`），`level=url|all` 查 URL 事件；不传 `type` 返回 new/changed/recovered；`since`、`asset_id`、`vendor`、`include_wildcard`。
 - 范围规则挂在厂商下（`/api/vendors/{id}/scopes`，pattern 为 `域名` 或 `*.域名`）；新增/删除返回 202 + `task_id`，`GET /api/scope-tasks/{id}` 查进度；按 id 分批更新、只改有变化的行，不长时间锁表。重算幂等：进程启动时自动重跑 pending/running 的任务（从头重算、计数清零）。
-- 根域格式校验，被任一厂商占用返回 409。`POST /api/scans` 手动触发（kind=active 需厂商 `active_enabled`，否则 409）。
+- 根域格式校验，被任一厂商占用返回 409。`POST /api/scans` 手动触发（kind 只允许 passive/active/expand，dns/http 是链路内部步骤；kind=active 需厂商 `active_enabled`，否则 409）。
 - 待确认根域：`GET /api/vendors/{id}/root-candidates`，`POST /api/root-candidates/{id}/confirm|ignore|reassign`（仅 pending；确认时域名已是别厂商根域返回 409，候选保持 pending）。`GET /api/events` 里资产级 new 事件嵌套 `url_events`（该资产的 URL 级 new 事件）。子公司导入：`POST /api/vendors/{id}/subsidiaries`（CSV：名称,持股比例）。
+
+## MCP server（T13）
+
+Streamable HTTP（无状态、JSON 响应），地址 `POST /mcp`，认证同 API（`Authorization: Bearer <token>`）。基于官方 `modelcontextprotocol/go-sdk`（Apache-2.0/MIT）。
+
+| 工具 | 参数 | 说明 |
+|---|---|---|
+| list_new_assets | vendor, since, include_wildcard, limit, cursor | 资产级 new 事件（新→旧），嵌套 url_events；默认过滤 wildcard |
+| search_assets | q, vendor, in_scope, new_since, include_wildcard, limit, cursor | 同 `GET /api/assets` |
+| check_scope | host | 归属厂商/根域（最长匹配）、in_scope、命中规则、已知资产 id；不要求已是资产 |
+| trigger_scan | root_id, kind | kind 只允许 passive/active/expand；active 需厂商开关 |
+
+业务错误返回工具结果 `isError: true`，文本 `{"error":"..."}`。curl 示例：
+
+```
+curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_scope","arguments":{"host":"www.example.com"}}}'
+```

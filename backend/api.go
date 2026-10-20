@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -92,6 +93,7 @@ func (a *api) register(mux *http.ServeMux) {
 	for pat, h := range a.routes() {
 		mux.Handle(pat, a.auth(h))
 	}
+	mux.Handle("/mcp", a.mcpHandler())
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { writeErr(w, 404, "not found") })
 }
 
@@ -249,19 +251,6 @@ func page(w http.ResponseWriter, r *http.Request) (limit int, cursor int64, ok b
 		cursor = n
 	}
 	return limit, cursor, true
-}
-
-// paged 输出 items 与 next_cursor（不足一页时为 null）。
-func paged(w http.ResponseWriter, list []map[string]any, err error, limit int) {
-	if err != nil {
-		dbErr(w, err)
-		return
-	}
-	var next any
-	if len(list) == limit {
-		next = strconv.FormatInt(list[len(list)-1]["id"].(int64), 10)
-	}
-	writeJSON(w, 200, map[string]any{"items": list, "next_cursor": next})
 }
 
 // ---- 厂商 ----
@@ -659,6 +648,77 @@ const assetCols = `a.id, a.subdomain, a.root_id, r.domain AS root_domain, r.vend
 	a.wildcard, a.in_scope, a.sources, a.first_seen, a.last_seen`
 
 // listAssets：vendor / in_scope / q（子域名或 URL 标题子串）/ new_since（资产 new 事件时间）/ include_wildcard（默认过滤）。
+// httpError 带状态码的业务错误（REST 映射为状态码，MCP 映射为工具错误）。
+type httpError struct {
+	code int
+	msg  string
+}
+
+func (e *httpError) Error() string { return e.msg }
+
+func errf(code int, format string, args ...any) error {
+	return &httpError{code, fmt.Sprintf(format, args...)}
+}
+
+// writeAnyErr：httpError 按其状态码，其余按数据库错误映射。
+func writeAnyErr(w http.ResponseWriter, err error) {
+	var he *httpError
+	if errors.As(err, &he) {
+		writeErr(w, he.code, he.msg)
+		return
+	}
+	dbErr(w, err)
+}
+
+// assetFilter / eventFilter 是 REST 与 MCP 共用的查询条件（T13 复用）。
+type assetFilter struct {
+	Vendor          *int64
+	InScope         *bool
+	IncludeWildcard bool
+	Q               string
+	NewSince        *time.Time
+	Limit           int
+	Cursor          int64
+}
+
+func checkPage(limit int, cursor int64) error {
+	if limit < 1 || limit > 500 {
+		return errf(400, "limit must be 1..500")
+	}
+	if cursor < 0 {
+		return errf(400, "invalid cursor")
+	}
+	return nil
+}
+
+func nextCursor(list []map[string]any, limit int) any {
+	if len(list) == limit && limit > 0 {
+		return strconv.FormatInt(list[len(list)-1]["id"].(int64), 10)
+	}
+	return nil
+}
+
+// queryAssets：vendor / in_scope / q（子域名或 URL 标题子串）/ new_since（资产 new 事件时间）/ include_wildcard（默认过滤）。
+func (a *api) queryAssets(ctx context.Context, f assetFilter) ([]map[string]any, error) {
+	if err := checkPage(f.Limit, f.Cursor); err != nil {
+		return nil, err
+	}
+	if strings.ContainsRune(f.Q, 0) {
+		return nil, errf(400, "NUL character not allowed")
+	}
+	q := strings.ToLower(strings.TrimSpace(f.Q))
+	return rowsJSON(a.db.Query(ctx, `SELECT `+assetCols+` FROM assets a JOIN root_domains r ON r.id = a.root_id
+		WHERE ($1::bigint = 0 OR a.id < $1)
+		  AND ($2::bigint IS NULL OR r.vendor_id = $2)
+		  AND ($3::bool IS NULL OR a.in_scope IS NOT DISTINCT FROM $3)
+		  AND ($4::bool OR NOT a.wildcard)
+		  AND ($5::text = '' OR strpos(a.subdomain, $5) > 0
+		       OR EXISTS (SELECT 1 FROM urls u WHERE u.asset_id = a.id AND strpos(lower(u.title), $5) > 0))
+		  AND ($6::timestamptz IS NULL OR EXISTS (SELECT 1 FROM events e WHERE e.asset_id = a.id AND e.url_id IS NULL
+		       AND e.type = 'new' AND e.created_at >= $6))
+		ORDER BY a.id DESC LIMIT $7`, f.Cursor, f.Vendor, f.InScope, f.IncludeWildcard, q, f.NewSince, f.Limit))
+}
+
 func (a *api) listAssets(w http.ResponseWriter, r *http.Request) {
 	limit, cursor, ok := page(w, r)
 	if !ok {
@@ -674,18 +734,12 @@ func (a *api) listAssets(w http.ResponseWriter, r *http.Request) {
 	if !ok3 || !ok4 {
 		return
 	}
-	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
-	list, err := rowsJSON(a.db.Query(r.Context(), `SELECT `+assetCols+` FROM assets a JOIN root_domains r ON r.id = a.root_id
-		WHERE ($1::bigint = 0 OR a.id < $1)
-		  AND ($2::bigint IS NULL OR r.vendor_id = $2)
-		  AND ($3::bool IS NULL OR a.in_scope IS NOT DISTINCT FROM $3)
-		  AND (COALESCE($4::bool, false) OR NOT a.wildcard)
-		  AND ($5::text = '' OR strpos(a.subdomain, $5) > 0
-		       OR EXISTS (SELECT 1 FROM urls u WHERE u.asset_id = a.id AND strpos(lower(u.title), $5) > 0))
-		  AND ($6::timestamptz IS NULL OR EXISTS (SELECT 1 FROM events e WHERE e.asset_id = a.id AND e.url_id IS NULL
-		       AND e.type = 'new' AND e.created_at >= $6))
-		ORDER BY a.id DESC LIMIT $7`, cursor, vendor, inScope, wild, q, newSince, limit))
-	paged(w, list, err, limit)
+	list, err := a.queryAssets(r.Context(), assetFilter{vendor, inScope, wild != nil && *wild, r.URL.Query().Get("q"), newSince, limit, cursor})
+	if err != nil {
+		writeAnyErr(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": list, "next_cursor": nextCursor(list, limit)})
 }
 
 func (a *api) getAsset(w http.ResponseWriter, r *http.Request) {
@@ -712,35 +766,30 @@ func (a *api) getAsset(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, list[0])
 }
 
-// listEvents：level=asset（默认，资产级）|url|all；type 不传返回 new/changed/recovered；since RFC3339；
-// asset_id 可查某资产下的事件（含 URL 事件）；include_wildcard 默认过滤泛解析资产的事件。
-func (a *api) listEvents(w http.ResponseWriter, r *http.Request) {
-	limit, cursor, ok := page(w, r)
-	if !ok {
-		return
+type eventFilter struct {
+	Level, Type     string
+	Since           *time.Time
+	AssetID, Vendor *int64
+	IncludeWildcard bool
+	Limit           int
+	Cursor          int64
+}
+
+// queryEvents：level=asset（默认，资产级）|url|all；type 不传返回 new/changed/recovered；资产级 new 事件嵌套 url_events。
+func (a *api) queryEvents(ctx context.Context, f eventFilter) ([]map[string]any, error) {
+	if err := checkPage(f.Limit, f.Cursor); err != nil {
+		return nil, err
 	}
-	qs := r.URL.Query()
-	level := qs.Get("level")
-	if level == "" {
-		level = "asset"
+	if f.Level == "" {
+		f.Level = "asset"
 	}
-	if level != "asset" && level != "url" && level != "all" {
-		writeErr(w, 400, "level must be asset|url|all")
-		return
+	if f.Level != "asset" && f.Level != "url" && f.Level != "all" {
+		return nil, errf(400, "level must be asset|url|all")
 	}
-	typ := qs.Get("type")
-	if typ != "" && typ != "new" && typ != "changed" && typ != "recovered" {
-		writeErr(w, 400, "type must be new|changed|recovered")
-		return
+	if f.Type != "" && f.Type != "new" && f.Type != "changed" && f.Type != "recovered" {
+		return nil, errf(400, "type must be new|changed|recovered")
 	}
-	since, ok1 := timeParam(w, r, "since")
-	assetID, ok2 := int64Param(w, r, "asset_id")
-	vendor, ok3 := int64Param(w, r, "vendor")
-	wild, ok4 := boolParam(w, r, "include_wildcard")
-	if !ok1 || !ok2 || !ok3 || !ok4 {
-		return
-	}
-	list, err := rowsJSON(a.db.Query(r.Context(), `SELECT e.id, e.type, CASE WHEN e.url_id IS NULL THEN 'asset' ELSE 'url' END AS level,
+	list, err := rowsJSON(a.db.Query(ctx, `SELECT e.id, e.type, CASE WHEN e.url_id IS NULL THEN 'asset' ELSE 'url' END AS level,
 		e.asset_id, a.subdomain, e.url_id, u.scheme || '://' || u.host || ':' || u.port AS url, e.detail, e.created_at
 		FROM events e JOIN assets a ON a.id = e.asset_id JOIN root_domains r ON r.id = a.root_id LEFT JOIN urls u ON u.id = e.url_id
 		WHERE ($1::bigint = 0 OR e.id < $1)
@@ -749,15 +798,66 @@ func (a *api) listEvents(w http.ResponseWriter, r *http.Request) {
 		  AND ($4::timestamptz IS NULL OR e.created_at >= $4)
 		  AND ($5::bigint IS NULL OR e.asset_id = $5)
 		  AND ($6::bigint IS NULL OR r.vendor_id = $6)
-		  AND (COALESCE($7::bool, false) OR NOT a.wildcard)
-		ORDER BY e.id DESC LIMIT $8`, cursor, level, typ, since, assetID, vendor, wild, limit))
+		  AND ($7::bool OR NOT a.wildcard)
+		ORDER BY e.id DESC LIMIT $8`, f.Cursor, f.Level, f.Type, f.Since, f.AssetID, f.Vendor, f.IncludeWildcard, f.Limit))
 	if err == nil {
-		err = a.nestURLEvents(r.Context(), list)
+		err = a.nestURLEvents(ctx, list)
 	}
-	paged(w, list, err, limit)
+	return list, err
+}
+
+func (a *api) listEvents(w http.ResponseWriter, r *http.Request) {
+	limit, cursor, ok := page(w, r)
+	if !ok {
+		return
+	}
+	qs := r.URL.Query()
+	since, ok1 := timeParam(w, r, "since")
+	assetID, ok2 := int64Param(w, r, "asset_id")
+	vendor, ok3 := int64Param(w, r, "vendor")
+	wild, ok4 := boolParam(w, r, "include_wildcard")
+	if !ok1 || !ok2 || !ok3 || !ok4 {
+		return
+	}
+	list, err := a.queryEvents(r.Context(), eventFilter{qs.Get("level"), qs.Get("type"), since, assetID, vendor, wild != nil && *wild, limit, cursor})
+	if err != nil {
+		writeAnyErr(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": list, "next_cursor": nextCursor(list, limit)})
 }
 
 // ---- 扫描 ----
+
+// manualKinds 是可手动触发的扫描类型（dns/http 是链路内部步骤，不对外）。
+var manualKinds = []string{"passive", "active", "expand"}
+
+// triggerScan 手动触发：kind 只允许 passive/active/expand；active 需厂商 active_enabled。REST 与 MCP 共用。
+func (a *api) triggerScan(ctx context.Context, rootID int64, kind string) (map[string]any, error) {
+	if !slices.Contains(manualKinds, kind) {
+		return nil, errf(400, "kind must be one of %s", strings.Join(manualKinds, "|"))
+	}
+	var active bool
+	if err := a.db.QueryRow(ctx, `SELECT v.active_enabled FROM root_domains r JOIN vendors v ON v.id = r.vendor_id WHERE r.id = $1`,
+		rootID).Scan(&active); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errf(404, "root not found")
+		}
+		return nil, err
+	}
+	if kind == "active" && !active {
+		return nil, errf(409, "active discovery disabled for this vendor")
+	}
+	id, err := TriggerScan(ctx, a.db, a.client, rootID, kind, a.cfg.MaxRetry)
+	if err != nil {
+		return nil, err
+	}
+	list, err := rowsJSON(a.db.Query(ctx, scanSelect+` WHERE id = $1`, id))
+	if err != nil || len(list) == 0 {
+		return nil, fmt.Errorf("scan %d: %v", id, err)
+	}
+	return list[0], nil
+}
 
 func (a *api) createScan(w http.ResponseWriter, r *http.Request) {
 	var b struct {
@@ -767,30 +867,12 @@ func (a *api) createScan(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &b) {
 		return
 	}
-	if !validKind(b.Kind) {
-		writeErr(w, 400, "kind must be one of "+strings.Join(scanKinds, "|"))
-		return
-	}
-	var active bool
-	if err := a.db.QueryRow(r.Context(), `SELECT v.active_enabled FROM root_domains r JOIN vendors v ON v.id = r.vendor_id WHERE r.id = $1`,
-		b.RootID).Scan(&active); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeErr(w, 404, "root not found")
-		} else {
-			dbErr(w, err)
-		}
-		return
-	}
-	if b.Kind == "active" && !active {
-		writeErr(w, 409, "active discovery disabled for this vendor")
-		return
-	}
-	id, err := TriggerScan(r.Context(), a.db, a.client, b.RootID, b.Kind, a.cfg.MaxRetry)
+	s, err := a.triggerScan(r.Context(), b.RootID, b.Kind)
 	if err != nil {
-		dbErr(w, err)
+		writeAnyErr(w, err)
 		return
 	}
-	a.one(w, r, 202, scanSelect+` WHERE id = $1`, id)
+	writeJSON(w, 202, s)
 }
 
 const scanSelect = `SELECT id, vendor_id, root_id, kind, status, error, result, parent_id, root_scan_id, created_at, started_at, finished_at FROM scan_tasks`
@@ -799,6 +881,57 @@ func (a *api) getScan(w http.ResponseWriter, r *http.Request) {
 	if id, ok := pathID(w, r, "id"); ok {
 		a.one(w, r, 200, scanSelect+` WHERE id = $1`, id)
 	}
+}
+
+// ---- 范围检查（T13 check_scope，REST 暂不暴露）----
+
+// checkScope：主机名属于哪个厂商/根域（最长匹配）、是否在范围内、命中哪些规则；不要求已是资产。
+func (a *api) checkScope(ctx context.Context, host string) (map[string]any, error) {
+	h := normalizeHost(host)
+	if strings.ContainsRune(h, 0) || !validScopePattern(h) {
+		return nil, errf(400, "invalid host")
+	}
+	h = strings.TrimPrefix(h, "*.")
+	out := map[string]any{"host": h, "in_scope": false, "vendor_id": nil, "vendor": nil, "root_domain": nil, "matched_rules": []map[string]any{}, "asset_id": nil}
+	var vendorID int64
+	var vendor, root string
+	err := a.db.QueryRow(ctx, `SELECT v.id, v.name, r.domain FROM root_domains r JOIN vendors v ON v.id = r.vendor_id
+		WHERE r.domain = $1 OR right($1, length(r.domain) + 1) = '.' || r.domain ORDER BY length(r.domain) DESC LIMIT 1`, h).Scan(&vendorID, &vendor, &root)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return out, nil
+	} else if err != nil {
+		return nil, err
+	}
+	out["vendor_id"], out["vendor"], out["root_domain"] = vendorID, vendor, root
+	rows, err := a.db.Query(ctx, `SELECT id, kind, pattern FROM scope_rules WHERE vendor_id = $1 ORDER BY id`, vendorID)
+	if err != nil {
+		return nil, err
+	}
+	var rules []ScopeRule
+	var matched []map[string]any
+	for rows.Next() {
+		var id int64
+		var s ScopeRule
+		if err := rows.Scan(&id, &s.Kind, &s.Pattern); err != nil {
+			return nil, err
+		}
+		rules = append(rules, s)
+		if matchPattern(h, s.Pattern) {
+			matched = append(matched, map[string]any{"id": id, "kind": s.Kind, "pattern": s.Pattern})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if matched != nil {
+		out["matched_rules"] = matched
+	}
+	out["in_scope"] = InScope(h, rules)
+	var assetID int64
+	if a.db.QueryRow(ctx, `SELECT id FROM assets WHERE subdomain = $1`, h).Scan(&assetID) == nil {
+		out["asset_id"] = assetID
+	}
+	return out, nil
 }
 
 // ---- token ----

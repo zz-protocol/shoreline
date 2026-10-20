@@ -122,6 +122,11 @@
 | golang.org/x/time/rate | BSD-3-Clause |
 | google.golang.org/protobuf | BSD-3-Clause |
 | gopkg.in/yaml.v3 | MIT |
+| github.com/modelcontextprotocol/go-sdk (v1.8.0，T13 MCP) | Apache-2.0 / MIT（LICENSE：MIT→Apache-2.0 过渡期，新代码 Apache-2.0，未同意改许可的旧贡献仍 MIT） |
+| github.com/google/jsonschema-go（go-sdk 传递依赖） | MIT |
+| github.com/segmentio/encoding（go-sdk 传递依赖） | MIT |
+| github.com/segmentio/asm（go-sdk 传递依赖） | MIT |
+| github.com/yosida95/uritemplate/v3（go-sdk 传递依赖） | BSD-3-Clause |
 
 ## Frontend (npm，直接依赖)
 
