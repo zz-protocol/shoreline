@@ -84,3 +84,77 @@ func TestBackfillHosts(t *testing.T) {
 	}
 	c.Exec(ctx, `DELETE FROM events WHERE asset_id = $1`, keepID)
 }
+
+// 迁移 004：仅大小写不同的两个根域及各自资产，迁移后合并为一个根域、资产改指，可重复执行。
+func TestNormalizeMergesDuplicateRoots(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	m004, _ := migrationFS.ReadFile("migrations/004_normalize_hosts.sql")
+	m006, _ := migrationFS.ReadFile("migrations/006_backfill_hosts.sql")
+	var vendorID int64
+	e.pool.QueryRow(ctx, `SELECT vendor_id FROM root_domains WHERE id = $1`, e.rootID).Scan(&vendorID)
+	conn, err := e.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	c := conn.Conn()
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := c.Exec(ctx, q, args...); err != nil {
+			t.Fatalf("%.60s: %v", q, err)
+		}
+	}
+	clean := func() {
+		e.pool.Exec(context.Background(), `DELETE FROM root_domains WHERE lower(domain) LIKE '%dupcase.test%'`)
+	}
+	clean()
+	t.Cleanup(clean)
+	mustExec(`ALTER TABLE root_domains DISABLE TRIGGER USER`)
+	mustExec(`ALTER TABLE assets DISABLE TRIGGER USER`)
+	var keepRoot, dupRoot int64
+	c.QueryRow(ctx, `INSERT INTO root_domains (vendor_id, domain) VALUES ($1, 'dupcase.test') RETURNING id`, vendorID).Scan(&keepRoot)
+	c.QueryRow(ctx, `INSERT INTO root_domains (vendor_id, domain) VALUES ($1, 'DupCase.TEST.') RETURNING id`, vendorID).Scan(&dupRoot)
+	mustExec(`INSERT INTO assets (root_id, subdomain, sources) VALUES ($1, 'a.dupcase.test', '{crtsh}')`, keepRoot)
+	mustExec(`INSERT INTO assets (root_id, subdomain, sources) VALUES ($1, 'B.DupCase.Test', '{fofa}')`, dupRoot)
+	mustExec(`INSERT INTO assets (root_id, subdomain, sources) VALUES ($1, 'A.DUPCASE.TEST.', '{hunter}')`, dupRoot) // 与 a.dupcase.test 重复
+	var scanID int64
+	c.QueryRow(ctx, `INSERT INTO scan_tasks (vendor_id, root_id, kind) VALUES ($1, $2, 'passive') RETURNING id`, vendorID, dupRoot).Scan(&scanID)
+	mustExec(`ALTER TABLE root_domains ENABLE TRIGGER USER`)
+	mustExec(`ALTER TABLE assets ENABLE TRIGGER USER`)
+
+	for i := 0; i < 2; i++ { // 004 + 006，可重复执行
+		mustExec(string(m004))
+		mustExec(string(m006))
+	}
+	var roots []string
+	rows, _ := c.Query(ctx, `SELECT domain FROM root_domains WHERE lower(domain) LIKE '%dupcase.test%'`)
+	for rows.Next() {
+		var d string
+		rows.Scan(&d)
+		roots = append(roots, d)
+	}
+	rows.Close()
+	if !reflect.DeepEqual(roots, []string{"dupcase.test"}) {
+		t.Fatalf("roots %v", roots)
+	}
+	got := map[string][]string{}
+	rows, _ = c.Query(ctx, `SELECT subdomain, sources FROM assets WHERE root_id = $1 ORDER BY 1`, keepRoot)
+	for rows.Next() {
+		var s string
+		var src []string
+		rows.Scan(&s, &src)
+		got[s] = src
+	}
+	rows.Close()
+	want := map[string][]string{"a.dupcase.test": {"crtsh", "hunter"}, "b.dupcase.test": {"fofa"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("assets %v, want %v", got, want)
+	}
+	var scanRoot int64
+	c.QueryRow(ctx, `SELECT root_id FROM scan_tasks WHERE id = $1`, scanID).Scan(&scanRoot)
+	if scanRoot != keepRoot {
+		t.Fatalf("scan_task root %d, want %d", scanRoot, keepRoot)
+	}
+	c.Exec(ctx, `DELETE FROM scan_tasks WHERE id = $1`, scanID)
+}

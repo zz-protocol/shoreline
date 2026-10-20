@@ -26,12 +26,12 @@ type dnsConfig struct {
 	QPS            float64
 	WildcardProbe  int // 前 N 次探测均无解析则判定无泛解析
 	WildcardStable int // DNS_WILDCARD_STABLE：连续 N 次无新 IP 停止初始探测（默认 5）
-	WildcardMax    int // DNS_WILDCARD_MAX：每个父域探测总上限，含补探（默认 30）
+	WildcardMax    int // DNS_WILDCARD_MAX：每个父域探测总上限，含补探（默认 60）
 	Concurrency    int
 }
 
 func dnsConfigFromEnv() (dnsConfig, error) {
-	c := dnsConfig{Resolvers: []string{"223.5.5.5:53", "119.29.29.29:53", "1.1.1.1:53"}, Timeout: 2 * time.Second, QPS: 50, WildcardProbe: 3, WildcardStable: 5, WildcardMax: 30, Concurrency: 20}
+	c := dnsConfig{Resolvers: []string{"223.5.5.5:53", "119.29.29.29:53", "1.1.1.1:53"}, Timeout: 2 * time.Second, QPS: 50, WildcardProbe: 3, WildcardStable: 5, WildcardMax: 60, Concurrency: 20}
 	if s := os.Getenv("DNS_RESOLVERS"); s != "" {
 		c.Resolvers = nil
 		for _, r := range strings.Split(s, ",") {

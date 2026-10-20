@@ -225,7 +225,7 @@ func TestDNSConfigFromEnv(t *testing.T) {
 	if c, _ = dnsConfigFromEnv(); c.QPS != 12.5 {
 		t.Fatalf("QPS override %v", c.QPS)
 	}
-	if c.WildcardStable != 5 || c.WildcardMax != 30 {
+	if c.WildcardStable != 5 || c.WildcardMax != 60 {
 		t.Fatalf("wildcard defaults %+v", c)
 	}
 	t.Setenv("DNS_WILDCARD_STABLE", "10")
