@@ -160,13 +160,15 @@ type candidate struct {
 }
 
 // expandVendor 跑扩展链路，返回 域名 → 发现依据（已是根域的不返回）。
-func expandVendor(ctx context.Context, icp ICPSource, subs SubsidiarySource, vendorID int64, company string, roots []string) (map[string][]candidate, error) {
+// 第二个返回值为 ICP 查询失败次数（子公司源失败不计）。
+func expandVendor(ctx context.Context, icp ICPSource, subs SubsidiarySource, vendorID int64, company string, roots []string) (map[string][]candidate, int, error) {
 	out := map[string][]candidate{}
 	isRoot := map[string]bool{}
 	for _, r := range roots {
 		isRoot[normalizeHost(r)] = true
 	}
 	var errs []error
+	icpFails := 0
 	add := func(recs []ICPRecord, source string, extra map[string]any) {
 		for _, rec := range recs {
 			dom := normalizeHost(rec.Domain)
@@ -188,6 +190,7 @@ func expandVendor(ctx context.Context, icp ICPSource, subs SubsidiarySource, ven
 		queried[name] = true
 		recs, err := icp.ByCompany(ctx, name)
 		if err != nil {
+			icpFails++
 			errs = append(errs, err)
 			return
 		}
@@ -211,6 +214,7 @@ func expandVendor(ctx context.Context, icp ICPSource, subs SubsidiarySource, ven
 	for _, r := range roots {
 		recs, err := icp.ByDomain(ctx, r)
 		if err != nil {
+			icpFails++
 			errs = append(errs, err)
 			continue
 		}
@@ -219,12 +223,12 @@ func expandVendor(ctx context.Context, icp ICPSource, subs SubsidiarySource, ven
 		}
 	}
 	if len(out) == 0 && len(errs) > 0 {
-		return nil, errors.Join(errs...)
+		return nil, icpFails, errors.Join(errs...)
 	}
 	for _, err := range errs {
 		log.Printf("expand vendor %d: %v", vendorID, err)
 	}
-	return out, nil
+	return out, icpFails, nil
 }
 
 // storeCandidates 写入 root_candidates：新域名为 pending；已存在且 pending 的合并来源与依据；已确认/已忽略的不动（忽略不再提示）。
@@ -241,7 +245,11 @@ func storeCandidates(ctx context.Context, d *pgxpool.Pool, vendorID int64, found
 		var evs []map[string]any
 		for _, c := range found[dom] {
 			srcs = append(srcs, c.source)
-			evs = append(evs, c.evidence)
+			ev := map[string]any{"vendor_id": vendorID} // 记录发现该域名的厂商（同域名被别的厂商发现时证据里可见）
+			for k, v := range c.evidence {
+				ev[k] = v
+			}
+			evs = append(evs, ev)
 		}
 		var inserted bool
 		err := d.QueryRow(ctx, `INSERT INTO root_candidates (vendor_id, domain, sources, evidence)
@@ -282,6 +290,15 @@ func confirmCandidate(ctx context.Context, d *pgxpool.Pool, id int64) error {
 	})
 }
 
+// reassignCandidate 改归属：仅 pending 状态可改，改到另一厂商。
+func reassignCandidate(ctx context.Context, d *pgxpool.Pool, id, vendorID int64) error {
+	tag, err := d.Exec(ctx, `UPDATE root_candidates SET vendor_id = $2, updated_at = now() WHERE id = $1 AND status = 'pending'`, id, vendorID)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = fmt.Errorf("candidate %d not pending", id)
+	}
+	return err
+}
+
 // ignoreCandidate 忽略：以后扩展再发现也不再提示。
 func ignoreCandidate(ctx context.Context, d *pgxpool.Pool, id int64) error {
 	tag, err := d.Exec(ctx, `UPDATE root_candidates SET status = 'ignored', updated_at = now() WHERE id = $1 AND status = 'pending'`, id)
@@ -313,8 +330,9 @@ func expandHandler(d *pgxpool.Pool, icp ICPSource, subs SubsidiarySource) ScanHa
 		if company != nil {
 			name = strings.TrimSpace(*company)
 		}
-		found, err := expandVendor(ctx, icp, subs, vendorID, name, roots)
+		found, fails, err := expandVendor(ctx, icp, subs, vendorID, name, roots)
 		if err != nil {
+			d.Exec(ctx, `UPDATE scan_tasks SET result = $2 WHERE id = $1`, scanID, map[string]int{"icp_failures": fails})
 			return nil, err
 		}
 		created, err := storeCandidates(ctx, d, vendorID, found)
@@ -323,7 +341,7 @@ func expandHandler(d *pgxpool.Pool, icp ICPSource, subs SubsidiarySource) ScanHa
 		}
 		log.Printf("expand vendor %d: %d domains found, %d new candidates", vendorID, len(found), created)
 		_, err = d.Exec(ctx, `UPDATE scan_tasks SET result = $2 WHERE id = $1`, scanID,
-			map[string]int{"found": len(found), "new_candidates": created})
+			map[string]int{"found": len(found), "new_candidates": created, "icp_failures": fails})
 		return nil, err
 	}
 }

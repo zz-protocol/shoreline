@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -205,4 +206,57 @@ func TestExpandSkippedWithoutICP(t *testing.T) {
 		t.Fatalf("result %s", result)
 	}
 	t.Logf("未配置 ICP_API_URL：%s", result)
+}
+
+type failICP struct{}
+
+func (failICP) ByCompany(context.Context, string) ([]ICPRecord, error) {
+	return nil, errors.New("icp down")
+}
+func (failICP) ByDomain(context.Context, string) ([]ICPRecord, error) {
+	return nil, errors.New("icp down")
+}
+
+// T11 补：同域名被另一厂商发现时证据记该厂商；pending 时可改归属；ICP 失败次数计入结果。
+func TestCandidateOtherVendorReassignAndICPFailures(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	var v1, v2 int64
+	e.pool.QueryRow(ctx, `SELECT vendor_id FROM root_domains WHERE id = $1`, e.rootID).Scan(&v1)
+	e.pool.QueryRow(ctx, `INSERT INTO vendors (name) VALUES ('另一厂商-test') RETURNING id`).Scan(&v2)
+	t.Cleanup(func() {
+		c := context.Background()
+		e.pool.Exec(c, `DELETE FROM root_candidates WHERE domain = 'shared.test'`)
+		e.pool.Exec(c, `DELETE FROM vendors WHERE id = $1`, v2)
+	})
+	found := map[string][]candidate{"shared.test": {{"icp:company", map[string]any{"company": "甲"}}}}
+	if _, err := storeCandidates(ctx, e.pool, v1, found); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storeCandidates(ctx, e.pool, v2, found); err != nil {
+		t.Fatal(err)
+	}
+	var id, owner int64
+	var vendors []int64
+	e.pool.QueryRow(ctx, `SELECT id, vendor_id, ARRAY(SELECT DISTINCT (e->>'vendor_id')::bigint FROM jsonb_array_elements(evidence) e ORDER BY 1)
+		FROM root_candidates WHERE domain = 'shared.test'`).Scan(&id, &owner, &vendors)
+	if owner != v1 || !reflect.DeepEqual(vendors, []int64{min(v1, v2), max(v1, v2)}) {
+		t.Fatalf("owner %d evidence vendors %v", owner, vendors)
+	}
+	if err := reassignCandidate(ctx, e.pool, id, v2); err != nil {
+		t.Fatal(err)
+	}
+	e.pool.QueryRow(ctx, `SELECT vendor_id FROM root_candidates WHERE id = $1`, id).Scan(&owner)
+	if owner != v2 {
+		t.Fatalf("reassign: owner %d", owner)
+	}
+	ignoreCandidate(ctx, e.pool, id)
+	if err := reassignCandidate(ctx, e.pool, id, v1); err == nil {
+		t.Fatal("reassigned a non-pending candidate")
+	}
+	_, fails, err := expandVendor(ctx, failICP{}, nil, v1, "甲", []string{"a.test", "b.test"})
+	if err == nil || fails != 3 {
+		t.Fatalf("fails=%d err=%v", fails, err)
+	}
+	t.Logf("证据厂商 %v，改归属 %d→%d 成功，非 pending 改归属被拒；ICP 失败次数 %d", vendors, v1, v2, fails)
 }
