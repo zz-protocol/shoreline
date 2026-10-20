@@ -291,7 +291,11 @@ func TestDNSHandlerWildcardNoFakeAssets(t *testing.T) {
 	mu.Lock()
 	sort.Strings(httpIn)
 	mu.Unlock()
-	if want := []string{"a.example.test", "cdn.example.test", "real.wild.example.test"}; !reflect.DeepEqual(httpIn, want) {
+	// T8 起 IP 判为泛解析的候选也交给 http 做页面相似度复核
+	want := append([]string{"a.example.test", "cdn.example.test"}, fakes...)
+	want = append(want, "real.wild.example.test")
+	sort.Strings(want)
+	if !reflect.DeepEqual(httpIn, want) {
 		t.Fatalf("http got %v, want %v", httpIn, want)
 	}
 	var wild, live, unresolved int

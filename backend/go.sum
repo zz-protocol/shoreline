@@ -218,6 +218,8 @@ github.com/projectdiscovery/subfinder/v2 v2.17.0 h1:iKWUCpT7GemyTc3lgd5EVJAOiMSl
 github.com/projectdiscovery/subfinder/v2 v2.17.0/go.mod h1:CZJbkVmaiUuj4lwTk2Pf7g2DaR3Nw66zTOzAbBdVVMA=
 github.com/projectdiscovery/utils v0.11.6 h1:Ef5L6RzO6Cji3jBiapjzT9T5E1p6HM1SdGOkv+K1kps=
 github.com/projectdiscovery/utils v0.11.6/go.mod h1:RqB+r9PSMmZTrivn4g21aCX/fqbMbzRxjR1FmTkoRMM=
+github.com/projectdiscovery/wappalyzergo v0.3.6 h1:1FXCMeCa1xVu2zaW+eeBcbVxtlMStqGOlKcMLyh2pzI=
+github.com/projectdiscovery/wappalyzergo v0.3.6/go.mod h1:4E6+fh/ckaY3wo5tlM7lNYSkhuTYRHzu2YmGIRraXP0=
 github.com/redis/go-redis/v9 v9.23.0 h1:/TTVdJa8BRNsybwwGGnmiYktHNlUXtbOQxlWpHBPL3s=
 github.com/redis/go-redis/v9 v9.23.0/go.mod h1:EWP2UUk+XDaI1s5nQB5mablZN6vccXlmBQTyfnF87D0=
 github.com/refraction-networking/utls v1.8.2 h1:j4Q1gJj0xngdeH+Ox/qND11aEfhpgoEvV+S9iJ2IdQo=

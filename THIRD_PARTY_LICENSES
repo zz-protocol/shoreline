@@ -68,6 +68,7 @@
 | github.com/pkg/errors | BSD-2-Clause |
 | github.com/projectdiscovery/blackrock | MIT |
 | github.com/projectdiscovery/cdncheck | MIT |
+| github.com/projectdiscovery/wappalyzergo | MIT |
 | github.com/projectdiscovery/chaos-client/pkg/chaos | MIT |
 | github.com/projectdiscovery/fastdialer/fastdialer | MIT |
 | github.com/projectdiscovery/gologger | MIT |

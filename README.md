@@ -44,6 +44,19 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 
 查询 A/AAAA（记录 CNAME 链）。泛解析过滤：对子域的父域（仅限根域及其子域）自适应探测随机子域——
 探到新 IP 就继续，直到连续 DNS_WILDCARD_STABLE 次无新 IP 或达 DNS_WILDCARD_MAX；前 3 次均无解析视为无泛解析。
+
+### HTTP 探测（T8）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| HTTP_RPS | 10 | 每实例每秒 HTTP 请求数（含泛解析对照请求），>0 |
+| HTTP_TIMEOUT | 10s | 单请求超时（Go duration） |
+| HTTP_SIMILARITY | 0.9 | 泛解析页面相似度阈值，0 < x <= 1 |
+
+对每个主机按 https、http 各发一次 `GET /`，不跟随跳转（记录 Location 为 redirect_to），不校验证书，正文最多读 1MB；
+记录状态码、标题、技术栈（wappalyzergo）和指纹 fingerprint_hash = sha256(状态码|标题|技术栈)。
+DNS 阶段 IP 落在泛解析集合的主机也会探测：与父域随机子域 `wc-<随机>.<父域>` 的同 scheme 页面比较（状态码相同且去掉主机名后的 3-gram Jaccard >= 阈值），
+相似则保持 wildcard、不入库 URL；不相似视为与泛解析共用 IP 的真实主机，置 wildcard=false 并入库 URL。
 若子域全部 IP 都落在泛解析 IP 集合内则标记 `wildcard`、不交给 http；有 IP 不在集合内时在剩余预算内补探（应对轮换 IP），仍未覆盖则视为真实记录。
 共用泛解析 IP 的真实主机由 T8 页面相似度进一步区分。CDN 先按 CNAME 后缀识别（阿里、腾讯、字节、网宿、Cloudflare、Akamai、CloudFront、Fastly），未命中再用 cdncheck（MIT）内置 IP 段匹配 CDN/WAF（本地匹配，不发 DNS/HTTP 请求；数据随依赖版本更新）。注意：cdncheck 包初始化时会对 [2001:4860:4860::8888]:53 做一次 UDP connect 以探测本机 IPv6（UDP connect 不发包）。
 

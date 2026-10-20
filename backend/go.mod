@@ -10,6 +10,7 @@ require (
 	github.com/miekg/dns v1.1.73
 	github.com/projectdiscovery/cdncheck v1.3.2
 	github.com/projectdiscovery/subfinder/v2 v2.17.0
+	github.com/projectdiscovery/wappalyzergo v0.3.6
 	github.com/redis/go-redis/v9 v9.23.0
 	golang.org/x/time v0.16.0
 )

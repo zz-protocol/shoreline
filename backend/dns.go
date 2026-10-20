@@ -300,7 +300,8 @@ func (r *resolver) resolveHosts(ctx context.Context, root string, hosts []string
 	return out
 }
 
-// dnsHandler 是 dns 类扫描：解析、泛解析过滤、CDN 标记并更新资产；返回解析成功且非泛解析的主机交给 http。
+// dnsHandler 是 dns 类扫描：解析、泛解析（IP 比对）标记、CDN 标记并更新资产；返回解析成功的主机交给 http，
+// 其中 IP 判为泛解析的由 http 阶段页面相似度复核（相似才确认泛解析，不入库 URL）。
 func dnsHandler(d *pgxpool.Pool, r *resolver) ScanHandler {
 	return func(ctx context.Context, scanID int64, hosts []string) ([]string, error) {
 		var root string
@@ -325,7 +326,7 @@ func dnsHandler(d *pgxpool.Pool, r *resolver) ScanHandler {
 				resolved_at = now() WHERE subdomain = $1`, normalizeHost(hd.Host), ips, cnames, hd.Resolved, hd.Wildcard, cdn); err != nil {
 				return nil, err
 			}
-			if hd.Resolved && !hd.Wildcard {
+			if hd.Resolved { // 泛解析候选也交给 http，由页面相似度最终判定（T8）
 				next = append(next, hd.Host)
 			}
 		}
