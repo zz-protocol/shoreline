@@ -28,16 +28,16 @@ func TestConfigFromEnv(t *testing.T) {
 	}
 	t.Setenv("RATE_DNS", "2.5")
 	t.Setenv("MAX_RETRY", "5")
-	t.Setenv("RETRY_BASE_SECONDS", "0.5")
+	t.Setenv("RETRY_BASE_SECONDS", "1.5")
 	if c, err = configFromEnv(); err != nil {
 		t.Fatal(err)
 	}
-	if c.Rates["dns"] != 2.5 || c.MaxRetry != 5 || c.RetryBase != 500*time.Millisecond {
+	if c.Rates["dns"] != 2.5 || c.MaxRetry != 5 || c.RetryBase != 1500*time.Millisecond {
 		t.Fatalf("overrides: %+v", c)
 	}
 	for k, v := range map[string]string{
 		"RATE_HTTP": "0", "RATE_DNS": "NaN", "RATE_PASSIVE": "Inf", "RATE_PASSIVE_NEG": "-Inf",
-		"MAX_RETRY": "-1", "RETRY_BASE_SECONDS": "NaN",
+		"MAX_RETRY": "-1", "RETRY_BASE_SECONDS": "NaN", "RETRY_BASE_SECONDS_NEG": "0.5",
 	} {
 		t.Run(k+"="+v, func(t *testing.T) {
 			t.Setenv(strings.TrimSuffix(k, "_NEG"), v)
@@ -51,7 +51,7 @@ func TestConfigFromEnv(t *testing.T) {
 func TestRetryDelayExponential(t *testing.T) {
 	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
 	for i, w := range want {
-		if got := retryDelay(time.Second, i+1); got != w {
+		if got := retryDelay(time.Second, i); got != w { // asynq: 首次失败 n=0
 			t.Errorf("retry %d: got %v want %v", i+1, got, w)
 		}
 	}
@@ -134,7 +134,7 @@ func (e *testEnv) start(t *testing.T, cfg workerConfig, handlers map[string]Scan
 // waitStatus 等到该根域下 kind 类任务有 n 个达到 status。
 func (e *testEnv) waitStatus(t *testing.T, kind, status string, n int) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for {
 		var c int
 		e.pool.QueryRow(context.Background(), `SELECT count(*) FROM scan_tasks WHERE root_id = $1 AND kind = $2 AND status = $3`,
@@ -150,7 +150,7 @@ func (e *testEnv) waitStatus(t *testing.T, kind, status string, n int) {
 }
 
 func testConfig(rates map[string]rate.Limit) workerConfig {
-	return workerConfig{Rates: rates, MaxRetry: 3, RetryBase: 10 * time.Millisecond, Concurrent: 10, PollDelay: 50 * time.Millisecond}
+	return workerConfig{Rates: rates, MaxRetry: 3, RetryBase: time.Second, Concurrent: 10, PollDelay: 100 * time.Millisecond}
 }
 
 var fastRates = map[string]rate.Limit{"passive": 100, "dns": 100, "http": 100}
@@ -259,7 +259,7 @@ func TestRetry(t *testing.T) {
 	e := newTestEnv(t)
 	var flaky, broken atomic.Int32
 	cfg := testConfig(fastRates)
-	cfg.RetryBase = 200 * time.Millisecond // 200ms, 400ms, 800ms，便于观察 retrying
+	cfg.RetryBase = time.Second // 1s, 2s, 4s
 	e.start(t, cfg, map[string]ScanHandler{
 		"dns": func(context.Context, int64, []string) ([]string, error) {
 			if flaky.Add(1) <= 2 {
@@ -302,5 +302,40 @@ func TestRetry(t *testing.T) {
 	e.pool.QueryRow(ctx, `SELECT status FROM scan_tasks WHERE id = $1`, httpID).Scan(&status)
 	if status != "failed" || broken.Load() != 4 {
 		t.Errorf("after re-enqueue: status=%s attempts=%d, want failed/4", status, broken.Load())
+	}
+}
+
+// 真实重试间隔：base=1s、MaxRetry=3 → 相邻调用间隔约 1s/2s/4s（误差 <1s）且递增。
+func TestRetryIntervals(t *testing.T) {
+	e := newTestEnv(t)
+	var mu sync.Mutex
+	var calls []time.Time
+	e.start(t, testConfig(fastRates), map[string]ScanHandler{
+		"dns": func(context.Context, int64, []string) ([]string, error) {
+			mu.Lock()
+			calls = append(calls, time.Now())
+			mu.Unlock()
+			return nil, errors.New("fail")
+		},
+	})
+	TriggerScan(context.Background(), e.pool, e.client, e.rootID, "dns", 3)
+	e.waitStatus(t, "dns", "failed", 1)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 4 {
+		t.Fatalf("calls = %d, want 4", len(calls))
+	}
+	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
+	var prev time.Duration
+	for i, w := range want {
+		got := calls[i+1].Sub(calls[i])
+		t.Logf("retry %d interval %v (want ~%v)", i+1, got.Round(time.Millisecond), w)
+		if d := got - w; d < -time.Second || d > time.Second {
+			t.Errorf("retry %d interval %v, want %v ±1s", i+1, got, w)
+		}
+		if got <= prev {
+			t.Errorf("retry %d interval %v not increasing (prev %v)", i+1, got, prev)
+		}
+		prev = got
 	}
 }

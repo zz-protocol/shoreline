@@ -38,7 +38,7 @@ type ScanHandler func(ctx context.Context, scanID int64, hosts []string) ([]stri
 type workerConfig struct {
 	Rates      map[string]rate.Limit
 	MaxRetry   int           // MAX_RETRY，默认 3
-	RetryBase  time.Duration // RETRY_BASE_SECONDS，默认 1s；第 n 次重试等待 base*2^(n-1)
+	RetryBase  time.Duration // RETRY_BASE_SECONDS，默认 1s，最小 1s；第 k 次重试前等待 base*2^(k-1)
 	Concurrent int
 	PollDelay  time.Duration // 到期重试任务的检查间隔，0 为 Asynq 默认（5s），测试中调小
 }
@@ -66,8 +66,8 @@ func configFromEnv() (workerConfig, error) {
 	}
 	if s := os.Getenv("RETRY_BASE_SECONDS"); s != "" {
 		f, err := strconv.ParseFloat(s, 64)
-		if !validPositive(f, err) {
-			return c, fmt.Errorf("RETRY_BASE_SECONDS: invalid %q", s)
+		if !validPositive(f, err) || f < 1 { // asynq 重试调度为秒级精度，<1s 会被截断
+			return c, fmt.Errorf("RETRY_BASE_SECONDS: invalid %q (must be >= 1)", s)
 		}
 		c.RetryBase = time.Duration(f * float64(time.Second))
 	}
@@ -79,9 +79,9 @@ func validPositive(f float64, err error) bool {
 	return err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) && f > 0
 }
 
-// retryDelay 指数退避：base * 2^(n-1)，n 从 1 开始。
+// retryDelay 指数退避：base * 2^n。n 为 asynq 传入的已重试次数，首次失败为 0。
 func retryDelay(base time.Duration, n int) time.Duration {
-	return time.Duration(float64(base) * math.Pow(2, float64(n-1)))
+	return time.Duration(float64(base) * math.Pow(2, float64(n)))
 }
 
 // TriggerScan 手动触发扫描：写入 scan_tasks（pending）并投递到对应队列，返回任务 id。
