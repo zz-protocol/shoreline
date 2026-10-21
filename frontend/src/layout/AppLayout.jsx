@@ -8,6 +8,7 @@ const items = [
   { key: '/events', label: '新增播报' },
   { key: '/assets', label: '资产' },
   { key: '/vendors', label: '厂商 / 根域' },
+  { key: '/hosted-rules', label: '客户托管规则' },
   { key: '/scans', label: '扫描任务' },
   { key: '/tokens', label: 'API Key' },
   { key: '/docs', label: 'API 文档' },

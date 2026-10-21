@@ -106,6 +106,9 @@ func main() {
 	} else if n > 0 {
 		log.Printf("resumed %d unfinished scope tasks", n)
 	}
+	if err := a.initHosted(context.Background()); err != nil {
+		log.Fatalf("customer_hosted init: %v", err)
+	}
 	log.Printf("listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, newMux(checks, a)))
 }

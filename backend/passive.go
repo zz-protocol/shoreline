@@ -283,7 +283,7 @@ func collectPassive(ctx context.Context, domain string, srcs []Source) (map[stri
 	return found, nil
 }
 
-// storeAssets upsert 资产：归属取最长匹配根域，in_scope 按该厂商范围规则判定，sources 合并去重，更新 last_seen。
+// storeAssets upsert 资产：归属取最长匹配根域，in_scope 按该厂商范围规则判定，customer_hosted 按客户托管规则判定，sources 合并去重，更新 last_seen。
 // 返回本次首次入库的子域 → 根域 id。
 func storeAssets(ctx context.Context, d *pgxpool.Pool, found map[string][]string) (map[string]int64, error) {
 	type root struct {
@@ -323,6 +323,10 @@ func storeAssets(ctx context.Context, d *pgxpool.Pool, found map[string][]string
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	hosted, err := loadHostedPatterns(ctx, d)
+	if err != nil {
+		return nil, err
+	}
 	created := map[string]int64{}
 	for host, srcs := range found {
 		var best *root
@@ -335,12 +339,12 @@ func storeAssets(ctx context.Context, d *pgxpool.Pool, found map[string][]string
 			continue
 		}
 		var inserted bool
-		err := d.QueryRow(ctx, `INSERT INTO assets (root_id, subdomain, sources, in_scope) VALUES ($1, $2, $3, $4)
+		err := d.QueryRow(ctx, `INSERT INTO assets (root_id, subdomain, sources, in_scope, customer_hosted) VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT (subdomain) DO UPDATE SET
-				last_seen = now(), root_id = EXCLUDED.root_id, in_scope = EXCLUDED.in_scope,
+				last_seen = now(), root_id = EXCLUDED.root_id, in_scope = EXCLUDED.in_scope, customer_hosted = EXCLUDED.customer_hosted,
 				sources = ARRAY(SELECT DISTINCT unnest(assets.sources || EXCLUDED.sources) ORDER BY 1)
 			RETURNING xmax = 0`,
-			best.id, host, srcs, InScope(host, rules[best.vendor])).Scan(&inserted)
+			best.id, host, srcs, InScope(host, rules[best.vendor]), isCustomerHosted(host, hosted)).Scan(&inserted)
 		if err != nil {
 			return nil, err
 		}

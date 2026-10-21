@@ -75,6 +75,11 @@ func (a *api) routes() map[string]http.HandlerFunc {
 		"POST /api/root-candidates/{id}/ignore":     a.ignoreCand,
 		"POST /api/root-candidates/{id}/reassign":   a.reassignCand,
 		"GET /api/scope-tasks/{id}":                 a.getScopeTask,
+		"GET /api/customer-hosted-rules":            a.listHostedRules,
+		"POST /api/customer-hosted-rules":           a.createHostedRule,
+		"PATCH /api/customer-hosted-rules/{id}":     a.updateHostedRule,
+		"DELETE /api/customer-hosted-rules/{id}":    a.deleteHostedRule,
+		"GET /api/customer-hosted-tasks/{id}":       a.getHostedTask,
 		"GET /api/assets":                           a.listAssets,
 		"GET /api/check-scope":                      a.checkScopeHTTP,
 		"GET /api/assets/{id}":                      a.getAsset,
@@ -713,7 +718,7 @@ func int64Param(w http.ResponseWriter, r *http.Request, name string) (*int64, bo
 }
 
 const assetCols = `a.id, a.subdomain, a.root_id, r.domain AS root_domain, r.vendor_id, a.ips, a.cnames, a.cdn, a.resolved,
-	a.wildcard, a.in_scope, a.sources, a.first_seen, a.last_seen, a.alive, a.last_alive_at`
+	a.wildcard, a.customer_hosted, a.in_scope, a.sources, a.first_seen, a.last_seen, a.alive, a.last_alive_at`
 
 // listAssets：vendor / in_scope / q（子域名或 URL 标题子串）/ new_since（资产 new 事件时间）/ include_wildcard（默认过滤）。
 // httpError 带状态码的业务错误（REST 映射为状态码，MCP 映射为工具错误）。
@@ -748,6 +753,7 @@ type assetFilter struct {
 	Limit           int
 	Cursor          int64
 	Alive           string // alive / dead / unknown；空=不筛
+	IncludeHosted   bool   // include_customer_hosted：默认隐藏客户托管资产（T24）
 }
 
 // checkVendor：传了 vendor 必须 >= 1（REST 与 MCP 共用）。
@@ -803,7 +809,8 @@ func (a *api) queryAssets(ctx context.Context, f assetFilter) ([]map[string]any,
 		  AND ($6::timestamptz IS NULL OR EXISTS (SELECT 1 FROM events e WHERE e.asset_id = a.id AND e.url_id IS NULL
 		       AND e.type = 'new' AND e.created_at >= $6))
 		  AND ($8::text = '' OR a.alive = $8)
-		ORDER BY a.id DESC LIMIT $7`, f.Cursor, f.Vendor, f.InScope, f.IncludeWildcard, q, f.NewSince, f.Limit+1, f.Alive))
+		  AND ($9::bool OR NOT a.customer_hosted)
+		ORDER BY a.id DESC LIMIT $7`, f.Cursor, f.Vendor, f.InScope, f.IncludeWildcard, q, f.NewSince, f.Limit+1, f.Alive, f.IncludeHosted))
 }
 
 func (a *api) listAssets(w http.ResponseWriter, r *http.Request) {
@@ -818,10 +825,11 @@ func (a *api) listAssets(w http.ResponseWriter, r *http.Request) {
 	}
 	wild, ok3 := boolParam(w, r, "include_wildcard")
 	newSince, ok4 := timeParam(w, r, "new_since")
-	if !ok3 || !ok4 {
+	hosted, ok5 := boolParam(w, r, "include_customer_hosted")
+	if !ok3 || !ok4 || !ok5 {
 		return
 	}
-	list, err := a.queryAssets(r.Context(), assetFilter{vendor, inScope, wild != nil && *wild, r.URL.Query().Get("q"), newSince, limit, cursor, r.URL.Query().Get("alive")})
+	list, err := a.queryAssets(r.Context(), assetFilter{vendor, inScope, wild != nil && *wild, r.URL.Query().Get("q"), newSince, limit, cursor, r.URL.Query().Get("alive"), hosted != nil && *hosted})
 	if err != nil {
 		writeAnyErr(w, err)
 		return
@@ -863,6 +871,7 @@ type eventFilter struct {
 	Cursor          int64
 	Until           *time.Time // created_at < until（T20 时间窗）
 	AfterID         int64      // id > after_id（T20 轮询只取新增）
+	IncludeHosted   bool       // include_customer_hosted：默认隐藏客户托管资产的事件（T24）
 }
 
 // checkEventFilter：level/type/vendor/时间窗校验（列表、统计、整列复制共用）。
@@ -895,7 +904,7 @@ func checkEventFilter(f *eventFilter) error {
 	return nil
 }
 
-// eventWhere：事件筛选条件，参数 $1..$9 依次为 cursor/level/type/since/asset_id/vendor/include_wildcard/until/after_id。
+// eventWhere：事件筛选条件，参数 $1..$10 依次为 cursor/level/type/since/asset_id/vendor/include_wildcard/until/after_id/include_customer_hosted。
 const eventWhere = `FROM events e JOIN assets a ON a.id = e.asset_id JOIN root_domains r ON r.id = a.root_id JOIN vendors v ON v.id = r.vendor_id LEFT JOIN urls u ON u.id = e.url_id
 		WHERE ($1::bigint = 0 OR e.id < $1)
 		  AND ($2::text = 'all' OR ($2 = 'asset') = (e.url_id IS NULL))
@@ -905,10 +914,11 @@ const eventWhere = `FROM events e JOIN assets a ON a.id = e.asset_id JOIN root_d
 		  AND ($6::bigint IS NULL OR r.vendor_id = $6)
 		  AND ($7::bool OR NOT a.wildcard)
 		  AND ($8::timestamptz IS NULL OR e.created_at < $8)
-		  AND ($9::bigint = 0 OR e.id > $9)`
+		  AND ($9::bigint = 0 OR e.id > $9)
+		  AND ($10::bool OR NOT a.customer_hosted)`
 
 func (f eventFilter) args() []any {
-	return []any{f.Cursor, f.Level, f.Type, f.Since, f.AssetID, f.Vendor, f.IncludeWildcard, f.Until, f.AfterID}
+	return []any{f.Cursor, f.Level, f.Type, f.Since, f.AssetID, f.Vendor, f.IncludeWildcard, f.Until, f.AfterID, f.IncludeHosted}
 }
 
 // queryEvents：level=asset（默认，资产级）|url|all；type 不传默认 new,recovered（显式传 changed 才含 changed）；资产级 new 事件嵌套 url_events。
@@ -922,7 +932,7 @@ func (a *api) queryEvents(ctx context.Context, f eventFilter) ([]map[string]any,
 	}
 	list, err := rowsJSON(a.db.Query(ctx, `SELECT e.id, e.type, CASE WHEN e.url_id IS NULL THEN 'asset' ELSE 'url' END AS level,
 		e.asset_id, a.subdomain, r.vendor_id, e.url_id, u.scheme || '://' || u.host || ':' || u.port AS url, e.detail, e.created_at
-		`+eventWhere+` ORDER BY e.id DESC LIMIT $10`, append(f.args(), f.Limit+1)...))
+		`+eventWhere+` ORDER BY e.id DESC LIMIT $11`, append(f.args(), f.Limit+1)...))
 	if err == nil {
 		err = a.nestURLEvents(ctx, list)
 	}
@@ -952,6 +962,10 @@ func eventFilterFromQuery(w http.ResponseWriter, r *http.Request) (eventFilter, 
 	if !ok5 {
 		return eventFilter{}, false
 	}
+	hosted, ok6 := boolParam(w, r, "include_customer_hosted")
+	if !ok6 {
+		return eventFilter{}, false
+	}
 	var after int64
 	if v := qs.Get("after_id"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
@@ -962,7 +976,7 @@ func eventFilterFromQuery(w http.ResponseWriter, r *http.Request) (eventFilter, 
 		after = n
 	}
 	return eventFilter{Level: qs.Get("level"), Type: qs.Get("type"), Since: since, Until: until, AssetID: assetID,
-		Vendor: vendor, IncludeWildcard: wild != nil && *wild, AfterID: after}, true
+		Vendor: vendor, IncludeWildcard: wild != nil && *wild, AfterID: after, IncludeHosted: hosted != nil && *hosted}, true
 }
 
 func (a *api) listEvents(w http.ResponseWriter, r *http.Request) {
@@ -1016,7 +1030,7 @@ func (a *api) eventStats(w http.ResponseWriter, r *http.Request) {
 const eventValuesMax = 100000
 
 // eventValues：整列复制（field=subdomain|url），时间窗内全部匹配事件，去重排序，一行一个。
-// field=url 且 level=asset 时，取这些资产在同一时间窗内的 URL 级同类事件的 URL（资产级事件本身无 URL）。
+// field=url 且 level=asset 时，取这些资产当前的 URL（资产级事件本身无 URL；恢复的资产窗口内没有 URL 级事件）。
 func (a *api) eventValues(w http.ResponseWriter, r *http.Request) {
 	f, ok := eventFilterFromQuery(w, r)
 	if !ok {
@@ -1030,14 +1044,14 @@ func (a *api) eventValues(w http.ResponseWriter, r *http.Request) {
 	var q string
 	switch {
 	case field == "subdomain":
-		q = `SELECT DISTINCT a.subdomain AS v ` + eventWhere + ` ORDER BY 1 LIMIT $10`
+		q = `SELECT DISTINCT a.subdomain AS v ` + eventWhere + ` ORDER BY 1 LIMIT $11`
 	case field == "url" && f.Level == "asset":
 		// 资产维度：取窗口内事件对应资产的当前 URL（恢复的资产窗口内没有 URL 级事件，不能按 URL 事件取）
 		q = `SELECT DISTINCT uu.scheme || '://' || uu.host || ':' || uu.port AS v
 			FROM urls uu WHERE uu.asset_id IN (SELECT e.asset_id ` + eventWhere + `)
-			ORDER BY 1 LIMIT $10`
+			ORDER BY 1 LIMIT $11`
 	case field == "url":
-		q = `SELECT DISTINCT u.scheme || '://' || u.host || ':' || u.port AS v ` + eventWhere + ` AND u.id IS NOT NULL ORDER BY 1 LIMIT $10`
+		q = `SELECT DISTINCT u.scheme || '://' || u.host || ':' || u.port AS v ` + eventWhere + ` AND u.id IS NOT NULL ORDER BY 1 LIMIT $11`
 	default:
 		writeErr(w, 400, "field must be subdomain|url")
 		return

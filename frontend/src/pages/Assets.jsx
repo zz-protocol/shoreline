@@ -25,6 +25,7 @@ export default function Assets() {
   const [vendor, setVendor] = useState()
   const [q, setQ] = useState('')
   const [wild, setWild] = useState(false)
+  const [hosted, setHosted] = useState(false)
   const [alive, setAlive] = useState()
   const [items, setItems] = useState([])
   const [cursor, setCursor] = useState(null)
@@ -37,7 +38,7 @@ export default function Assets() {
   const load = async (next) => {
     setLoading(true)
     try {
-      const params = new URLSearchParams({ limit: '50', include_wildcard: String(wild) })
+      const params = new URLSearchParams({ limit: '50', include_wildcard: String(wild), include_customer_hosted: String(hosted) })
       if (vendor) params.set('vendor', vendor)
       if (q.trim()) params.set('q', q.trim())
       if (alive) params.set('alive', alive)
@@ -51,7 +52,7 @@ export default function Assets() {
       setLoading(false)
     }
   }
-  useEffect(() => { load() }, [vendor, wild, alive])
+  useEffect(() => { load() }, [vendor, wild, hosted, alive])
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="large">
@@ -77,6 +78,9 @@ export default function Assets() {
         <span>
           <Hint text={HELP.wildcard}>含泛解析</Hint> <Switch checked={wild} onChange={setWild} />
         </span>
+        <span>
+          <Hint text={HELP.hosted}>含客户托管</Hint> <Switch checked={hosted} onChange={setHosted} data-testid="hosted-switch" />
+        </span>
       </Space>
       <Table
         rowKey="id"
@@ -92,6 +96,7 @@ export default function Assets() {
           { title: '最后存活', dataIndex: 'last_alive_at', width: 170, render: (v) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : '') },
           { title: <Hint text={HELP.scope}>范围内</Hint>, dataIndex: 'in_scope', render: (v) => (v ? '是' : '否') },
           { title: '泛解析', dataIndex: 'wildcard', render: (v) => (v ? '是' : '') },
+          { title: <Hint text={HELP.hosted}>客户托管</Hint>, dataIndex: 'customer_hosted', render: (v) => (v ? <Tag>客户托管</Tag> : '') },
           { title: '来源', dataIndex: 'sources', render: (v) => (v || []).join(', ') },
         ]}
       />

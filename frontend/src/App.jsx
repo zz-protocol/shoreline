@@ -9,6 +9,7 @@ import Events from './pages/Events'
 import Scans from './pages/Scans'
 import Tokens from './pages/Tokens'
 import Docs from './pages/Docs'
+import HostedRules from './pages/HostedRules'
 
 function RequireAuth({ children }) {
   if (!getToken()) return <Navigate to="/login" replace />
@@ -34,6 +35,7 @@ export default function App() {
         <Route path="scans" element={<Scans />} />
         <Route path="tokens" element={<Tokens />} />
         <Route path="docs" element={<Docs />} />
+        <Route path="hosted-rules" element={<HostedRules />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

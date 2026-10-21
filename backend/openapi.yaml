@@ -84,6 +84,7 @@ components:
         cdn: {type: string, nullable: true}
         resolved: {type: boolean, nullable: true}
         wildcard: {type: boolean}
+        customer_hosted: {type: boolean, description: "子域名命中客户托管规则（云厂商分配给客户的默认域名），默认在列表与播报中隐藏"}
         in_scope: {type: boolean, nullable: true}
         sources: {type: array, items: {type: string}}
         first_seen: {type: string, format: date-time}
@@ -204,6 +205,29 @@ paths:
       summary: "in_scope 重算任务状态"
       parameters: [{$ref: "#/components/parameters/id"}]
       responses: {"200": {description: "ScopeTask"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/customer-hosted-rules:
+    get:
+      summary: "客户托管规则列表（未删除的，含停用）"
+      responses: {"200": {description: "{items: [{id, pattern, note, builtin, enabled, created_at}]}"}}
+    post:
+      summary: "添加客户托管规则：pattern 以 *. 开头（匹配 ≥1 层子域），标签内 * 只匹配本层；只匹配资产子域名本身；异步重算 customer_hosted"
+      requestBody: {content: {application/json: {schema: {type: object, properties: {pattern: {type: string}, note: {type: string}}}}}}
+      responses: {"202": {description: "{rule_id, task_id}"}, "400": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/customer-hosted-rules/{id}:
+    patch:
+      summary: "启用/停用规则（内置规则也可）；异步重算"
+      parameters: [{$ref: "#/components/parameters/id"}]
+      requestBody: {content: {application/json: {schema: {type: object, properties: {enabled: {type: boolean}}}}}}
+      responses: {"202": {description: "{rule_id, task_id}"}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+    delete:
+      summary: "删除规则（软删除；内置规则删除后升级不会加回）；异步重算"
+      parameters: [{$ref: "#/components/parameters/id"}]
+      responses: {"202": {description: "{rule_id, task_id}"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/customer-hosted-tasks/{id}:
+    get:
+      summary: "customer_hosted 重算任务状态"
+      parameters: [{$ref: "#/components/parameters/id"}]
+      responses: {"200": {description: "{id, status, processed, changed, error, created_at, finished_at}"}, "404": {$ref: "#/components/responses/Error"}}
   /api/vendors/{id}/subsidiaries:
     post:
       summary: "导入子公司名单（text/csv，每行 名称,持股比例；同名覆盖）"
@@ -241,6 +265,7 @@ paths:
         - {name: q, in: query, schema: {type: string}, description: "子域名或 URL 标题子串（不区分大小写）"}
         - {name: new_since, in: query, schema: {type: string, format: date-time}, description: "资产 new 事件时间 >= 该值（RFC3339）"}
         - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
+        - {name: include_customer_hosted, in: query, schema: {type: boolean, default: false}, description: "包含客户托管资产（默认隐藏）"}
         - {$ref: "#/components/parameters/limit"}
         - {$ref: "#/components/parameters/cursor"}
       responses: {"200": {description: "{items: Asset[], next_cursor}"}, "400": {$ref: "#/components/responses/Error"}}
@@ -280,6 +305,7 @@ paths:
         - {name: asset_id, in: query, schema: {type: integer}, description: "只看某资产（配合 level=url 查其 URL 事件）"}
         - {name: vendor, in: query, schema: {type: integer}}
         - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
+        - {name: include_customer_hosted, in: query, schema: {type: boolean, default: false}, description: "包含客户托管资产（默认隐藏）"}
         - {name: after_id, in: query, schema: {type: integer, minimum: 0}, description: "只返回 id 大于该值的事件（轮询取新增用）"}
         - {$ref: "#/components/parameters/limit"}
         - {$ref: "#/components/parameters/cursor"}
@@ -295,6 +321,7 @@ paths:
         - {name: asset_id, in: query, schema: {type: integer}, description: "只看某资产（配合 level=url 查其 URL 事件）"}
         - {name: vendor, in: query, schema: {type: integer}}
         - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
+        - {name: include_customer_hosted, in: query, schema: {type: boolean, default: false}, description: "包含客户托管资产（默认隐藏）"}
       responses: {"200": {description: "{items: [{vendor_id, vendor, count, new, recovered}], total, totals: {new, recovered}}；count 为所选各 type 计数之和；new/recovered 按 type 分别计数（总计与各厂商）"}, "400": {$ref: "#/components/responses/Error"}}
   /api/events/values:
     get:
@@ -308,6 +335,7 @@ paths:
         - {name: asset_id, in: query, schema: {type: integer}, description: "只看某资产（配合 level=url 查其 URL 事件）"}
         - {name: vendor, in: query, schema: {type: integer}}
         - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
+        - {name: include_customer_hosted, in: query, schema: {type: boolean, default: false}, description: "包含客户托管资产（默认隐藏）"}
       responses: {"200": {description: "{field, items: string[], count, truncated}"}, "400": {$ref: "#/components/responses/Error"}}
   /api/scans:
     get:

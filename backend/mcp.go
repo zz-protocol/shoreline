@@ -16,6 +16,7 @@ type listNewAssetsIn struct {
 	Vendor          *int64 `json:"vendor,omitempty" jsonschema:"only this vendor id (>= 1)"`
 	Since           string `json:"since,omitempty" jsonschema:"RFC3339; only new events at or after this time"`
 	IncludeWildcard bool   `json:"include_wildcard,omitempty" jsonschema:"include wildcard assets (default false)"`
+	IncludeHosted   bool   `json:"include_customer_hosted,omitempty" jsonschema:"include customer-hosted cloud assets (default false)"`
 	Limit           *int   `json:"limit,omitempty" jsonschema:"1..500, default 50"`
 	Cursor          string `json:"cursor,omitempty" jsonschema:"next_cursor from the previous page"`
 }
@@ -26,6 +27,7 @@ type searchAssetsIn struct {
 	InScope         *bool  `json:"in_scope,omitempty" jsonschema:"filter by in_scope"`
 	NewSince        string `json:"new_since,omitempty" jsonschema:"RFC3339; asset new event at or after this time"`
 	IncludeWildcard bool   `json:"include_wildcard,omitempty" jsonschema:"include wildcard assets (default false)"`
+	IncludeHosted   bool   `json:"include_customer_hosted,omitempty" jsonschema:"include customer-hosted cloud assets (default false)"`
 	Alive           string `json:"alive,omitempty" jsonschema:"filter by liveness: alive | dead | unknown"`
 	Limit           *int   `json:"limit,omitempty" jsonschema:"1..500, default 50"`
 	Cursor          string `json:"cursor,omitempty" jsonschema:"next_cursor from the previous page"`
@@ -88,7 +90,7 @@ func toolErr[T any](err error) (*mcp.CallToolResult, T, error) {
 
 func (a *api) mcpServer() *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "src-asset-monitor", Version: "1.0"}, nil)
-	mcp.AddTool(s, &mcp.Tool{Name: "list_new_assets", Description: "List asset-level new events (newest first), each with nested url_events. Wildcard assets are hidden by default."},
+	mcp.AddTool(s, &mcp.Tool{Name: "list_new_assets", Description: "List asset-level new events (newest first), each with nested url_events. Wildcard and customer-hosted assets are hidden by default."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in listNewAssetsIn) (*mcp.CallToolResult, pageOut, error) {
 			limit, cursor, err := parsePage(in.Limit, in.Cursor)
 			if err != nil {
@@ -98,14 +100,14 @@ func (a *api) mcpServer() *mcp.Server {
 			if err != nil {
 				return toolErr[pageOut](err)
 			}
-			list, err := a.queryEvents(ctx, eventFilter{Level: "asset", Type: "new", Since: since, Vendor: in.Vendor, IncludeWildcard: in.IncludeWildcard, Limit: limit, Cursor: cursor})
+			list, err := a.queryEvents(ctx, eventFilter{Level: "asset", Type: "new", Since: since, Vendor: in.Vendor, IncludeWildcard: in.IncludeWildcard, IncludeHosted: in.IncludeHosted, Limit: limit, Cursor: cursor})
 			if err != nil {
 				return toolErr[pageOut](err)
 			}
 			list, next := cutPage(list, limit)
 			return nil, pageOut{list, next}, nil
 		})
-	mcp.AddTool(s, &mcp.Tool{Name: "search_assets", Description: "Search assets (same filters as GET /api/assets). Wildcard assets are hidden by default."},
+	mcp.AddTool(s, &mcp.Tool{Name: "search_assets", Description: "Search assets (same filters as GET /api/assets). Wildcard and customer-hosted assets are hidden by default."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in searchAssetsIn) (*mcp.CallToolResult, pageOut, error) {
 			limit, cursor, err := parsePage(in.Limit, in.Cursor)
 			if err != nil {
@@ -115,7 +117,7 @@ func (a *api) mcpServer() *mcp.Server {
 			if err != nil {
 				return toolErr[pageOut](err)
 			}
-			list, err := a.queryAssets(ctx, assetFilter{in.Vendor, in.InScope, in.IncludeWildcard, in.Q, since, limit, cursor, in.Alive})
+			list, err := a.queryAssets(ctx, assetFilter{in.Vendor, in.InScope, in.IncludeWildcard, in.Q, since, limit, cursor, in.Alive, in.IncludeHosted})
 			if err != nil {
 				return toolErr[pageOut](err)
 			}

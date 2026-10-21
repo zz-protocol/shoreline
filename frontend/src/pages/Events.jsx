@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Alert, App, Button, DatePicker, Input, Modal, Segmented, Select, Space, Table, Tag, Typography } from 'antd'
+import { Alert, App, Button, DatePicker, Input, Modal, Segmented, Select, Space, Switch, Table, Tag, Typography } from 'antd'
 import { CopyOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { get } from '../api'
@@ -13,6 +13,7 @@ export default function Events() {
   const { message } = App.useApp()
   const [level, setLevel] = useState('asset')
   const [vendor, setVendor] = useState(null)
+  const [hosted, setHosted] = useState(false)
   const [win, setWin] = useState('7d')
   const [custom, setCustom] = useState(null)
   const [vendors, setVendors] = useState([])
@@ -25,7 +26,7 @@ export default function Events() {
   const itemsRef = useRef([])
   const rangeRef = useRef(null)
 
-  const params = () => filterParams({ level, vendor, ...rangeRef.current })
+  const params = () => filterParams({ level, vendor, hosted, ...rangeRef.current })
   const set = (list) => {
     itemsRef.current = list
     setItems(list)
@@ -119,7 +120,7 @@ export default function Events() {
     reload()
     const t = setInterval(poll, 30000)
     return () => clearInterval(t)
-  }, [level, vendor, win, custom])
+  }, [level, vendor, hosted, win, custom])
 
   const name = (id) => vendors.find((v) => v.id === id)?.name || `#${id}`
   const colTitle = (title, field) => (
@@ -165,6 +166,9 @@ export default function Events() {
             ]}
             onChange={setLevel}
           /></Hint>
+          <span>
+            <Hint text={HELP.hosted}>含客户托管</Hint> <Switch checked={hosted} onChange={setHosted} />
+          </span>
         </Space>
       </Space>
       {stats && (
