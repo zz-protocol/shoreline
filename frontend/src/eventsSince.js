@@ -56,4 +56,14 @@ export function mergeEvents(prev, incoming, limit = 50) {
   return out
 }
 
+/** 切换筛选时：清掉记住的 since，回到现在−1天，便于重拉近一天事件。 */
+export function resetSince(now = new Date(), storage = globalThis.localStorage) {
+  try {
+    storage?.removeItem?.(STORAGE_KEY)
+  } catch {
+    /* ignore */
+  }
+  return initialSince(now, storage)
+}
+
 export const EVENTS_SINCE_KEY = STORAGE_KEY

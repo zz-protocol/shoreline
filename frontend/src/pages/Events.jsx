@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { App, Select, Space, Table, Tag, Typography } from 'antd'
 import dayjs from 'dayjs'
 import { get } from '../api'
-import { advanceSince, initialSince, mergeEvents } from '../eventsSince'
+import { advanceSince, initialSince, mergeEvents, resetSince } from '../eventsSince'
 
 export default function Events() {
   const { message } = App.useApp()
@@ -32,7 +32,7 @@ export default function Events() {
   }
 
   useEffect(() => {
-    sinceRef.current = null
+    sinceRef.current = resetSince() // 切换 level：清 localStorage since，重拉近一天
     itemsRef.current = []
     setItems([])
     load()

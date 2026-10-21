@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { advanceSince, initialSince, mergeEvents, newestCreatedAt, EVENTS_SINCE_KEY } from './eventsSince'
+import { advanceSince, initialSince, mergeEvents, newestCreatedAt, resetSince, EVENTS_SINCE_KEY } from './eventsSince'
 
 function mem() {
   const m = new Map()
@@ -46,6 +46,16 @@ describe('events since', () => {
     const s = mem()
     const prev = '2026-10-21T02:00:00.000Z'
     expect(advanceSince(prev, [{ id: 1, created_at: '2026-10-21T01:00:00.000Z' }], s)).toBe(prev)
+  })
+
+  it('resetSince clears storage and returns now-1d', () => {
+    const s = mem()
+    s.setItem(EVENTS_SINCE_KEY, '2026-10-21T01:02:03.000Z')
+    const now = new Date('2026-10-21T08:00:00.000Z')
+    expect(resetSince(now, s)).toBe('2026-10-20T08:00:00.000Z')
+    expect(s.getItem(EVENTS_SINCE_KEY)).toBeNull()
+    // 清掉后再 initialSince 也应是现在−1天（不再读到旧值）
+    expect(initialSince(now, s)).toBe('2026-10-20T08:00:00.000Z')
   })
 
   it('mergeEvents dedups by id (local fallback)', () => {
