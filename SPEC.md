@@ -92,3 +92,9 @@
 - T8 封版原则：宁可漏救，不误放。对照页 3 张；父域不稳定时候选保持 wildcard；其余边角写入 README 已知局限。
 - 中文域名统一转 punycode 入库。
 - REST 增加 GET /api/check-scope?host=，与 MCP check_scope 对齐。
+
+### ICP 数据源（2026-10-21 用户确认）
+- 用户已有自建服务 zz-protocol/icp_yanzhenma（FastAPI，工信部备案查询）。在通用 ICP HTTP 适配器里给它加一个预设（ICP_PROVIDER=icp_yanzhenma，ICP_API_URL 指向该服务）。
+- 本仓库不引入、不打包该服务代码，只走 HTTP 调用；没配置时 ICP 功能自动关闭，退回手工导入。
+- 验收：用 mock 服务模拟它的响应格式，测试解析和失败降级；真实联调留到部署时做。
+- 没有天眼查、企查查等 key，这部分不做。
