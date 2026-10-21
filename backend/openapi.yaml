@@ -211,7 +211,7 @@ paths:
       summary: "客户托管规则列表（未删除的，含停用）"
       responses: {"200": {description: "{items: [{id, pattern, note, builtin, enabled, created_at}]}"}}
     post:
-      summary: "添加客户托管规则：pattern 以 *. 开头（匹配 ≥1 层子域），标签内 * 只匹配本层；只匹配资产子域名本身；异步重算 customer_hosted"
+      summary: "添加客户托管规则：pattern 以 *. 开头（匹配 ≥1 层子域），标签内 * 只匹配本层；只匹配资产子域名本身；规则的固定后缀（最后一个含 * 的标签之后的部分）须为 PSL ICANN 段 eTLD+1 或更长，否则返回 400；异步重算 customer_hosted"
       requestBody: {content: {application/json: {schema: {type: object, properties: {pattern: {type: string}, note: {type: string}}}}}}
       responses: {"202": {description: "{rule_id, task_id}"}, "400": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/customer-hosted-rules/{id}:
