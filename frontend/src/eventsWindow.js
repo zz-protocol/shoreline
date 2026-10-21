@@ -45,3 +45,24 @@ export function prependEvents(prev, incoming) {
 export function appendEvents(prev, page) {
   return prependEvents([], [...(prev || []), ...(page || [])])
 }
+
+/**
+ * 轮询结果处理：after_id 取回的一页（limit 条）还有 next_cursor 说明两次轮询间新增超过一页，
+ * 此时不合并（避免中间缺口），由页面提示「有更多新事件，点此刷新」。
+ */
+export function applyPoll(prev, page) {
+  if (page?.next_cursor) return { items: prev, overflow: true }
+  return { items: prependEvents(prev, page?.items), overflow: false }
+}
+
+/** 统计文案：「新增 X · 恢复 Y」。 */
+export function statsLabel(s) {
+  return `新增 ${s?.new ?? 0} · 恢复 ${s?.recovered ?? 0}`
+}
+
+/** 事件类型标签：新增 / 恢复 / 变更。 */
+export const TYPE_TAG = {
+  new: { label: '新增', color: 'green' },
+  recovered: { label: '恢复', color: 'gold' },
+  changed: { label: '变更', color: 'blue' },
+}

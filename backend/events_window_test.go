@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -18,8 +19,9 @@ func TestEventsWindowStatsValues(t *testing.T) {
 	v1 := e.vendorID()
 	o := c.want(201, "POST", "/api/vendors", map[string]any{"name": fmt.Sprintf("%s-b-%d", t.Name(), time.Now().UnixNano())})
 	v2 := int64(o["id"].(float64))
-	r2 := c.want(201, "POST", fmt.Sprintf("/api/vendors/%d/roots", v2), map[string]any{"domain": "t20b.example.test"})
+	r2 := c.want(201, "POST", fmt.Sprintf("/api/vendors/%d/roots", v2), map[string]any{"domain": fmt.Sprintf("t20b%d.example.test", time.Now().UnixNano())})
 	root2 := int64(r2["id"].(float64))
+	dom2 := r2["domain"].(string)
 	var root1 string
 	e.pool.QueryRow(ctx, `SELECT domain FROM root_domains WHERE id = $1`, e.rootID).Scan(&root1)
 
@@ -50,7 +52,7 @@ func TestEventsWindowStatsValues(t *testing.T) {
 	}
 	ins(e.rootID, "old."+root1, at(-40*24*time.Hour), true)
 	for i := 0; i < 3; i++ {
-		ins(root2, fmt.Sprintf("b%d.t20b.example.test", i), at(-time.Duration(i)*time.Hour), true)
+		ins(root2, fmt.Sprintf("b%d.%s", i, dom2), at(-time.Duration(i)*time.Hour), true)
 	}
 
 	since := url.QueryEscape(at(-7 * 24 * time.Hour).Format(time.RFC3339))
@@ -143,17 +145,30 @@ func TestEventsWindowStatsValues(t *testing.T) {
 	t.Logf("窗口 63 条（分页取全）；stats v1=%d v2=%d total=%v（含库内其它）；values(v1) 子域 %v、URL %v；after_id 只取新增 1 条", got[v1], got[v2], st["total"], subs["count"], urls["count"])
 }
 
-// 事件不自动清理：仓库内除迁移 008 一次性去重、删除厂商/根域级联外，无删除 events 的代码。
+// 事件不自动清理：扫描 backend 下全部非测试 .go 文件，无删除 events 的代码（迁移 008 一次性去重、厂商/根域级联不在 .go 里）。
 func TestNoEventCleanupCode(t *testing.T) {
-	for _, f := range []string{"api.go", "events.go", "queue.go", "schedule.go", "dns.go", "httpprobe.go", "passive.go", "active.go", "expand.go", "certstream.go", "main.go"} {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		n++
 		b, err := readSource(f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if containsFold(b, "delete from events") || containsFold(b, "truncate events") {
+		if containsFold(b, "delete from events") || containsFold(b, "truncate events") || containsFold(b, "truncate table events") {
 			t.Fatalf("%s deletes events", f)
 		}
 	}
+	if n < 10 {
+		t.Fatalf("only %d source files scanned", n)
+	}
+	t.Logf("扫描 %d 个非测试 .go 文件，无删除 events 的语句", n)
 }
 
 func readSource(f string) (string, error) {

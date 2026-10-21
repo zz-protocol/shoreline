@@ -768,11 +768,14 @@ func checkPage(limit int, cursor int64) error {
 	return nil
 }
 
-func nextCursor(list []map[string]any, limit int) any {
-	if len(list) == limit && limit > 0 {
-		return strconv.FormatInt(list[len(list)-1]["id"].(int64), 10)
+// cutPage：查询多取 1 行（LIMIT limit+1）；有第 limit+1 行才返回 next_cursor，并截掉多取的那行。
+// 总数恰为页大小整数倍时最后一页不再返回 next_cursor。
+func cutPage(list []map[string]any, limit int) ([]map[string]any, any) {
+	if limit > 0 && len(list) > limit {
+		list = list[:limit]
+		return list, strconv.FormatInt(list[limit-1]["id"].(int64), 10)
 	}
-	return nil
+	return list, nil
 }
 
 // queryAssets：vendor / in_scope / q（子域名或 URL 标题子串）/ new_since（资产 new 事件时间）/ include_wildcard（默认过滤）。
@@ -800,7 +803,7 @@ func (a *api) queryAssets(ctx context.Context, f assetFilter) ([]map[string]any,
 		  AND ($6::timestamptz IS NULL OR EXISTS (SELECT 1 FROM events e WHERE e.asset_id = a.id AND e.url_id IS NULL
 		       AND e.type = 'new' AND e.created_at >= $6))
 		  AND ($8::text = '' OR a.alive = $8)
-		ORDER BY a.id DESC LIMIT $7`, f.Cursor, f.Vendor, f.InScope, f.IncludeWildcard, q, f.NewSince, f.Limit, f.Alive))
+		ORDER BY a.id DESC LIMIT $7`, f.Cursor, f.Vendor, f.InScope, f.IncludeWildcard, q, f.NewSince, f.Limit+1, f.Alive))
 }
 
 func (a *api) listAssets(w http.ResponseWriter, r *http.Request) {
@@ -823,7 +826,8 @@ func (a *api) listAssets(w http.ResponseWriter, r *http.Request) {
 		writeAnyErr(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": list, "next_cursor": nextCursor(list, limit)})
+	list, next := cutPage(list, limit)
+	writeJSON(w, 200, map[string]any{"items": list, "next_cursor": next})
 }
 
 func (a *api) getAsset(w http.ResponseWriter, r *http.Request) {
@@ -915,7 +919,7 @@ func (a *api) queryEvents(ctx context.Context, f eventFilter) ([]map[string]any,
 	}
 	list, err := rowsJSON(a.db.Query(ctx, `SELECT e.id, e.type, CASE WHEN e.url_id IS NULL THEN 'asset' ELSE 'url' END AS level,
 		e.asset_id, a.subdomain, r.vendor_id, e.url_id, u.scheme || '://' || u.host || ':' || u.port AS url, e.detail, e.created_at
-		`+eventWhere+` ORDER BY e.id DESC LIMIT $10`, append(f.args(), f.Limit)...))
+		`+eventWhere+` ORDER BY e.id DESC LIMIT $10`, append(f.args(), f.Limit+1)...))
 	if err == nil {
 		err = a.nestURLEvents(ctx, list)
 	}
@@ -973,7 +977,8 @@ func (a *api) listEvents(w http.ResponseWriter, r *http.Request) {
 		writeAnyErr(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": list, "next_cursor": nextCursor(list, limit)})
+	list, next := cutPage(list, limit)
+	writeJSON(w, 200, map[string]any{"items": list, "next_cursor": next})
 }
 
 // eventStats：时间窗内按厂商统计事件数（全量，服务端聚合；不受分页影响）。
@@ -986,7 +991,8 @@ func (a *api) eventStats(w http.ResponseWriter, r *http.Request) {
 		writeAnyErr(w, err)
 		return
 	}
-	list, err := rowsJSON(a.db.Query(r.Context(), `SELECT r.vendor_id, v.name AS vendor, count(*) AS count
+	list, err := rowsJSON(a.db.Query(r.Context(), `SELECT r.vendor_id, v.name AS vendor, count(*) AS count,
+		count(*) FILTER (WHERE e.type = 'new') AS new, count(*) FILTER (WHERE e.type = 'recovered') AS recovered
 		`+eventWhere+` GROUP BY r.vendor_id, v.name ORDER BY count(*) DESC, r.vendor_id`,
 		f.args()...))
 	if err != nil {
@@ -994,10 +1000,13 @@ func (a *api) eventStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	total := int64(0)
+	totals := map[string]int64{"new": 0, "recovered": 0}
 	for _, m := range list {
 		total += m["count"].(int64)
+		totals["new"] += m["new"].(int64)
+		totals["recovered"] += m["recovered"].(int64)
 	}
-	writeJSON(w, 200, map[string]any{"items": list, "total": total})
+	writeJSON(w, 200, map[string]any{"items": list, "total": total, "totals": totals})
 }
 
 // eventValuesMax：整列复制的上限，防止一次返回过大。
@@ -1167,12 +1176,13 @@ func (a *api) listScans(w http.ResponseWriter, r *http.Request) {
 		  AND ($4::text = '' OR status = $4)
 		  AND ($5::text = '' OR kind = $5)
 		  AND ($6::bool IS NULL OR COALESCE((result->>'degraded')::boolean, false) = $6)
-		ORDER BY id DESC LIMIT $7`, cursor, vendor, root, status, kind, deg, limit))
+		ORDER BY id DESC LIMIT $7`, cursor, vendor, root, status, kind, deg, limit+1))
 	if err != nil {
 		dbErr(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": list, "next_cursor": nextCursor(list, limit)})
+	list, next := cutPage(list, limit)
+	writeJSON(w, 200, map[string]any{"items": list, "next_cursor": next})
 }
 
 func (a *api) getScan(w http.ResponseWriter, r *http.Request) {

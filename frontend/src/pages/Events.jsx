@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { App, Button, DatePicker, Segmented, Select, Space, Table, Tag, Typography } from 'antd'
+import { Alert, App, Button, DatePicker, Input, Modal, Segmented, Select, Space, Table, Tag, Typography } from 'antd'
 import { CopyOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { get } from '../api'
 import { Guide, HELP, Hint } from '../help'
-import { appendEvents, filterParams, maxId, prependEvents, windowRange } from '../eventsWindow'
+import { appendEvents, applyPoll, filterParams, maxId, statsLabel, TYPE_TAG, windowRange } from '../eventsWindow'
+import { copyText } from '../clipboard'
 
 const PAGE = 50
 
@@ -19,6 +20,8 @@ export default function Events() {
   const [cursor, setCursor] = useState(null)
   const [stats, setStats] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [overflow, setOverflow] = useState(false)
+  const [manual, setManual] = useState(null) // 复制失败时手动复制的文本
   const itemsRef = useRef([])
   const rangeRef = useRef(null)
 
@@ -45,6 +48,7 @@ export default function Events() {
       p.set('limit', String(PAGE))
       const d = await get(`/api/events?${p}`)
       set(d.items || [])
+      setOverflow(false)
       setCursor(d.next_cursor || null)
       loadStats()
     } catch (e) {
@@ -78,8 +82,11 @@ export default function Events() {
       p.set('limit', '500')
       p.set('after_id', String(maxId(itemsRef.current)))
       const d = await get(`/api/events?${p}`)
-      if (d.items?.length) {
-        set(prependEvents(itemsRef.current, d.items))
+      const r = applyPoll(itemsRef.current, d)
+      if (r.overflow) {
+        setOverflow(true)
+      } else if (d.items?.length) {
+        set(r.items)
         loadStats()
       }
     } catch {
@@ -92,8 +99,12 @@ export default function Events() {
       const p = params()
       p.set('field', field)
       const d = await get(`/api/events/values?${p}`)
-      await navigator.clipboard.writeText((d.items || []).join('\n'))
-      message.success(`已复制 ${d.count} 条${d.truncated ? '（已截断至上限）' : ''}`)
+      const text = (d.items || []).join('\n')
+      if (await copyText(text)) {
+        message.success(`已复制 ${d.count} 条${d.truncated ? '（已截断至上限）' : ''}`)
+      } else {
+        setManual({ text, count: d.count })
+      }
     } catch (e) {
       message.error(e.message)
     }
@@ -158,13 +169,23 @@ export default function Events() {
       </Space>
       {stats && (
         <Space wrap data-testid="stats">
-          <Typography.Text>时间窗内共 {stats.total} 条</Typography.Text>
+          <Typography.Text>时间窗内 {statsLabel(stats.totals)}</Typography.Text>
           {(stats.items || []).map((s) => (
             <Tag key={s.vendor_id} color="blue" style={{ cursor: 'pointer' }} onClick={() => setVendor(s.vendor_id)}>
-              {name(s.vendor_id)}：{s.count}
+              {name(s.vendor_id)}：{statsLabel(s)}
             </Tag>
           ))}
         </Space>
+      )}
+      {overflow && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ cursor: 'pointer' }}
+          message="有更多新事件，点此刷新"
+          onClick={reload}
+          data-testid="overflow"
+        />
       )}
       <Typography.Text type="secondary">
         默认近 7 天，事件永久保留；每 30 秒只把新事件加到顶部；统计与「复制本列」覆盖所选时间窗内全部记录（非仅当前已加载）。
@@ -178,7 +199,7 @@ export default function Events() {
         columns={[
           { title: '时间', dataIndex: 'created_at', render: (v) => dayjs(v).format('YYYY-MM-DD HH:mm:ss'), width: 180 },
           { title: '厂商', dataIndex: 'vendor_id', render: name, width: 120 },
-          { title: '类型', dataIndex: 'type', render: (v) => <Tag color={v === 'recovered' ? 'gold' : 'green'}>{v === 'recovered' ? '恢复' : v}</Tag>, width: 90 },
+          { title: '类型', dataIndex: 'type', render: (v) => <Tag color={TYPE_TAG[v]?.color}>{TYPE_TAG[v]?.label || v}</Tag>, width: 90 },
           { title: '层级', dataIndex: 'level', width: 80 },
           { title: colTitle('子域', 'subdomain'), dataIndex: 'subdomain' },
           { title: colTitle('URL', 'url'), dataIndex: 'url' },
@@ -190,6 +211,9 @@ export default function Events() {
         ]}
       />
       {cursor && <Button block onClick={more} loading={loading}>加载更多</Button>}
+      <Modal open={!!manual} title={`浏览器不允许自动复制，请手动复制（${manual?.count ?? 0} 条）`} footer={null} onCancel={() => setManual(null)}>
+        <Input.TextArea data-testid="manual-copy" value={manual?.text} rows={12} readOnly autoFocus onFocus={(e) => e.target.select()} />
+      </Modal>
     </Space>
   )
 }

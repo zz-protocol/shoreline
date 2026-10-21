@@ -102,7 +102,8 @@ func (a *api) mcpServer() *mcp.Server {
 			if err != nil {
 				return toolErr[pageOut](err)
 			}
-			return nil, pageOut{list, nextCursor(list, limit)}, nil
+			list, next := cutPage(list, limit)
+			return nil, pageOut{list, next}, nil
 		})
 	mcp.AddTool(s, &mcp.Tool{Name: "search_assets", Description: "Search assets (same filters as GET /api/assets). Wildcard assets are hidden by default."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in searchAssetsIn) (*mcp.CallToolResult, pageOut, error) {
@@ -118,7 +119,8 @@ func (a *api) mcpServer() *mcp.Server {
 			if err != nil {
 				return toolErr[pageOut](err)
 			}
-			return nil, pageOut{list, nextCursor(list, limit)}, nil
+			list, next := cutPage(list, limit)
+			return nil, pageOut{list, next}, nil
 		})
 	mcp.AddTool(s, &mcp.Tool{Name: "check_scope", Description: "Check whether a host is in scope: owning vendor/root (longest match), in_scope, matched rules, asset id if known."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in checkScopeIn) (*mcp.CallToolResult, mapOut, error) {

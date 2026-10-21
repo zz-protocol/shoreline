@@ -295,7 +295,7 @@ paths:
         - {name: asset_id, in: query, schema: {type: integer}, description: "只看某资产（配合 level=url 查其 URL 事件）"}
         - {name: vendor, in: query, schema: {type: integer}}
         - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
-      responses: {"200": {description: "{items: [{vendor_id, vendor, count}], total}"}, "400": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: "{items: [{vendor_id, vendor, count, new, recovered}], total, totals: {new, recovered}}；new/recovered 按 type 分别计数（总计与各厂商）"}, "400": {$ref: "#/components/responses/Error"}}
   /api/events/values:
     get:
       summary: "整列复制：时间窗内全部匹配事件的子域或 URL，去重排序（上限 100000，超出 truncated=true）；level=asset 时 field=url 取这些资产在同一时间窗内的 URL 级事件"
