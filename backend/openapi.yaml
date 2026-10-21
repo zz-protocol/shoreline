@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: src-asset-monitor API
+  title: Shoreline API
   version: "1.0"
   description: |
     所有 /api 接口（除本文档）需要 `Authorization: Bearer <token>`。token 为 API_BOOTSTRAP_TOKEN 或 POST /api/tokens 生成的 token。

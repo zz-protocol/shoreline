@@ -588,3 +588,10 @@ func TestDBErr22021(t *testing.T) {
 	}
 	t.Logf("SQLSTATE 22021 → %d %s", rec.Code, strings.TrimSpace(rec.Body.String()))
 }
+
+// T19：openapi info.title 为 Shoreline API（/docs 页面显示此标题）。
+func TestOpenAPITitle(t *testing.T) {
+	if !bytes.Contains(openapiYAML, []byte("\n  title: Shoreline API\n")) {
+		t.Fatal("openapi info.title should be Shoreline API")
+	}
+}
