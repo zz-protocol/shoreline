@@ -14,6 +14,9 @@ services:
       DATABASE_URL: postgres://sam:sam@postgres:5432/sam?sslmode=disable
       REDIS_ADDR: redis:6379
       CERTSTREAM_URL: ${CERTSTREAM_URL:-}
+      ICP_PROVIDER: ${ICP_PROVIDER:-}
+      ICP_API_URL: ${ICP_API_URL:-}
+      ICP_API_KEY: ${ICP_API_KEY:-}
     ports: ["127.0.0.1:8080:8080"]
     depends_on: [postgres, redis]
   # 可选：自建 CT 流服务。启用：docker compose --profile certstream up，

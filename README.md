@@ -152,10 +152,13 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | ICP_API_URL | 空（跳过扩展） | 通用 HTTP JSON ICP 接口地址，须 http/https；非法值启动即退出 |
+| ICP_PROVIDER | generic | 接口预设：`generic`（下方约定格式）或 `icp_yanzhenma`；其他值启动即退出（exit 1） |
 | ICP_API_KEY | 空 | 有值时请求带 `Authorization: Bearer <key>`；URL/KEY 含控制字符启动即退出（exit 1） |
 | RATE_EXPAND | 1 | expand 任务速率（任务/秒，同 RATE_*） |
 
 - ICP 接口约定：`GET <ICP_API_URL>?company=<主体名>` 或 `?domain=<域名>`，响应 `{"records":[{"domain":"...","company":"...","license":"备案号"}]}`。对接具体服务商时需按此约定加一层转换。
+- `ICP_PROVIDER=icp_yanzhenma`：对接自建的 [zz-protocol/icp_yanzhenma](https://github.com/zz-protocol/icp_yanzhenma)（FastAPI，MIT；本仓库不含其代码，只走 HTTP）。`ICP_API_URL` 填该服务根地址（如 `http://icp:8000`），请求 `GET <ICP_API_URL>/query?domain=<值>`；该服务把参数作为工信部查询的 unitName 透传，主体名与域名都走此接口。响应 `status=success` 时从 `data.params.list`（或 `data.list`）取 `domain`/`unitName`/`mainLicence`；`status=failed`、HTTP 非 200、超时（30s）或连不上都计入 `icp_failures`，若本轮全部失败则结果标 `degraded:true`，扫描仍为 done（不报错、不重试）。真实联调留到部署时做。
+- 未配置 `ICP_API_URL` 时 ICP 扩展自动关闭（扫描结果 `skipped: icp not configured`），只用手工导入的子公司名单。
 - 链路：厂商主体名（`vendors.company_name`）→ ICP；子公司（持股 >= 50%，只一层）→ ICP；已有根域 → ICP 反查主体 → 该主体的 ICP。ICP 返回的域名先规范化（去 `*.`、scheme、path/query、端口、末尾点，转小写），中文等 IDN 转 punycode（golang.org/x/net/idna，BSD-3）入库，非法的丢弃；IP 不生成候选（先去 scheme、userinfo、端口、路径、IPv6 zone、末尾点，再判：可解析为 IPv4/IPv6，或末级标签全数字 / 0x 十六进制，覆盖 127.1、0x7f.0.0.1、010.0.0.1 等写法）；扫描结果 `scan_tasks.result` 记 `icp_failures`、`skipped_ip`、`skipped_invalid`、`skipped_known_root`；已有根域及其子域（如 www.corp.test）不进候选；同批同域名重复记录证据去重。
 - 子公司只查导入名单里的公司（不自动展开股权链）；孙公司是否被查询，取决于导入名单里是否列入了它。
 - 子公司源可插拔；当前实现为手工导入名单 `vendor_subsidiaries`（CSV：`名称,持股百分比`，# 开头为注释，同名覆盖比例；自动去掉 UTF-8 BOM；第一行所有列都是非数字列名、且比例列是已知列名（比例/持股/持股比例/持股百分比/ratio/share/percent/percentage 等）时才视为表头跳过，否则按数据校验；比例为十进制数字，可带 `%`/`％`（如 `51 %`、`51％`），范围 0-100；任一行非法整批拒绝并报行号（API 返回 400）；没有有效数据行（空文件、只有注释或表头）也返回 400）。

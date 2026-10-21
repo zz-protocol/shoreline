@@ -56,13 +56,24 @@ type SubsidiarySource interface {
 // 有 ICP_API_KEY 时带 Authorization: Bearer <key>；响应 {"records":[{"domain","company","license"}]}。
 type httpICP struct {
 	base, key string
+	provider  string // "generic"（默认，records 约定）或 "icp_yanzhenma"
 	client    *http.Client
 }
 
+// ICP_PROVIDER 预设：generic 为本项目约定格式；icp_yanzhenma 为用户自建的 zz-protocol/icp_yanzhenma（FastAPI，MIT）服务。
+var icpProviders = []string{"generic", "icp_yanzhenma"}
+
 func icpSourceFromEnv() (ICPSource, error) {
 	base := os.Getenv("ICP_API_URL")
+	provider := os.Getenv("ICP_PROVIDER")
+	if provider == "" {
+		provider = "generic"
+	}
+	if !slices.Contains(icpProviders, provider) {
+		return nil, fmt.Errorf("ICP_PROVIDER must be one of %s, got %q", strings.Join(icpProviders, "|"), provider)
+	}
 	if base == "" {
-		return nil, nil // 未配置：跳过 ICP 扩展
+		return nil, nil // 未配置：跳过 ICP 扩展（退回手工导入）
 	}
 	if hasControl(base) || hasControl(os.Getenv("ICP_API_KEY")) {
 		return nil, fmt.Errorf("ICP_API_URL/ICP_API_KEY must not contain control characters")
@@ -70,7 +81,7 @@ func icpSourceFromEnv() (ICPSource, error) {
 	if u, err := url.Parse(base); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, fmt.Errorf("ICP_API_URL: invalid %q", base)
 	}
-	return &httpICP{base: base, key: os.Getenv("ICP_API_KEY"), client: &http.Client{Timeout: 30 * time.Second}}, nil
+	return &httpICP{base: base, key: os.Getenv("ICP_API_KEY"), provider: provider, client: &http.Client{Timeout: 30 * time.Second}}, nil
 }
 
 func hasControl(s string) bool {
@@ -174,6 +185,9 @@ func underRoot(d string, roots map[string]bool) bool {
 }
 
 func (h *httpICP) query(ctx context.Context, param, value string) ([]ICPRecord, error) {
+	if h.provider == "icp_yanzhenma" {
+		return h.queryYanzhenma(ctx, value)
+	}
 	u, _ := url.Parse(h.base)
 	q := u.Query()
 	q.Set(param, value)
@@ -200,6 +214,59 @@ func (h *httpICP) query(ctx context.Context, param, value string) ([]ICPRecord, 
 		return nil, fmt.Errorf("icp %s=%s: %w", param, value, err)
 	}
 	return body.Records, nil
+}
+
+// queryYanzhenma 调 icp_yanzhenma 的 GET <ICP_API_URL>/query?domain=<值>。该服务把参数作为工信部查询的 unitName 透传，
+// 因此主体名和域名都走这一个接口。响应 {"status":"success|failed","domain":...,"error":...,"data":<工信部原始结果>}，
+// 记录在 data.params.list（或 data.list），每项取 domain / unitName / mainLicence。status 非 success 或 HTTP 非 200 记为失败。
+func (h *httpICP) queryYanzhenma(ctx context.Context, value string) ([]ICPRecord, error) {
+	u, _ := url.Parse(strings.TrimSuffix(h.base, "/") + "/query")
+	u.RawQuery = url.Values{"domain": {value}}.Encode()
+	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	if h.key != "" {
+		req.Header.Set("Authorization", "Bearer "+h.key)
+	}
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("icp_yanzhenma %q: HTTP %d", value, resp.StatusCode)
+	}
+	type item struct {
+		Domain      string `json:"domain"`
+		UnitName    string `json:"unitName"`
+		MainLicence string `json:"mainLicence"`
+	}
+	var body struct {
+		Status string `json:"status"`
+		Error  string `json:"error"`
+		Data   struct {
+			List   []item `json:"list"`
+			Params struct {
+				List []item `json:"list"`
+			} `json:"params"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 10<<20)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("icp_yanzhenma %q: %w", value, err)
+	}
+	if body.Status != "success" {
+		return nil, fmt.Errorf("icp_yanzhenma %q: status %q: %s", value, body.Status, body.Error)
+	}
+	list := body.Data.Params.List
+	if list == nil {
+		list = body.Data.List
+	}
+	var out []ICPRecord
+	for _, it := range list {
+		out = append(out, ICPRecord{Domain: it.Domain, Company: it.UnitName, License: it.MainLicence})
+	}
+	return out, nil
 }
 
 func (h *httpICP) ByCompany(ctx context.Context, company string) ([]ICPRecord, error) {
@@ -508,6 +575,12 @@ func expandHandler(d *pgxpool.Pool, icp ICPSource, subs SubsidiarySource) ScanHa
 			name = strings.TrimSpace(*company)
 		}
 		found, fails, err := expandVendor(ctx, icp, subs, vendorID, name, roots)
+		if err != nil && fails.ICPFailures > 0 { // ICP 服务不可达/查询失败：降级，记失败次数，扫描不失败
+			log.Printf("expand vendor %d: icp degraded: %v", vendorID, err)
+			_, err = d.Exec(ctx, `UPDATE scan_tasks SET result = $2 WHERE id = $1`, scanID, map[string]any{
+				"found": 0, "new_candidates": 0, "icp_failures": fails.ICPFailures, "degraded": true, "error": err.Error()})
+			return nil, err
+		}
 		if err != nil {
 			d.Exec(ctx, `UPDATE scan_tasks SET result = $2 WHERE id = $1`, scanID, fails)
 			return nil, err

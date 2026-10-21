@@ -152,3 +152,6 @@
 | 文件 | 来源 | 许可 |
 |---|---|---|
 | backend/wordlists/subdomains-top1million-5000.txt | SecLists（https://github.com/danielmiessler/SecLists）Discovery/DNS/subdomains-top1million-5000.txt，commit 61060549893d | MIT，Copyright (c) 2018 Daniel Miessler |
+
+## 参考（未引入代码）
+- zz-protocol/icp_yanzhenma（MIT License, Copyright (c) 2026 zz-protocol）：仅按其 HTTP 接口（GET /query?domain=）编写客户端，未复制、未打包其代码。读取版本 83ca858。
