@@ -62,6 +62,7 @@ func main() {
 		"active":  activeHandler(pool, newActiveScanner(acfg, dcfg)),
 		"expand":  expandHandler(pool, icp, dbSubsidiaries{pool}),
 	}
+	startedAt := time.Now()
 	srv, wmux := newWorker(asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")}, pool, cfg, handlers)
 	go func() { log.Fatal(srv.Run(wmux)) }()
 	if cs.URL != "" { // 未配置 CERTSTREAM_URL 则不启动
@@ -105,6 +106,11 @@ func main() {
 		log.Fatalf("resume scope tasks: %v", err)
 	} else if n > 0 {
 		log.Printf("resumed %d unfinished scope tasks", n)
+	}
+	if n, err := failOrphanScans(context.Background(), pool, asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")}, startedAt); err != nil {
+		log.Printf("orphan scans check: %v", err)
+	} else if n > 0 {
+		log.Printf("marked %d orphan pending scans failed", n)
 	}
 	if err := a.initHosted(context.Background()); err != nil {
 		log.Fatalf("customer_hosted init: %v", err)

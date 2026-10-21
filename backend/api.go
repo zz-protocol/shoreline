@@ -1087,31 +1087,27 @@ func (a *api) eventValues(w http.ResponseWriter, r *http.Request) {
 
 // ---- 扫描 ----
 
-// expandLockKey：pg_advisory_xact_lock 的第一个键（第二个键为厂商 id），串行化同一厂商的 expand 触发。
-const expandLockKey = 23
+// expandActiveIdx：同厂商进行中 expand 的部分唯一索引（迁移 015）。
+const expandActiveIdx = "scan_tasks_expand_active_uidx"
 
 // triggerExpand：同一厂商已有 pending/running/retrying 的 expand（任意根域）时返回 409。
-// 「加锁 + 检查 + 建任务」在同一事务里完成（事务级锁，commit/rollback 自动释放），持锁期间不再从池里取连接；
-// commit 之后才投递，投递失败由 deliverScan 用不可取消的 ctx 标 failed。
+// 原子性由部分唯一索引保证：INSERT 撞约束即 409（无锁、无「先查后插」竞态）。
+// INSERT 与回填 root_scan_id 在同一事务；commit 后才投递，投递失败由 deliverScan 用不可取消的 ctx 标 failed。
 func (a *api) triggerExpand(ctx context.Context, vendorID, rootID int64) (int64, error) {
 	tx, err := a.db.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2::int)`, expandLockKey, vendorID); err != nil {
-		return 0, err
-	}
-	var running int64
-	err = tx.QueryRow(ctx, `SELECT id FROM scan_tasks WHERE vendor_id = $1 AND kind = 'expand'
-		AND status IN ('pending', 'running', 'retrying') ORDER BY id LIMIT 1`, vendorID).Scan(&running)
-	if err == nil {
+	id, err := insertScan(ctx, tx, rootID, "expand", 0)
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == expandActiveIdx {
+		tx.Rollback(context.WithoutCancel(ctx)) // 先归还连接，再查进行中的任务（避免小池下一请求占两个连接）
+		var running int64
+		a.db.QueryRow(context.WithoutCancel(ctx), `SELECT id FROM scan_tasks WHERE vendor_id = $1 AND kind = 'expand'
+			AND status IN ('pending', 'running', 'retrying') ORDER BY id LIMIT 1`, vendorID).Scan(&running)
 		return 0, errf(409, "expand already in progress for this vendor (scan %d)", running)
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return 0, err
-	}
-	id, err := insertScan(ctx, tx, rootID, "expand", 0)
 	if err != nil {
 		return 0, err
 	}
