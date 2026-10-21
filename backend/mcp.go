@@ -97,7 +97,7 @@ func (a *api) mcpServer() *mcp.Server {
 			if err != nil {
 				return toolErr[pageOut](err)
 			}
-			list, err := a.queryEvents(ctx, eventFilter{"asset", "new", since, nil, in.Vendor, in.IncludeWildcard, limit, cursor})
+			list, err := a.queryEvents(ctx, eventFilter{Level: "asset", Type: "new", Since: since, Vendor: in.Vendor, IncludeWildcard: in.IncludeWildcard, Limit: limit, Cursor: cursor})
 			if err != nil {
 				return toolErr[pageOut](err)
 			}

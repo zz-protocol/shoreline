@@ -79,6 +79,8 @@ func (a *api) routes() map[string]http.HandlerFunc {
 		"GET /api/check-scope":                      a.checkScopeHTTP,
 		"GET /api/assets/{id}":                      a.getAsset,
 		"GET /api/events":                           a.listEvents,
+		"GET /api/events/stats":                     a.eventStats,
+		"GET /api/events/values":                    a.eventValues,
 		"GET /api/scans":                            a.listScans,
 		"POST /api/scans":                           a.createScan,
 		"GET /api/scans/{id}":                       a.getScan,
@@ -850,28 +852,35 @@ type eventFilter struct {
 	IncludeWildcard bool
 	Limit           int
 	Cursor          int64
+	Until           *time.Time // created_at < until（T20 时间窗）
+	AfterID         int64      // id > after_id（T20 轮询只取新增）
 }
 
-// queryEvents：level=asset（默认，资产级）|url|all；type 不传返回 new/changed/recovered；资产级 new 事件嵌套 url_events。
-func (a *api) queryEvents(ctx context.Context, f eventFilter) ([]map[string]any, error) {
+// checkEventFilter：level/type/vendor/时间窗校验（列表、统计、整列复制共用）。
+func checkEventFilter(f *eventFilter) error {
 	if err := checkVendor(f.Vendor); err != nil {
-		return nil, err
-	}
-	if err := checkPage(f.Limit, f.Cursor); err != nil {
-		return nil, err
+		return err
 	}
 	if f.Level == "" {
 		f.Level = "asset"
 	}
 	if f.Level != "asset" && f.Level != "url" && f.Level != "all" {
-		return nil, errf(400, "level must be asset|url|all")
+		return errf(400, "level must be asset|url|all")
 	}
 	if f.Type != "" && f.Type != "new" && f.Type != "changed" && f.Type != "recovered" {
-		return nil, errf(400, "type must be new|changed|recovered")
+		return errf(400, "type must be new|changed|recovered")
 	}
-	list, err := rowsJSON(a.db.Query(ctx, `SELECT e.id, e.type, CASE WHEN e.url_id IS NULL THEN 'asset' ELSE 'url' END AS level,
-		e.asset_id, a.subdomain, e.url_id, u.scheme || '://' || u.host || ':' || u.port AS url, e.detail, e.created_at
-		FROM events e JOIN assets a ON a.id = e.asset_id JOIN root_domains r ON r.id = a.root_id LEFT JOIN urls u ON u.id = e.url_id
+	if f.Since != nil && f.Until != nil && !f.Until.After(*f.Since) {
+		return errf(400, "until must be after since")
+	}
+	if f.AfterID < 0 {
+		return errf(400, "invalid after_id")
+	}
+	return nil
+}
+
+// eventWhere：事件筛选条件，参数 $1..$9 依次为 cursor/level/type/since/asset_id/vendor/include_wildcard/until/after_id。
+const eventWhere = `FROM events e JOIN assets a ON a.id = e.asset_id JOIN root_domains r ON r.id = a.root_id JOIN vendors v ON v.id = r.vendor_id LEFT JOIN urls u ON u.id = e.url_id
 		WHERE ($1::bigint = 0 OR e.id < $1)
 		  AND ($2::text = 'all' OR ($2 = 'asset') = (e.url_id IS NULL))
 		  AND ($3::text = '' OR e.type = $3)
@@ -879,11 +888,65 @@ func (a *api) queryEvents(ctx context.Context, f eventFilter) ([]map[string]any,
 		  AND ($5::bigint IS NULL OR e.asset_id = $5)
 		  AND ($6::bigint IS NULL OR r.vendor_id = $6)
 		  AND ($7::bool OR NOT a.wildcard)
-		ORDER BY e.id DESC LIMIT $8`, f.Cursor, f.Level, f.Type, f.Since, f.AssetID, f.Vendor, f.IncludeWildcard, f.Limit))
+		  AND ($8::timestamptz IS NULL OR e.created_at < $8)
+		  AND ($9::bigint = 0 OR e.id > $9)`
+
+func (f eventFilter) args() []any {
+	return []any{f.Cursor, f.Level, f.Type, f.Since, f.AssetID, f.Vendor, f.IncludeWildcard, f.Until, f.AfterID}
+}
+
+// queryEvents：level=asset（默认，资产级）|url|all；type 不传返回 new/changed/recovered；资产级 new 事件嵌套 url_events。
+// since/until 为时间窗 [since, until)；after_id 只取更新的事件（轮询）。
+func (a *api) queryEvents(ctx context.Context, f eventFilter) ([]map[string]any, error) {
+	if err := checkPage(f.Limit, f.Cursor); err != nil {
+		return nil, err
+	}
+	if err := checkEventFilter(&f); err != nil {
+		return nil, err
+	}
+	list, err := rowsJSON(a.db.Query(ctx, `SELECT e.id, e.type, CASE WHEN e.url_id IS NULL THEN 'asset' ELSE 'url' END AS level,
+		e.asset_id, a.subdomain, r.vendor_id, e.url_id, u.scheme || '://' || u.host || ':' || u.port AS url, e.detail, e.created_at
+		`+eventWhere+` ORDER BY e.id DESC LIMIT $10`, append(f.args(), f.Limit)...))
 	if err == nil {
 		err = a.nestURLEvents(ctx, list)
 	}
 	return list, err
+}
+
+// eventFilterFromQuery：列表/统计/整列复制共用的查询参数解析（不含分页）。
+func eventFilterFromQuery(w http.ResponseWriter, r *http.Request) (eventFilter, bool) {
+	qs := r.URL.Query()
+	since, ok1 := timeParam(w, r, "since")
+	if !ok1 {
+		return eventFilter{}, false
+	}
+	until, ok2 := timeParam(w, r, "until")
+	if !ok2 {
+		return eventFilter{}, false
+	}
+	assetID, ok3 := int64Param(w, r, "asset_id")
+	if !ok3 {
+		return eventFilter{}, false
+	}
+	vendor, ok4 := int64Param(w, r, "vendor")
+	if !ok4 {
+		return eventFilter{}, false
+	}
+	wild, ok5 := boolParam(w, r, "include_wildcard")
+	if !ok5 {
+		return eventFilter{}, false
+	}
+	var after int64
+	if v := qs.Get("after_id"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			writeErr(w, 400, "invalid after_id")
+			return eventFilter{}, false
+		}
+		after = n
+	}
+	return eventFilter{Level: qs.Get("level"), Type: qs.Get("type"), Since: since, Until: until, AssetID: assetID,
+		Vendor: vendor, IncludeWildcard: wild != nil && *wild, AfterID: after}, true
 }
 
 func (a *api) listEvents(w http.ResponseWriter, r *http.Request) {
@@ -891,20 +954,100 @@ func (a *api) listEvents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	qs := r.URL.Query()
-	since, ok1 := timeParam(w, r, "since")
-	assetID, ok2 := int64Param(w, r, "asset_id")
-	vendor, ok3 := int64Param(w, r, "vendor")
-	wild, ok4 := boolParam(w, r, "include_wildcard")
-	if !ok1 || !ok2 || !ok3 || !ok4 {
+	f, ok := eventFilterFromQuery(w, r)
+	if !ok {
 		return
 	}
-	list, err := a.queryEvents(r.Context(), eventFilter{qs.Get("level"), qs.Get("type"), since, assetID, vendor, wild != nil && *wild, limit, cursor})
+	f.Limit, f.Cursor = limit, cursor
+	list, err := a.queryEvents(r.Context(), f)
 	if err != nil {
 		writeAnyErr(w, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"items": list, "next_cursor": nextCursor(list, limit)})
+}
+
+// eventStats：时间窗内按厂商统计事件数（全量，服务端聚合；不受分页影响）。
+func (a *api) eventStats(w http.ResponseWriter, r *http.Request) {
+	f, ok := eventFilterFromQuery(w, r)
+	if !ok {
+		return
+	}
+	if err := checkEventFilter(&f); err != nil {
+		writeAnyErr(w, err)
+		return
+	}
+	list, err := rowsJSON(a.db.Query(r.Context(), `SELECT r.vendor_id, v.name AS vendor, count(*) AS count
+		`+eventWhere+` GROUP BY r.vendor_id, v.name ORDER BY count(*) DESC, r.vendor_id`,
+		f.args()...))
+	if err != nil {
+		dbErr(w, err)
+		return
+	}
+	total := int64(0)
+	for _, m := range list {
+		total += m["count"].(int64)
+	}
+	writeJSON(w, 200, map[string]any{"items": list, "total": total})
+}
+
+// eventValuesMax：整列复制的上限，防止一次返回过大。
+const eventValuesMax = 100000
+
+// eventValues：整列复制（field=subdomain|url），时间窗内全部匹配事件，去重排序，一行一个。
+// field=url 且 level=asset 时，取这些资产在同一时间窗内的 URL 级同类事件的 URL（资产级事件本身无 URL）。
+func (a *api) eventValues(w http.ResponseWriter, r *http.Request) {
+	f, ok := eventFilterFromQuery(w, r)
+	if !ok {
+		return
+	}
+	if err := checkEventFilter(&f); err != nil {
+		writeAnyErr(w, err)
+		return
+	}
+	field := r.URL.Query().Get("field")
+	var q string
+	switch {
+	case field == "subdomain":
+		q = `SELECT DISTINCT a.subdomain AS v ` + eventWhere + ` ORDER BY 1 LIMIT $10`
+	case field == "url" && f.Level == "asset":
+		q = `SELECT DISTINCT uu.scheme || '://' || uu.host || ':' || uu.port AS v
+			FROM events ue JOIN urls uu ON uu.id = ue.url_id
+			WHERE ue.asset_id IN (SELECT e.asset_id ` + eventWhere + `)
+			  AND ($3::text = '' OR ue.type = $3)
+			  AND ($4::timestamptz IS NULL OR ue.created_at >= $4)
+			  AND ($8::timestamptz IS NULL OR ue.created_at < $8)
+			ORDER BY 1 LIMIT $10`
+	case field == "url":
+		q = `SELECT DISTINCT u.scheme || '://' || u.host || ':' || u.port AS v ` + eventWhere + ` AND u.id IS NOT NULL ORDER BY 1 LIMIT $10`
+	default:
+		writeErr(w, 400, "field must be subdomain|url")
+		return
+	}
+	rows, err := a.db.Query(r.Context(), q, append(f.args(), eventValuesMax+1)...)
+	if err != nil {
+		dbErr(w, err)
+		return
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			dbErr(w, err)
+			return
+		}
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		dbErr(w, err)
+		return
+	}
+	truncated := len(out) > eventValuesMax
+	if truncated {
+		out = out[:eventValuesMax]
+	}
+	writeJSON(w, 200, map[string]any{"field": field, "items": out, "count": len(out), "truncated": truncated})
 }
 
 // ---- 扫描 ----
