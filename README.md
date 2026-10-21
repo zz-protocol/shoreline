@@ -184,10 +184,10 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 
 云厂商分配给客户的默认域名（OSS/COS/OBS 桶、函数、网站托管、CDN 默认域等）是托管在云上的客户资产，不是厂商自身资产。资产子域名命中「客户托管规则」时标记 `customer_hosted=true`（不删除），资产列表和播报默认隐藏，`include_customer_hosted=true`（Web 上「含客户托管」开关）可查看。
 
-- 只匹配资产子域名本身，不看 CNAME；规则以 `*.` 开头（匹配 ≥1 层子域），标签内 `*`（如 `oss-*`）只匹配本层；每条规则至少比服务端点多一层，端点本身不命中。
+- 只匹配资产子域名本身，不看 CNAME；规则以 `*.` 开头（匹配 ≥1 层子域），标签内 `*`（如 `oss-*`）只匹配本层；每条规则至少比服务端点多一层，端点本身不命中；新增规则时最后一个含 `*` 的标签之后的固定后缀须为可注册域名（eTLD+1，按 golang.org/x/net/publicsuffix，BSD-3）或更长，`*.*.com`、`*.co.uk` 返回 400。
 - 内置 64 条（AWS/Azure/GCP/阿里云/腾讯云/华为云/火山/百度/七牛/Cloudflare/Akamai/Fastly/GitHub Pages/Heroku），每条在 `backend/customer_hosted.go` 注释云产品和官方文档。启动时补种；内置规则可在「客户托管规则」页停用或删除，删除后升级不会加回。
 - 改规则后后台异步重算（`GET /api/customer-hosted-tasks/{id}` 看进度）。
-- 又拍云、网宿、金山云 KS3、京东云、UCloud、Vercel、Netlify 未内置，可自行添加。
+- 未内置，可自行添加：火山引擎 CDN（*.volccdn.com）、又拍云、网宿、金山云（KS3）、京东云、UCloud、Vercel、Netlify。
 
 ## REST API（T12）
 

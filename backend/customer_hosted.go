@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/net/publicsuffix"
 )
 
 // T24 客户托管排除：云厂商分配给「客户」的默认域名（OSS/COS 桶、函数、网站托管、CDN 默认域等）
@@ -108,22 +109,36 @@ var builtinHostedRules = []hostedRule{
 
 var hostedLabelRe = regexp.MustCompile(`^[a-z0-9*-]+$`)
 
-// validHostedPattern：以 `*.` 开头；其余各标签只含 a-z0-9-*；最后一层（顶级域）不含 *；至少 2 层固定部分。
+// validHostedPattern：以 `*.` 开头，各标签只含 a-z0-9-*；最后一个含 * 的标签之后的固定后缀
+// 必须是 eTLD+1 或更长（按 golang.org/x/net/publicsuffix 判断），防止 `*.*.com`、`*.co.uk` 把整个公共后缀排除。
 func validHostedPattern(p string) bool {
+	return hostedPatternErr(p) == ""
+}
+
+// hostedPatternErr 返回中文错误说明，合法返回空串。
+func hostedPatternErr(p string) string {
 	rest, ok := strings.CutPrefix(p, "*.")
 	if !ok || len(p) > 253 {
-		return false
+		return "规则须以 *. 开头"
 	}
 	labels := strings.Split(rest, ".")
-	if len(labels) < 2 || strings.Contains(labels[len(labels)-1], "*") {
-		return false
-	}
-	for _, l := range labels {
+	last := -1
+	for i, l := range labels {
 		if !hostedLabelRe.MatchString(l) {
-			return false
+			return "标签只能包含 a-z、0-9、- 和 *"
+		}
+		if strings.Contains(l, "*") {
+			last = i
 		}
 	}
-	return true
+	suffix := strings.Join(labels[last+1:], ".")
+	if suffix == "" {
+		return "规则末尾须是固定域名，不能以 * 结尾"
+	}
+	if _, err := publicsuffix.EffectiveTLDPlusOne(suffix); err != nil {
+		return "通配符之后的固定后缀「" + suffix + "」是公共后缀，至少要到可注册域名（eTLD+1）一级，如 *.oss-*.aliyuncs.com"
+	}
+	return ""
 }
 
 // matchHosted：host 是否命中 pattern（pattern 已校验）。`*.` 匹配 ≥1 层，其余标签逐层匹配，标签内 * 不跨点。
@@ -297,8 +312,8 @@ func (a *api) createHostedRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pat := strings.ToLower(strings.TrimSpace(b.Pattern))
-	if !validHostedPattern(pat) {
-		writeErr(w, 400, "invalid pattern: must start with *. ; labels a-z0-9-* ; * in a label matches within that label only")
+	if msg := hostedPatternErr(pat); msg != "" {
+		writeErr(w, 400, "invalid pattern: "+msg)
 		return
 	}
 	var id int64

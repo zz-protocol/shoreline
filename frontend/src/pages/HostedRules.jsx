@@ -1,7 +1,13 @@
 import React, { useEffect, useState } from 'react'
-import { App, Button, Form, Input, Modal, Popconfirm, Space, Switch, Table, Tag, Typography } from 'antd'
+import { Alert, App, Button, Form, Input, Modal, Popconfirm, Space, Switch, Table, Tag, Typography } from 'antd'
 import { del, get, patch, post } from '../api'
 import { HELP } from '../help'
+
+/** 前端只做格式初筛（*. 开头、标签字符）；是否为公共后缀由后端 publicsuffix 判断，400 时在弹窗内显示。 */
+export function validHostedPattern(p) {
+  const v = (p || '').trim().toLowerCase()
+  return v.startsWith('*.') && v.length <= 253 && v.slice(2).split('.').every((l) => /^[a-z0-9*-]+$/.test(l))
+}
 
 // T24 客户托管规则：内置 + 自定义；可增、删、停用；改动后后台异步重算
 export default function HostedRules() {
@@ -9,6 +15,7 @@ export default function HostedRules() {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
+  const [addErr, setAddErr] = useState('')
   const [form] = Form.useForm()
 
   const load = async () => {
@@ -38,7 +45,7 @@ export default function HostedRules() {
     <Space direction="vertical" style={{ width: '100%' }} size="large">
       <Space style={{ width: '100%', justifyContent: 'space-between' }}>
         <Typography.Title level={3} style={{ margin: 0 }}>客户托管规则</Typography.Title>
-        <Button type="primary" onClick={() => { form.resetFields(); setOpen(true) }}>添加规则</Button>
+        <Button type="primary" onClick={() => { form.resetFields(); setAddErr(''); setOpen(true) }}>添加规则</Button>
       </Space>
       <Typography.Text type="secondary">
         {HELP.hosted} 只匹配资产子域名本身（不看 CNAME）；<code>*.</code> 匹配一层或多层子域，标签内的 <code>*</code>（如 <code>oss-*</code>）只匹配本层。内置规则可停用或删除，删除后升级不会加回。
@@ -75,13 +82,26 @@ export default function HostedRules() {
         open={open}
         onCancel={() => setOpen(false)}
         onOk={async () => {
-          const vals = await form.validateFields()
-          await run(() => post('/api/customer-hosted-rules', vals))
+          let vals
+          try {
+            vals = await form.validateFields()
+          } catch {
+            return // 表单校验失败：保持打开，字段下已显示错误
+          }
+          try {
+            await post('/api/customer-hosted-rules', vals)
+          } catch (e) {
+            setAddErr(e.message) // 400/409：保持打开、保留输入
+            return
+          }
           setOpen(false)
+          message.success('已保存，后台重算资产标记中')
+          load()
         }}
       >
-        <Form form={form} layout="vertical">
-          <Form.Item name="pattern" label="规则" rules={[{ required: true }, { pattern: /^\*\./, message: '须以 *. 开头' }]} extra="例：*.oss-*.aliyuncs.com">
+        {addErr && <Alert type="error" showIcon message={addErr} style={{ marginBottom: 12 }} data-testid="add-error" />}
+        <Form form={form} layout="vertical" onValuesChange={() => setAddErr('')}>
+          <Form.Item name="pattern" label="规则" rules={[{ required: true, message: '请填写规则' }, { validator: (_, v) => (!v || validHostedPattern(v) ? Promise.resolve() : Promise.reject(new Error('须以 *. 开头，标签只能含 a-z0-9-*（如 *.oss-*.aliyuncs.com）'))) }]} extra="例：*.oss-*.aliyuncs.com">
             <Input placeholder="*.example-cloud.com" />
           </Form.Item>
           <Form.Item name="note" label="说明（云产品 / 文档）"><Input /></Form.Item>

@@ -931,7 +931,7 @@ func (a *api) queryEvents(ctx context.Context, f eventFilter) ([]map[string]any,
 		return nil, err
 	}
 	list, err := rowsJSON(a.db.Query(ctx, `SELECT e.id, e.type, CASE WHEN e.url_id IS NULL THEN 'asset' ELSE 'url' END AS level,
-		e.asset_id, a.subdomain, r.vendor_id, e.url_id, u.scheme || '://' || u.host || ':' || u.port AS url, e.detail, e.created_at
+		e.asset_id, a.subdomain, a.customer_hosted, r.vendor_id, e.url_id, u.scheme || '://' || u.host || ':' || u.port AS url, e.detail, e.created_at
 		`+eventWhere+` ORDER BY e.id DESC LIMIT $11`, append(f.args(), f.Limit+1)...))
 	if err == nil {
 		err = a.nestURLEvents(ctx, list)

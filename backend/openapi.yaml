@@ -101,6 +101,7 @@ components:
         asset_id: {type: integer}
         vendor_id: {type: integer}
         subdomain: {type: string}
+        customer_hosted: {type: boolean, description: "所属资产命中客户托管规则（默认不返回这类事件，include_customer_hosted=true 时返回）"}
         url_id: {type: integer, nullable: true}
         url: {type: string, nullable: true}
         detail: {type: object}
