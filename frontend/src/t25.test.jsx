@@ -1,6 +1,6 @@
 import React from 'react'
 import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { App as AntApp } from 'antd'
 import { copyText } from './clipboard'
 import { applyPoll, statsLabel, TYPE_TAG } from './eventsWindow'
@@ -92,8 +92,10 @@ describe('Events 页面（模拟后端）', () => {
     render(<AntApp><Events /></AntApp>)
     await waitFor(() => expect(screen.getByText('时间窗内 新增 2 · 恢复 1')).toBeTruthy())
     expect(screen.getByText('V1：新增 2 · 恢复 1')).toBeTruthy()
-    expect(screen.getAllByText('恢复').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('新增').length).toBe(2)
+    // 只数表格行里的类型标签（筛选栏的类型多选里也有「新增」「恢复」）
+    const tbody = document.querySelector('tbody')
+    expect(within(tbody).getAllByText('恢复').length).toBe(1)
+    expect(within(tbody).getAllByText('新增').length).toBe(2)
     expect(calls()).toBe(1)
     await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
     await waitFor(() => expect(screen.getByText('有更多新事件，点此刷新')).toBeTruthy())

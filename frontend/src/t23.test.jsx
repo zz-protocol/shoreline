@@ -12,18 +12,16 @@ const scan = (status, result) => ({ id: 9, kind: 'expand', status, result, degra
 
 describe('T23 一键 expand', () => {
   it('点击触发 → 运行中轮询 → 完成显示结果并回调刷新待确认', async () => {
-    const seq = [null, scan('running'), scan('done', { found: 4, new_candidates: 2 })]
-    let i = 0
+    // 后端状态由测试显式推进（不靠计时），避免「运行中」只存在一个轮询周期而被 waitFor 错过
+    let state = null
     const posts = []
     global.fetch = vi.fn(async (url, opts) => {
       if (opts?.method === 'POST') {
         posts.push(JSON.parse(opts.body))
-        i = 1
+        state = scan('running')
         return { ok: true, status: 201, text: async () => JSON.stringify({ id: 9 }) }
       }
-      const s = seq[Math.min(i, 2)]
-      if (i >= 1) i++
-      return { ok: true, status: 200, text: async () => JSON.stringify({ items: s ? [s] : [] }) }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ items: state ? [state] : [] }) }
     })
     const onDone = vi.fn()
     render(<ExpandPanel vendor={{ id: 3, company_name: '示例科技有限公司' }} roots={[{ id: 7, domain: 'a.example.test' }]} onDone={onDone} interval={20} />)
@@ -33,6 +31,10 @@ describe('T23 一键 expand', () => {
     await waitFor(() => expect(posts).toEqual([{ root_id: 7, kind: 'expand' }]))
     await waitFor(() => expect(screen.getByText('运行中')).toBeTruthy())
     expect(screen.getByTestId('expand-btn').disabled).toBe(true)
+    const polls = global.fetch.mock.calls.length
+    await waitFor(() => expect(global.fetch.mock.calls.length).toBeGreaterThan(polls + 1)) // 运行中持续轮询
+    expect(onDone).not.toHaveBeenCalled()
+    state = scan('done', { found: 4, new_candidates: 2 })
     await waitFor(() => expect(screen.getByText('发现 4 个，新增待确认 2 个')).toBeTruthy())
     expect(onDone).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('expand-btn').disabled).toBe(false)

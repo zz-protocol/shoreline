@@ -1,0 +1,32 @@
+/* T19 设计稿：Swagger UI 暗色适配（只在 /docs 生效，作用域 .docs-dark） */
+.docs-dark .swagger-ui, .docs-dark .swagger-ui .info .title, .docs-dark .swagger-ui .info p, .docs-dark .swagger-ui .info li,
+.docs-dark .swagger-ui .opblock-tag, .docs-dark .swagger-ui .opblock .opblock-summary-description,
+.docs-dark .swagger-ui .opblock .opblock-summary-path, .docs-dark .swagger-ui .opblock-description-wrapper p,
+.docs-dark .swagger-ui .parameter__name, .docs-dark .swagger-ui .parameter__type, .docs-dark .swagger-ui table thead tr th,
+.docs-dark .swagger-ui table thead tr td, .docs-dark .swagger-ui .response-col_status, .docs-dark .swagger-ui .response-col_description,
+.docs-dark .swagger-ui .tab li, .docs-dark .swagger-ui label, .docs-dark .swagger-ui .model-title, .docs-dark .swagger-ui .model,
+.docs-dark .swagger-ui section.models h4, .docs-dark .swagger-ui .opblock-section-header h4, .docs-dark .swagger-ui .btn,
+.docs-dark .swagger-ui .scheme-container .schemes > label, .docs-dark .swagger-ui .servers-title { color: #f5f5f5 !important; }
+.docs-dark .swagger-ui .scheme-container { background: #0a0a0a !important; box-shadow: none !important; border: 1px solid #262626; border-radius: 12px; }
+.docs-dark .swagger-ui .opblock-tag { border-bottom-color: #262626 !important; }
+.docs-dark .swagger-ui .opblock .opblock-section-header { background: #141414 !important; box-shadow: none; }
+.docs-dark .swagger-ui .opblock { border-radius: 10px; box-shadow: none; }
+.docs-dark .swagger-ui .opblock .opblock-summary { border-color: transparent; }
+.docs-dark .swagger-ui .opblock.opblock-get { background: rgba(96,165,250,.08); border-color: rgba(96,165,250,.45); }
+.docs-dark .swagger-ui .opblock.opblock-post { background: rgba(74,222,128,.08); border-color: rgba(74,222,128,.45); }
+.docs-dark .swagger-ui .opblock.opblock-patch { background: rgba(251,191,36,.08); border-color: rgba(251,191,36,.45); }
+.docs-dark .swagger-ui .opblock.opblock-delete { background: rgba(248,113,113,.08); border-color: rgba(248,113,113,.45); }
+.docs-dark .swagger-ui section.models { border-color: #262626; }
+.docs-dark .swagger-ui section.models .model-container { background: #0a0a0a !important; }
+.docs-dark .swagger-ui input[type=text], .docs-dark .swagger-ui textarea, .docs-dark .swagger-ui select {
+  background: #141414 !important; color: #f5f5f5 !important; border: 1px solid #262626 !important; }
+.docs-dark .swagger-ui .btn.authorize { border-color: #4ade80; color: #4ade80 !important; border-radius: 999px; }
+.docs-dark .swagger-ui .btn.authorize svg { fill: #4ade80; }
+.docs-dark .swagger-ui .dialog-ux .modal-ux { background: #141414; border-color: #262626; }
+.docs-dark .swagger-ui .dialog-ux .modal-ux-header h3, .docs-dark .swagger-ui .dialog-ux .modal-ux-content p,
+.docs-dark .swagger-ui .dialog-ux .modal-ux-content h4 { color: #f5f5f5; }
+.docs-dark .swagger-ui svg.arrow, .docs-dark .swagger-ui .expand-operation svg, .docs-dark .swagger-ui .models-control svg { fill: #a3a3a3; }
+.docs-dark .swagger-ui .markdown code, .docs-dark .swagger-ui .renderedMarkdown code { background: #1a1a1a; color: #fbbf24; }
+.docs-dark .swagger-ui .info a, .docs-dark .swagger-ui a.nostyle { color: #93c5fd; }
+.docs-dark .swagger-ui .prop-type { color: #93c5fd; }
+.docs-dark .swagger-ui .microlight { background: #0a0a0a !important; }

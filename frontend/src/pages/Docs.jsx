@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react'
 import { Typography } from 'antd'
 import { getToken } from '../api'
 import 'swagger-ui-dist/swagger-ui.css'
+import '../swagger-dark.css'
 
 export default function Docs() {
   const ref = useRef(null)
@@ -33,7 +34,7 @@ export default function Docs() {
       <Typography.Paragraph type="secondary">
         读取 /api/openapi.yaml；试调自动带上当前登录 token。
       </Typography.Paragraph>
-      <div ref={ref} />
+      <div ref={ref} className="docs-dark" />
     </div>
   )
 }

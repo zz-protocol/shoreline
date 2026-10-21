@@ -1,0 +1,10 @@
+/* T19 设计稿：大标题、细分隔、表格去竖线 */
+h3.ant-typography { font-size: 30px !important; font-weight: 600 !important; letter-spacing: -0.02em; }
+.ant-table-wrapper .ant-table { border: 1px solid #1a1a1a; border-radius: 14px; overflow: hidden; }
+.ant-menu-horizontal > .ant-menu-item::after { display: none; }
+
+/* 窄屏：收紧留白，Menu 溢出项折叠到「…」 */
+@media (max-width: 768px) {
+  .top-nav { padding-inline: 16px !important; gap: 12px !important; }
+  .page-content { padding: 24px 16px 48px !important; }
+}

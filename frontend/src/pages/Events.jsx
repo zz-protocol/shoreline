@@ -14,6 +14,7 @@ export default function Events() {
   const [level, setLevel] = useState('asset')
   const [vendor, setVendor] = useState(null)
   const [hosted, setHosted] = useState(false)
+  const [types, setTypes] = useState(['new', 'recovered'])
   const [win, setWin] = useState('7d')
   const [custom, setCustom] = useState(null)
   const [vendors, setVendors] = useState([])
@@ -26,7 +27,7 @@ export default function Events() {
   const itemsRef = useRef([])
   const rangeRef = useRef(null)
 
-  const params = () => filterParams({ level, vendor, hosted, ...rangeRef.current })
+  const params = () => filterParams({ level, vendor, hosted, types, ...rangeRef.current })
   const set = (list) => {
     itemsRef.current = list
     setItems(list)
@@ -120,7 +121,7 @@ export default function Events() {
     reload()
     const t = setInterval(poll, 30000)
     return () => clearInterval(t)
-  }, [level, vendor, hosted, win, custom])
+  }, [level, vendor, hosted, types, win, custom])
 
   const name = (id) => vendors.find((v) => v.id === id)?.name || `#${id}`
   const colTitle = (title, field) => (
@@ -156,6 +157,9 @@ export default function Events() {
             options={vendors.map((v) => ({ value: v.id, label: v.name }))}
             onChange={(v) => setVendor(v ?? null)}
           />
+          <Select mode="multiple" value={types} style={{ minWidth: 200 }} placeholder="事件类型" data-testid="type-select"
+            onChange={(v) => setTypes(v.length ? v : ['new', 'recovered'])}
+            options={Object.entries(TYPE_TAG).map(([value, t]) => ({ value, label: t.label }))} />
           <Hint text={HELP.level}><Select
             value={level}
             style={{ width: 120 }}
