@@ -99,3 +99,12 @@
 - 验收：用 mock 服务模拟它的响应格式，测试解析和失败降级；真实联调留到部署时做。
 - 没有天眼查、企查查等 key，这部分不做。
 - 补充（10-21）：ICP 失败一律标 done+degraded，不重试；前端和 API 要显示降级原因。超时 30s，RATE_EXPAND 默认 1/s。按企业名查询和 domain 字段的取法都是推断，要等真实联调确认。
+
+### Web 端与配套 API（2026-10-21，T14 前确认）
+1. 删除：DELETE /api/vendors/{id}、DELETE /api/vendors/{id}/roots/{root_id}，级联删下属数据；有 pending/running 扫描时返回 409；前端二次确认。
+2. 扫描列表：GET /api/scans?vendor=&root=&status=&kind=&degraded=&limit=&cursor=，分页校验与现有列表一致。
+3. 手动重跑：同根域同 kind 再 POST /api/scans；dns/http 不提供重跑按钮，提示从 passive 重跑整条链；不新增 retry 接口。
+4. API 文档：前端 swagger-ui-dist（Apache-2.0）做 /docs，读 /api/openapi.yaml，用页面 token 试调。
+5. 登录：首屏输入 API token，存 localStorage；API key 管理页复用 tokens 接口（创建明文只显示一次、列表、删除）。
+6. UI 开关：厂商 active_enabled、资产 include_wildcard、事件 level；只做深色主题，不做浅色切换。
+7. 播报流：每 30s 轮询 GET /api/events?since=，不做 SSE/WebSocket。
