@@ -108,3 +108,4 @@
 5. 登录：首屏输入 API token，存 localStorage；API key 管理页复用 tokens 接口（创建明文只显示一次、列表、删除）。
 6. UI 开关：厂商 active_enabled、资产 include_wildcard、事件 level；只做深色主题，不做浅色切换。
 7. 播报流：每 30s 轮询 GET /api/events?since=，不做 SSE/WebSocket。
+- 补充（10-21）：事件播报轮询 since 首次可用「现在−1天」，之后按本轮最新事件时间推进，避免重复拉取。
