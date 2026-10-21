@@ -125,6 +125,8 @@ components:
         status: {type: string, enum: [pending, running, retrying, done, failed]}
         error: {type: string, nullable: true}
         result: {type: object, nullable: true}
+        degraded: {type: boolean, description: "外部数据源（如 ICP）失败时为 true；任务仍为 done，不重试"}
+        degraded_reason: {type: string, nullable: true, description: "降级原因（最后一次失败的错误信息）"}
         parent_id: {type: integer, nullable: true}
         root_scan_id: {type: integer, nullable: true}
     Token:

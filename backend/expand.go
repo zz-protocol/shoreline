@@ -95,10 +95,11 @@ func hasControl(s string) bool {
 
 // expandStats：ICP 查询失败次数与各类丢弃计数（写入 scan_tasks.result）。
 type expandStats struct {
-	ICPFailures      int `json:"icp_failures"`
-	SkippedIP        int `json:"skipped_ip"`
-	SkippedInvalid   int `json:"skipped_invalid"`
-	SkippedKnownRoot int `json:"skipped_known_root"`
+	ICPFailures      int    `json:"icp_failures"`
+	SkippedIP        int    `json:"skipped_ip"`
+	SkippedInvalid   int    `json:"skipped_invalid"`
+	SkippedKnownRoot int    `json:"skipped_known_root"`
+	LastErr          string `json:"-"` // 最近一次 ICP 失败原因（degraded_reason）
 }
 
 var hexLabelRe = regexp.MustCompile(`^0x[0-9a-f]*$`)
@@ -217,8 +218,8 @@ func (h *httpICP) query(ctx context.Context, param, value string) ([]ICPRecord, 
 }
 
 // queryYanzhenma 调 icp_yanzhenma 的 GET <ICP_API_URL>/query?domain=<值>。该服务把参数作为工信部查询的 unitName 透传，
-// 因此主体名和域名都走这一个接口。响应 {"status":"success|failed","domain":...,"error":...,"data":<工信部原始结果>}，
-// 记录在 data.params.list（或 data.list），每项取 domain / unitName / mainLicence。status 非 success 或 HTTP 非 200 记为失败。
+// 因此主体名和域名都走这一个接口（推断，待真实联调确认）。响应 {"status":"success|failed","domain":...,"error":...,"data":<工信部原始结果>}，
+// 记录在 data.params.list（或 data.list），每项取 domain / unitName / mainLicence（domain 字段取法为推断，仓库未明写，待真实联调确认）。status 非 success 或 HTTP 非 200 记为失败。
 func (h *httpICP) queryYanzhenma(ctx context.Context, value string) ([]ICPRecord, error) {
 	u, _ := url.Parse(strings.TrimSuffix(h.base, "/") + "/query")
 	u.RawQuery = url.Values{"domain": {value}}.Encode()
@@ -423,6 +424,7 @@ func expandVendor(ctx context.Context, icp ICPSource, subs SubsidiarySource, ven
 		recs, err := icp.ByCompany(ctx, name)
 		if err != nil {
 			st.ICPFailures++
+			st.LastErr = err.Error()
 			errs = append(errs, err)
 			return
 		}
@@ -447,6 +449,7 @@ func expandVendor(ctx context.Context, icp ICPSource, subs SubsidiarySource, ven
 		recs, err := icp.ByDomain(ctx, r)
 		if err != nil {
 			st.ICPFailures++
+			st.LastErr = err.Error()
 			errs = append(errs, err)
 			continue
 		}
@@ -578,7 +581,7 @@ func expandHandler(d *pgxpool.Pool, icp ICPSource, subs SubsidiarySource) ScanHa
 		if err != nil && fails.ICPFailures > 0 { // ICP 服务不可达/查询失败：降级，记失败次数，扫描不失败
 			log.Printf("expand vendor %d: icp degraded: %v", vendorID, err)
 			_, err = d.Exec(ctx, `UPDATE scan_tasks SET result = $2 WHERE id = $1`, scanID, map[string]any{
-				"found": 0, "new_candidates": 0, "icp_failures": fails.ICPFailures, "degraded": true, "error": err.Error()})
+				"found": 0, "new_candidates": 0, "icp_failures": fails.ICPFailures, "degraded": true, "degraded_reason": err.Error()})
 			return nil, err
 		}
 		if err != nil {
@@ -590,9 +593,12 @@ func expandHandler(d *pgxpool.Pool, icp ICPSource, subs SubsidiarySource) ScanHa
 			return nil, err
 		}
 		log.Printf("expand vendor %d: %d domains found, %d new candidates", vendorID, len(found), created)
-		_, err = d.Exec(ctx, `UPDATE scan_tasks SET result = $2 WHERE id = $1`, scanID,
-			map[string]any{"found": len(found), "new_candidates": created, "icp_failures": fails.ICPFailures,
-				"skipped_ip": fails.SkippedIP, "skipped_invalid": fails.SkippedInvalid, "skipped_known_root": fails.SkippedKnownRoot})
+		res := map[string]any{"found": len(found), "new_candidates": created, "icp_failures": fails.ICPFailures,
+			"skipped_ip": fails.SkippedIP, "skipped_invalid": fails.SkippedInvalid, "skipped_known_root": fails.SkippedKnownRoot}
+		if fails.ICPFailures > 0 { // 部分 ICP 查询失败也标降级
+			res["degraded"], res["degraded_reason"] = true, fails.LastErr
+		}
+		_, err = d.Exec(ctx, `UPDATE scan_tasks SET result = $2 WHERE id = $1`, scanID, res)
 		return nil, err
 	}
 }

@@ -890,7 +890,7 @@ func (a *api) createScan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 202, s)
 }
 
-const scanSelect = `SELECT id, vendor_id, root_id, kind, status, error, result, parent_id, root_scan_id, created_at, started_at, finished_at FROM scan_tasks`
+const scanSelect = `SELECT id, vendor_id, root_id, kind, status, error, result, COALESCE((result->>'degraded')::boolean, false) AS degraded, result->>'degraded_reason' AS degraded_reason, parent_id, root_scan_id, created_at, started_at, finished_at FROM scan_tasks`
 
 func (a *api) getScan(w http.ResponseWriter, r *http.Request) {
 	if id, ok := pathID(w, r, "id"); ok {

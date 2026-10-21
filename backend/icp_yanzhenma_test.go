@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -60,6 +61,18 @@ func yzEnv(t *testing.T, url string) ICPSource {
 
 // 跑一次 expand 扫描，返回该厂商候选（domain|sources）与扫描结果。
 func runYZExpand(t *testing.T, src ICPSource) (map[string]string, map[string]any, string) {
+	c, _ := runYZExpandAPI(t, src)
+	return c.cands, c.res, c.status
+}
+
+type yzRun struct {
+	cands  map[string]string
+	res    map[string]any
+	status string
+	api    map[string]any
+}
+
+func runYZExpandAPI(t *testing.T, src ICPSource) (yzRun, error) {
 	e := newTestEnv(t)
 	ctx := context.Background()
 	v := e.vendorID()
@@ -90,7 +103,13 @@ func runYZExpand(t *testing.T, src ICPSource) (map[string]string, map[string]any
 	e.pool.QueryRow(ctx, `SELECT COALESCE(result::text, '{}'), status FROM scan_tasks WHERE id = (SELECT max(id) FROM scan_tasks WHERE root_id = $1)`, rootID).Scan(&raw, &status)
 	res := map[string]any{}
 	json.Unmarshal([]byte(raw), &res)
-	return cands, res, status
+	var sid int64
+	e.pool.QueryRow(ctx, `SELECT max(id) FROM scan_tasks WHERE root_id = $1`, rootID).Scan(&sid)
+	a := &api{db: e.pool, client: e.client, cfg: apiConfig{BootstrapToken: testBootstrap, ScopeBatch: 100, MaxRetry: 1}, bg: ctx}
+	srv := httptest.NewServer(newMux(nil, a))
+	defer srv.Close()
+	out := (&apiClient{t: t, srv: srv, tok: testBootstrap}).want(200, "GET", fmt.Sprintf("/api/scans/%d", sid), nil)
+	return yzRun{cands, res, status, out}, nil
 }
 
 func TestYanzhenmaParse(t *testing.T) {
@@ -119,6 +138,12 @@ func TestYanzhenmaUnreachableDegrades(t *testing.T) {
 	if status != "done" || len(cands) != 0 || res["icp_failures"] != float64(2) {
 		t.Fatalf("failed status: %s cands %v result %v", status, cands, res)
 	}
+	// API（GET /api/scans/{id}）返回 degraded 与原因
+	r, _ := runYZExpandAPI(t, yzEnv(t, srv.URL))
+	if r.api["status"] != "done" || r.api["degraded"] != true || !strings.HasPrefix(fmt.Sprint(r.api["degraded_reason"]), "icp_yanzhenma") {
+		t.Fatalf("api: %v", r.api)
+	}
+	t.Logf("GET /api/scans/%v → status=%v degraded=%v degraded_reason=%v", r.api["id"], r.api["status"], r.api["degraded"], r.api["degraded_reason"])
 	t.Logf("服务返回 status=failed：扫描 %s，候选 %d，result %v", status, len(cands), res)
 }
 
