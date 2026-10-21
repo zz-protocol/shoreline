@@ -155,6 +155,8 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 | ICP_PROVIDER | generic | 接口预设：`generic`（下方约定格式）或 `icp_yanzhenma`；其他值启动即退出（exit 1） |
 | ICP_API_KEY | 空 | 有值时请求带 `Authorization: Bearer <key>`；URL/KEY 含控制字符启动即退出（exit 1） |
 | RATE_EXPAND | 1 | expand 任务速率（任务/秒，同 RATE_*） |
+| SCHEDULE_PASSIVE | 6h | 定时被动扫描间隔（Go duration）；`0`/`off` 关闭；非法启动退出 |
+| SCHEDULE_ACTIVE | 24h | 定时主动扫描间隔；仅 `active_enabled` 厂商的根域；`0`/`off` 关闭 |
 
 - ICP 接口约定：`GET <ICP_API_URL>?company=<主体名>` 或 `?domain=<域名>`，响应 `{"records":[{"domain":"...","company":"...","license":"备案号"}]}`。对接具体服务商时需按此约定加一层转换。
 - `ICP_PROVIDER=icp_yanzhenma`：对接自建的 [zz-protocol/icp_yanzhenma](https://github.com/zz-protocol/icp_yanzhenma)（FastAPI，MIT；本仓库不含其代码，只走 HTTP）。`ICP_API_URL` 填该服务根地址（如 `http://icp:8000`），请求 `GET <ICP_API_URL>/query?domain=<值>`；该服务把参数作为工信部查询的 unitName 透传，主体名与域名都走此接口（**推断，待真实联调确认**）。响应 `status=success` 时从 `data.params.list`（或 `data.list`）取 `domain`/`unitName`/`mainLicence`（`domain` 字段取法为**推断，待真实联调确认**）；`status=failed`、HTTP 非 200、超时（30s）或连不上都计入 `icp_failures`，若本轮全部失败扫描一律为 done 并标 `degraded:true`，不重试；`GET /api/scans/{id}` 返回 `degraded` 与 `degraded_reason`。该服务按其自述**仅限安全研究**用途，需控制请求频率：本项目超时 30s，`RATE_EXPAND` 默认 1 任务/秒。真实联调留到部署时做。
@@ -209,6 +211,12 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_scope","arguments":{"host":"www.example.com"}}}'
 ```
 
+
+
+### 定时调度（T15）
+- 进程内调度：到点为**所有根域**触发 `passive`；为 **`vendors.active_enabled=true`** 的根域触发 `active`。不自动跑 expand（仍手动）。
+- 若该根域已有同 kind 的 `pending`/`running` 任务则跳过，避免堆积。
+- 间隔可读环境变量；运行中改配置需重启进程，或测试里 `SetConfig` 热更新（会打断当前等待，新间隔立即生效）。
 
 ## Web 端（T14）
 - React + Vite + Ant Design 5（MIT，深色算法主题，不做浅色切换）+ swagger-ui-dist（Apache-2.0）做 `/docs`。

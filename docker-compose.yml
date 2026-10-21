@@ -17,6 +17,8 @@ services:
       ICP_PROVIDER: ${ICP_PROVIDER:-}
       ICP_API_URL: ${ICP_API_URL:-}
       ICP_API_KEY: ${ICP_API_KEY:-}
+      SCHEDULE_PASSIVE: ${SCHEDULE_PASSIVE:-}
+      SCHEDULE_ACTIVE: ${SCHEDULE_ACTIVE:-}
     ports: ["127.0.0.1:8080:8080"]
     depends_on: [postgres, redis]
   # 可选：自建 CT 流服务。启用：docker compose --profile certstream up，

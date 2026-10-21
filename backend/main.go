@@ -83,6 +83,10 @@ func main() {
 		},
 		"redis": func(ctx context.Context) error { return rdb.Ping(ctx).Err() },
 	}
+	scfg, err := scheduleConfigFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
 	apiCfg, err := apiConfigFromEnv()
 	if err != nil {
 		log.Fatal(err)
@@ -91,7 +95,12 @@ func main() {
 	if apiCfg.BootstrapToken == "" {
 		log.Printf("API_BOOTSTRAP_TOKEN not set: only tokens in api_tokens are accepted")
 	}
-	a := &api{db: pool, client: asynq.NewClient(asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")}), cfg: apiCfg, bg: context.Background()}
+	asynqClient := asynq.NewClient(asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")})
+	a := &api{db: pool, client: asynqClient, cfg: apiCfg, bg: context.Background()}
+	if scfg.Passive > 0 || scfg.Active > 0 {
+		go newScheduler(pool, asynqClient, scfg, cfg.MaxRetry).Run(context.Background())
+		log.Printf("scheduler: passive=%v active=%v", scfg.Passive, scfg.Active)
+	}
 	if n, err := a.resumeScopeTasks(context.Background()); err != nil {
 		log.Fatalf("resume scope tasks: %v", err)
 	} else if n > 0 {
