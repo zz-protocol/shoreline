@@ -15,7 +15,7 @@ components:
   parameters:
     id: {name: id, in: path, required: true, schema: {type: integer}}
     limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500, default: 50}}
-    cursor: {name: cursor, in: query, schema: {type: string}, description: 上一页的 next_cursor}
+    cursor: {name: cursor, in: query, schema: {type: string}, description: "上一页的 next_cursor"}
   schemas:
     Error:
       type: object
@@ -52,7 +52,7 @@ components:
       type: object
       properties:
         rule_id: {type: integer}
-        task_id: {type: integer, description: GET /api/scope-tasks/{id} 查询 in_scope 重算进度}
+        task_id: {type: integer, description: "GET /api/scope-tasks/{id} 查询 in_scope 重算进度"}
     ScopeTask:
       type: object
       properties:
@@ -69,7 +69,7 @@ components:
         vendor_id: {type: integer}
         domain: {type: string}
         sources: {type: array, items: {type: string}}
-        evidence: {type: array, items: {type: object}, description: 每条含 vendor_id（发现该域名的厂商）}
+        evidence: {type: array, items: {type: object}, description: "每条含 vendor_id（发现该域名的厂商）"}
         status: {type: string, enum: [pending, confirmed, ignored]}
     Asset:
       type: object
@@ -88,7 +88,7 @@ components:
         sources: {type: array, items: {type: string}}
         first_seen: {type: string, format: date-time}
         last_seen: {type: string, format: date-time}
-        urls: {type: array, items: {type: object}, description: 仅 GET /api/assets/{id} 返回}
+        urls: {type: array, items: {type: object}, description: "仅 GET /api/assets/{id} 返回"}
     Event:
       type: object
       properties:
@@ -103,12 +103,12 @@ components:
         created_at: {type: string, format: date-time}
         url_events:
           type: array
-          description: 仅资产级 new 事件带：该资产的 URL 级 new 事件（level=url 仍可单独查）
+          description: "仅资产级 new 事件带：该资产的 URL 级 new 事件（level=url 仍可单独查）"
           items:
             type: object
             properties:
               id: {type: integer}
-              asset_id: {type: integer, description: 所属资产 id（与外层事件 asset_id 相同）}
+              asset_id: {type: integer, description: "所属资产 id（与外层事件 asset_id 相同）"}
               url_id: {type: integer}
               url: {type: string}
               status_code: {type: integer, nullable: true}
@@ -138,115 +138,115 @@ components:
         last_used_at: {type: string, format: date-time, nullable: true}
   responses:
     Error:
-      description: 错误
+      description: "错误"
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
 paths:
   /api/openapi.yaml:
     get:
-      summary: 本文档（无需认证）
+      summary: "本文档（无需认证）"
       security: []
-      responses: {"200": {description: OpenAPI YAML}}
+      responses: {"200": {description: "OpenAPI YAML"}}
   /api/vendors:
     get:
-      summary: 厂商列表
+      summary: "厂商列表"
       responses: {"200": {description: "{items: Vendor[]}"}}
     post:
-      summary: 新建厂商
+      summary: "新建厂商"
       requestBody: {content: {application/json: {schema: {$ref: "#/components/schemas/VendorInput"}}}}
-      responses: {"201": {description: Vendor}, "400": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+      responses: {"201": {description: "Vendor"}, "400": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/vendors/{id}:
     patch:
-      summary: 修改厂商（名称、主体名 company_name、主动发现开关 active_enabled）
+      summary: "修改厂商（名称、主体名 company_name、主动发现开关 active_enabled）"
       parameters: [{$ref: "#/components/parameters/id"}]
       requestBody: {content: {application/json: {schema: {$ref: "#/components/schemas/VendorInput"}}}}
-      responses: {"200": {description: Vendor}, "404": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: "Vendor"}, "404": {$ref: "#/components/responses/Error"}}
     delete:
-      summary: 删除厂商（级联下属根域/资产/URL/事件/候选/扫描/范围/子公司等）；有 pending/running 扫描时 409
+      summary: "删除厂商（级联下属根域/资产/URL/事件/候选/扫描/范围/子公司等）；有 pending/running 扫描时 409"
       parameters: [{$ref: "#/components/parameters/id"}]
-      responses: {"204": {description: 已删除}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+      responses: {"204": {description: "已删除"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/vendors/{id}/roots:
     get:
-      summary: 厂商根域列表
+      summary: "厂商根域列表"
       parameters: [{$ref: "#/components/parameters/id"}]
       responses: {"200": {description: "{items: Root[]}"}}
     post:
-      summary: 添加根域（格式校验；已被任一厂商占用返回 409）
+      summary: "添加根域（格式校验；已被任一厂商占用返回 409）"
       parameters: [{$ref: "#/components/parameters/id"}]
       requestBody: {content: {application/json: {schema: {type: object, properties: {domain: {type: string}}}}}}
-      responses: {"201": {description: Root}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+      responses: {"201": {description: "Root"}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/vendors/{id}/roots/{root_id}:
     delete:
-      summary: 删除根域（级联下属资产/URL/事件/扫描）；有 pending/running 扫描时 409；root 不属于该厂商返回 404
+      summary: "删除根域（级联下属资产/URL/事件/扫描）；有 pending/running 扫描时 409；root 不属于该厂商返回 404"
       parameters:
         - {$ref: "#/components/parameters/id"}
         - {name: root_id, in: path, required: true, schema: {type: integer}}
-      responses: {"204": {description: 已删除}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+      responses: {"204": {description: "已删除"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/vendors/{id}/scopes:
     get:
-      summary: 范围规则列表
+      summary: "范围规则列表"
       parameters: [{$ref: "#/components/parameters/id"}]
       responses: {"200": {description: "{items: ScopeRule[]}"}}
     post:
-      summary: 添加范围规则（pattern 为 域名 或 *.域名）；异步重算 in_scope
+      summary: "添加范围规则（pattern 为 域名 或 *.域名）；异步重算 in_scope"
       parameters: [{$ref: "#/components/parameters/id"}]
       requestBody: {content: {application/json: {schema: {type: object, properties: {kind: {type: string, enum: [include, exclude]}, pattern: {type: string}}}}}}
-      responses: {"202": {description: ScopeAccepted}, "400": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+      responses: {"202": {description: "ScopeAccepted"}, "400": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/vendors/{id}/scopes/{rule_id}:
     delete:
-      summary: 删除范围规则；异步重算 in_scope
+      summary: "删除范围规则；异步重算 in_scope"
       parameters: [{$ref: "#/components/parameters/id"}, {name: rule_id, in: path, required: true, schema: {type: integer}}]
-      responses: {"202": {description: ScopeAccepted}, "404": {$ref: "#/components/responses/Error"}}
+      responses: {"202": {description: "ScopeAccepted"}, "404": {$ref: "#/components/responses/Error"}}
   /api/scope-tasks/{id}:
     get:
-      summary: in_scope 重算任务状态
+      summary: "in_scope 重算任务状态"
       parameters: [{$ref: "#/components/parameters/id"}]
-      responses: {"200": {description: ScopeTask}, "404": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: "ScopeTask"}, "404": {$ref: "#/components/responses/Error"}}
   /api/vendors/{id}/subsidiaries:
     post:
-      summary: 导入子公司名单（text/csv，每行 名称,持股比例；同名覆盖）
+      summary: "导入子公司名单（text/csv，每行 名称,持股比例；同名覆盖）"
       parameters: [{$ref: "#/components/parameters/id"}]
       requestBody: {content: {text/csv: {schema: {type: string}}}}
       responses: {"200": {description: "{imported: n}"}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
   /api/vendors/{id}/root-candidates:
     get:
-      summary: 待确认根域（status=pending 默认 | confirmed | ignored | all）
+      summary: "待确认根域（status=pending 默认 | confirmed | ignored | all）"
       parameters: [{$ref: "#/components/parameters/id"}, {name: status, in: query, schema: {type: string}}]
       responses: {"200": {description: "{items: Candidate[]}"}}
   /api/root-candidates/{id}/confirm:
     post:
-      summary: 确认（写入 root_domains）；非 pending 或域名已被别的厂商占用 409（候选保持 pending）
+      summary: "确认（写入 root_domains）；非 pending 或域名已被别的厂商占用 409（候选保持 pending）"
       parameters: [{$ref: "#/components/parameters/id"}]
-      responses: {"200": {description: Candidate}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: "Candidate"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/root-candidates/{id}/ignore:
     post:
-      summary: 忽略（以后不再提示）；非 pending 409
+      summary: "忽略（以后不再提示）；非 pending 409"
       parameters: [{$ref: "#/components/parameters/id"}]
-      responses: {"200": {description: Candidate}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: "Candidate"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/root-candidates/{id}/reassign:
     post:
-      summary: 改归属到另一厂商（仅 pending）
+      summary: "改归属到另一厂商（仅 pending）"
       parameters: [{$ref: "#/components/parameters/id"}]
       requestBody: {content: {application/json: {schema: {type: object, properties: {vendor_id: {type: integer}}}}}}
-      responses: {"200": {description: Candidate}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: "Candidate"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/assets:
     get:
-      summary: 资产列表（默认过滤 wildcard）
+      summary: "资产列表（默认过滤 wildcard）"
       parameters:
         - {name: vendor, in: query, schema: {type: integer}}
         - {name: in_scope, in: query, schema: {type: boolean}}
-        - {name: q, in: query, schema: {type: string}, description: 子域名或 URL 标题子串（不区分大小写）}
-        - {name: new_since, in: query, schema: {type: string, format: date-time}, description: 资产 new 事件时间 >= 该值（RFC3339）}
+        - {name: q, in: query, schema: {type: string}, description: "子域名或 URL 标题子串（不区分大小写）"}
+        - {name: new_since, in: query, schema: {type: string, format: date-time}, description: "资产 new 事件时间 >= 该值（RFC3339）"}
         - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
         - {$ref: "#/components/parameters/limit"}
         - {$ref: "#/components/parameters/cursor"}
       responses: {"200": {description: "{items: Asset[], next_cursor}"}, "400": {$ref: "#/components/responses/Error"}}
   /api/check-scope:
     get:
-      summary: 范围检查（与 MCP check_scope 同一实现、输出一致）
-      parameters: [{name: host, in: query, required: true, schema: {type: string}, description: 主机名，大小写/末尾点忽略}]
+      summary: "范围检查（与 MCP check_scope 同一实现、输出一致）"
+      parameters: [{name: host, in: query, required: true, schema: {type: string}, description: "主机名，大小写/末尾点忽略"}]
       responses:
         "200":
-          description: 归属与范围
+          description: "归属与范围"
           content:
             application/json:
               schema:
@@ -256,23 +256,23 @@ paths:
                   in_scope: {type: boolean}
                   vendor_id: {type: integer, nullable: true}
                   vendor: {type: string, nullable: true}
-                  root_domain: {type: string, nullable: true, description: 最长匹配的根域}
+                  root_domain: {type: string, nullable: true, description: "最长匹配的根域"}
                   matched_rules: {type: array, items: {type: object, properties: {id: {type: integer}, kind: {type: string}, pattern: {type: string}}}}
-                  asset_id: {type: integer, nullable: true, description: 已是资产时的 id}
+                  asset_id: {type: integer, nullable: true, description: "已是资产时的 id"}
         "400": {$ref: "#/components/responses/Error"}
   /api/assets/{id}:
     get:
-      summary: 资产详情（含 urls）
+      summary: "资产详情（含 urls）"
       parameters: [{$ref: "#/components/parameters/id"}]
-      responses: {"200": {description: Asset}, "404": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: "Asset"}, "404": {$ref: "#/components/responses/Error"}}
   /api/events:
     get:
-      summary: 事件（默认资产级，资产级 new 事件嵌套 url_events；不传 type 返回 new/changed/recovered）
+      summary: "事件（默认资产级，资产级 new 事件嵌套 url_events；不传 type 返回 new/changed/recovered）"
       parameters:
         - {name: type, in: query, schema: {type: string, enum: [new, changed, recovered]}}
         - {name: level, in: query, schema: {type: string, enum: [asset, url, all], default: asset}}
         - {name: since, in: query, schema: {type: string, format: date-time}}
-        - {name: asset_id, in: query, schema: {type: integer}, description: 只看某资产（配合 level=url 查其 URL 事件）}
+        - {name: asset_id, in: query, schema: {type: integer}, description: "只看某资产（配合 level=url 查其 URL 事件）"}
         - {name: vendor, in: query, schema: {type: integer}}
         - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
         - {$ref: "#/components/parameters/limit"}
@@ -280,7 +280,7 @@ paths:
       responses: {"200": {description: "{items: Event[], next_cursor}"}, "400": {$ref: "#/components/responses/Error"}}
   /api/scans:
     get:
-      summary: 扫描任务列表（vendor/root/status/kind/degraded 过滤；limit/cursor 与资产列表一致；含 degraded/degraded_reason）
+      summary: "扫描任务列表（vendor/root/status/kind/degraded 过滤；limit/cursor 与资产列表一致；含 degraded/degraded_reason）"
       parameters:
         - {name: vendor, in: query, schema: {type: integer}}
         - {name: root, in: query, schema: {type: integer}}
@@ -291,33 +291,33 @@ paths:
         - {$ref: "#/components/parameters/cursor"}
       responses: {"200": {description: "{items: Scan[], next_cursor}"}, "400": {$ref: "#/components/responses/Error"}}
     post:
-      summary: 手动触发扫描（kind 只允许 passive/active/expand，dns/http 为链路内部步骤；kind=active 需厂商 active_enabled，否则 409）
+      summary: "手动触发扫描（kind 只允许 passive/active/expand，dns/http 为链路内部步骤；kind=active 需厂商 active_enabled，否则 409）"
       requestBody: {content: {application/json: {schema: {type: object, properties: {root_id: {type: integer}, kind: {type: string, enum: [passive, active, expand]}}}}}}
-      responses: {"202": {description: Scan}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+      responses: {"202": {description: "Scan"}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/scans/{id}:
     get:
-      summary: 扫描任务状态
+      summary: "扫描任务状态"
       parameters: [{$ref: "#/components/parameters/id"}]
-      responses: {"200": {description: Scan}, "404": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: "Scan"}, "404": {$ref: "#/components/responses/Error"}}
   /api/tokens:
     get:
-      summary: token 列表（不含明文）
+      summary: "token 列表（不含明文）"
       responses: {"200": {description: "{items: Token[]}"}}
     post:
-      summary: 生成 token（明文只返回这一次，库里只存 sha256）
+      summary: "生成 token（明文只返回这一次，库里只存 sha256）"
       requestBody: {content: {application/json: {schema: {type: object, properties: {name: {type: string}}}}}}
       responses: {"201": {description: "Token + token 明文"}, "400": {$ref: "#/components/responses/Error"}}
   /api/tokens/{id}:
     delete:
-      summary: 吊销 token
+      summary: "吊销 token"
       parameters: [{$ref: "#/components/parameters/id"}]
-      responses: {"204": {description: 已删除}, "404": {$ref: "#/components/responses/Error"}}
+      responses: {"204": {description: "已删除"}, "404": {$ref: "#/components/responses/Error"}}
   /mcp:
     post:
-      summary: MCP server（Streamable HTTP，无状态，JSON 响应；JSON-RPC 2.0）
+      summary: "MCP server（Streamable HTTP，无状态，JSON 响应；JSON-RPC 2.0）"
       description: |
         需 Bearer token（同 API）。工具：list_new_assets、search_assets、check_scope、trigger_scan，参数与对应 REST 接口一致
         （list_new_assets ≈ GET /api/events?level=asset&type=new；search_assets ≈ GET /api/assets；trigger_scan ≈ POST /api/scans）。
         请求头需 `Accept: application/json, text/event-stream`。业务错误以工具结果 isError=true、文本 {"error":"..."} 返回。
-      requestBody: {content: {application/json: {schema: {type: object, description: JSON-RPC 2.0 请求（initialize / tools/list / tools/call）}}}}
-      responses: {"200": {description: JSON-RPC 响应}, "401": {$ref: "#/components/responses/Error"}}
+      requestBody: {content: {application/json: {schema: {type: object, description: "JSON-RPC 2.0 请求（initialize / tools/list / tools/call）"}}}}
+      responses: {"200": {description: "JSON-RPC 响应"}, "401": {$ref: "#/components/responses/Error"}}

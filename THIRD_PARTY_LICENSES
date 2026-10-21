@@ -162,3 +162,7 @@
 - remix-run/react-router（MIT）via npm react-router-dom@6
 - iamkun/dayjs（MIT）
 - vitest / @testing-library/react / jsdom（MIT，开发依赖）
+
+## T18 新增（测试用）
+- go-yaml/yaml v3（MIT / Apache-2.0）gopkg.in/yaml.v3：Go 单测严格解析 openapi.yaml（原为间接依赖，改直接）
+- nodeca/js-yaml 4（MIT）：前端 vitest 用 swagger-ui 同款解析器校验 openapi.yaml（开发依赖）
