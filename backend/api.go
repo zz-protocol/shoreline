@@ -1084,6 +1084,33 @@ func (a *api) eventValues(w http.ResponseWriter, r *http.Request) {
 
 // ---- 扫描 ----
 
+// expandLockKey：pg_advisory_lock 的第一个键（第二个键为厂商 id），串行化同一厂商的 expand 触发。
+const expandLockKey = 23
+
+// triggerExpand：同一厂商已有 pending/running/retrying 的 expand（任意根域）时返回 409。
+// 在同一连接上持有厂商级 advisory lock 完成「检查 + 建任务」，避免并发触发竞态。
+func (a *api) triggerExpand(ctx context.Context, vendorID, rootID int64) (int64, error) {
+	conn, err := a.db.Acquire(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1, $2::int)`, expandLockKey, vendorID); err != nil {
+		return 0, err
+	}
+	defer conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1, $2::int)`, expandLockKey, vendorID)
+	var running int64
+	err = conn.QueryRow(ctx, `SELECT id FROM scan_tasks WHERE vendor_id = $1 AND kind = 'expand'
+		AND status IN ('pending', 'running', 'retrying') ORDER BY id LIMIT 1`, vendorID).Scan(&running)
+	if err == nil {
+		return 0, errf(409, "expand already in progress for this vendor (scan %d)", running)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return 0, err
+	}
+	return TriggerScan(ctx, a.db, a.client, rootID, "expand", a.cfg.MaxRetry)
+}
+
 // manualKinds 是可手动触发的扫描类型（dns/http 是链路内部步骤，不对外）。
 var manualKinds = []string{"passive", "active", "expand"}
 
@@ -1093,8 +1120,9 @@ func (a *api) triggerScan(ctx context.Context, rootID int64, kind string) (map[s
 		return nil, errf(400, "kind must be one of %s", strings.Join(manualKinds, "|"))
 	}
 	var active bool
-	if err := a.db.QueryRow(ctx, `SELECT v.active_enabled FROM root_domains r JOIN vendors v ON v.id = r.vendor_id WHERE r.id = $1`,
-		rootID).Scan(&active); err != nil {
+	var vendorID int64
+	if err := a.db.QueryRow(ctx, `SELECT v.active_enabled, v.id FROM root_domains r JOIN vendors v ON v.id = r.vendor_id WHERE r.id = $1`,
+		rootID).Scan(&active, &vendorID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, errf(404, "root not found")
 		}
@@ -1103,7 +1131,13 @@ func (a *api) triggerScan(ctx context.Context, rootID int64, kind string) (map[s
 	if kind == "active" && !active {
 		return nil, errf(409, "active discovery disabled for this vendor")
 	}
-	id, err := TriggerScan(ctx, a.db, a.client, rootID, kind, a.cfg.MaxRetry)
+	var id int64
+	var err error
+	if kind == "expand" {
+		id, err = a.triggerExpand(ctx, vendorID, rootID)
+	} else {
+		id, err = TriggerScan(ctx, a.db, a.client, rootID, kind, a.cfg.MaxRetry)
+	}
 	if err != nil {
 		return nil, err
 	}

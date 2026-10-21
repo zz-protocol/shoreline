@@ -351,7 +351,7 @@ paths:
         - {$ref: "#/components/parameters/cursor"}
       responses: {"200": {description: "{items: Scan[], next_cursor}"}, "400": {$ref: "#/components/responses/Error"}}
     post:
-      summary: "手动触发扫描（kind 只允许 passive/active/expand，dns/http 为链路内部步骤；kind=active 需厂商 active_enabled，否则 409）"
+      summary: "手动触发扫描（kind 只允许 passive/active/expand，dns/http 为链路内部步骤；kind=active 需厂商 active_enabled，否则 409；kind=expand 时同一厂商已有 pending/running/retrying 的 expand（任意根域）返回 409）"
       requestBody: {content: {application/json: {schema: {type: object, properties: {root_id: {type: integer}, kind: {type: string, enum: [passive, active, expand]}}}}}}
       responses: {"202": {description: "Scan"}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/scans/{id}:
