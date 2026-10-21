@@ -31,4 +31,4 @@
 | T22 | 文案与引导：根域/范围/待确认根域、扫描类型 passive/active/expand 加中文说明和提示 | 用户不看文档能看懂 | 完成（复验 55efa20：真实后端+生产构建+Chromium，说明/空状态/范围表单 37 项全过；范围文案与 check-scope 一致） |
 | T23 | 根域自动发现入口更显眼：一键对厂商跑 expand（ICP/子公司），结果进待确认 | 页面可直接触发并看到结果 | 待排 |
 | T24 | 云上客户资产排除：内置可编辑的「客户托管」规则表（如 *.aliyuncs.com 的 OSS/FC、*.myqcloud.com 的 COS、*.volces.com/*.volccdn.com、各家 CDN/函数/网站托管默认域），命中的资产标记 customer_hosted（不删），列表/播报默认隐藏、可切换查看；Web 可增删规则；改规则后异步重算 | 内置样例命中正确；默认隐藏、可查看；改规则后重算生效 | 待排 |
-| T25 | T20 尾巴：①复制在非安全上下文（HTTP 内网地址）回退到 textarea+execCommand，失败时弹出文本框供手动复制；②总数正好是页大小整数倍时不返回 next_cursor；③轮询单次新增超 500 时显示「有更多新事件，点此刷新」；④TestNoEventCleanupCode 改为扫描 backend 全部非测试 .go 文件 | 四项各有测试或实测 | 待做（T21 之后） |
+| T25 | T20 尾巴（含 stats 按 type 分开计数）：①复制在非安全上下文（HTTP 内网地址）回退到 textarea+execCommand，失败时弹出文本框供手动复制；②总数正好是页大小整数倍时不返回 next_cursor；③轮询单次新增超 500 时显示「有更多新事件，点此刷新」；④TestNoEventCleanupCode 改为扫描 backend 全部非测试 .go 文件 | 四项各有测试或实测 | 待做（T21 之后） |

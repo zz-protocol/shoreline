@@ -140,3 +140,4 @@
   - dead 的资产由 SCHEDULE_ALIVE 负责复查，默认 24h，设 0 或 off 关闭；复查只针对 dead 重做 DNS+HTTP。
   - 判定在 HTTP 阶段做：DNS 能解析且任一协议有响应，即为 alive；DNS 解析失败直接 dead；还没探测过的是 unknown。复核确认为泛解析的主机保持 unknown。
   - 迁移回填：解析成功且有 URL 记录的标 alive，其余标 unknown；回填不产生事件。
+- 播报口径（10-21）：播报页默认显示 new 和 recovered 两类，「复制本列」也包含两类；统计数分开计算，页面显示为“新增 X · 恢复 Y”，各厂商的数也分开。这条并入 T25。
