@@ -68,14 +68,14 @@ describe('T25-3 / T25-5 轮询溢出与按类型统计', () => {
 // 页面：fetch 按路径返回；轮询返回带 next_cursor 的满页 → 顶部提示，点击后重拉；复制全部失败 → 弹文本框
 describe('Events 页面（模拟后端）', () => {
   const ev = (id, type = 'new') => ({ id, type, level: 'asset', subdomain: `h${id}.t`, vendor_id: 1, created_at: '2026-10-21T00:00:00Z' })
-  const setup = () => {
+  const setup = (truncated = false) => {
     let listCalls = 0
     global.fetch = vi.fn(async (url) => {
       const u = String(url)
       let body
       if (u.startsWith('/api/vendors')) body = { items: [{ id: 1, name: 'V1' }] }
       else if (u.startsWith('/api/events/stats')) body = { items: [{ vendor_id: 1, count: 3, new: 2, recovered: 1 }], total: 3, totals: { new: 2, recovered: 1 } }
-      else if (u.startsWith('/api/events/values')) body = { field: 'subdomain', items: ['h1.t', 'h2.t'], count: 2, truncated: false }
+      else if (u.startsWith('/api/events/values')) body = { field: 'subdomain', items: ['h1.t', 'h2.t'], count: 2, truncated }
       else if (u.includes('after_id')) body = { items: Array.from({ length: 500 }, (_, i) => ev(1000 + i)), next_cursor: '1000' }
       else {
         listCalls++
@@ -114,5 +114,14 @@ describe('Events 页面（模拟后端）', () => {
     expect(screen.getByTestId('manual-copy').value).toBe('h1.t\nh2.t')
     expect(document.execCommand).toHaveBeenCalledWith('copy')
     expect(screen.getByText(/请手动复制（2 条）/)).toBeTruthy()
+  })
+  it('手动复制框：truncated 时标题注明已截断', async () => {
+    setup(true)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('denied') } } })
+    document.execCommand = vi.fn(() => false)
+    render(<AntApp><Events /></AntApp>)
+    await waitFor(() => expect(screen.getAllByText('复制本列').length).toBe(2))
+    fireEvent.click(screen.getAllByText('复制本列')[0])
+    await waitFor(() => expect(screen.getByText(/请手动复制（2 条，已截断至上限）/)).toBeTruthy())
   })
 })

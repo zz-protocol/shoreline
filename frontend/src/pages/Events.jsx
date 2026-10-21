@@ -103,7 +103,7 @@ export default function Events() {
       if (await copyText(text)) {
         message.success(`已复制 ${d.count} 条${d.truncated ? '（已截断至上限）' : ''}`)
       } else {
-        setManual({ text, count: d.count })
+        setManual({ text, count: d.count, truncated: d.truncated })
       }
     } catch (e) {
       message.error(e.message)
@@ -211,7 +211,7 @@ export default function Events() {
         ]}
       />
       {cursor && <Button block onClick={more} loading={loading}>加载更多</Button>}
-      <Modal open={!!manual} title={`浏览器不允许自动复制，请手动复制（${manual?.count ?? 0} 条）`} footer={null} onCancel={() => setManual(null)}>
+      <Modal open={!!manual} title={`浏览器不允许自动复制，请手动复制（${manual?.count ?? 0} 条${manual?.truncated ? '，已截断至上限' : ''}）`} footer={null} onCancel={() => setManual(null)}>
         <Input.TextArea data-testid="manual-copy" value={manual?.text} rows={12} readOnly autoFocus onFocus={(e) => e.target.select()} />
       </Modal>
     </Space>

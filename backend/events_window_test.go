@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -147,36 +149,84 @@ func TestEventsWindowStatsValues(t *testing.T) {
 
 // 事件不自动清理：扫描 backend 下全部非测试 .go 文件，无删除 events 的代码（迁移 008 一次性去重、厂商/根域级联不在 .go 里）。
 func TestNoEventCleanupCode(t *testing.T) {
-	files, err := filepath.Glob("*.go")
+	n := 0
+	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if strings.HasSuffix(path, "_test.go") || !(strings.HasSuffix(path, ".go") || strings.HasSuffix(path, ".sql")) {
+			return nil
+		}
+		n++
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if bad := eventDeletes(filepath.ToSlash(path), string(b)); len(bad) > 0 {
+			t.Errorf("%s deletes events: %q", path, bad)
+		}
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := 0
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
-			continue
-		}
-		n++
-		b, err := readSource(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if containsFold(b, "delete from events") || containsFold(b, "truncate events") || containsFold(b, "truncate table events") {
-			t.Fatalf("%s deletes events", f)
-		}
-	}
-	if n < 10 {
+	if n < 20 {
 		t.Fatalf("only %d source files scanned", n)
 	}
-	t.Logf("扫描 %d 个非测试 .go 文件，无删除 events 的语句", n)
+	t.Logf("递归扫描 %d 个非测试 .go/.sql 文件，除白名单外无删除/清空 events 的语句", n)
 }
 
-func readSource(f string) (string, error) {
-	b, err := os.ReadFile(f)
-	return string(b), err
+// eventDeleteRe：DELETE FROM / TRUNCATE [TABLE] [ONLY] [schema.]["]events["]，大小写不敏感，任意空白/换行。
+var eventDeleteRe = regexp.MustCompile(`(?is)\b(delete\s+from|truncate(\s+table)?)\s+(only\s+)?("?[a-z_][a-z0-9_]*"?\s*\.\s*)?"?events"?([^a-z0-9_]|$)`)
+
+// eventDeleteAllow：白名单，精确到 文件 + 归一化后的整条语句（到分号）。
+var eventDeleteAllow = map[string]string{
+	"migrations/008_event_dedup.sql": "delete from events e using events o where e.type = 'new' and o.type = 'new' and e.id > o.id and e.asset_id is not distinct from o.asset_id and e.url_id is not distinct from o.url_id",
 }
 
-func containsFold(s, sub string) bool { return strings.Contains(strings.ToLower(s), sub) }
+func normSQL(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), " ")) }
+
+// eventDeletes 返回 src 中未列入白名单的删除/清空 events 语句（归一化后）。
+func eventDeletes(path, src string) []string {
+	var out []string
+	for _, m := range eventDeleteRe.FindAllStringIndex(src, -1) {
+		stmt := src[m[0]:]
+		if i := strings.IndexByte(stmt, ';'); i >= 0 {
+			stmt = stmt[:i]
+		}
+		if st := normSQL(stmt); eventDeleteAllow[path] != st {
+			out = append(out, st)
+		}
+	}
+	return out
+}
+
+func TestEventDeletesPatterns(t *testing.T) {
+	allowed := "DELETE FROM events e USING events o\n WHERE e.type = 'new' AND o.type = 'new' AND e.id > o.id\n   AND e.asset_id IS NOT DISTINCT FROM o.asset_id AND e.url_id IS NOT DISTINCT FROM o.url_id;"
+	for _, c := range []struct {
+		path, src string
+		bad       bool
+	}{
+		{"x.go", "DELETE  FROM events WHERE id = 1", true},
+		{"x.go", "DELETE FROM public.events", true},
+		{"x.go", `DELETE FROM "events"`, true},
+		{"x.go", `DELETE FROM public."events" WHERE true`, true},
+		{"x.go", "DELETE\nFROM events", true},
+		{"sub/zz.go", "x := `delete from events`", true},
+		{"x.go", "TRUNCATE events", true},
+		{"x.go", "truncate table ONLY events;", true},
+		{"x.sql", "delete from events where created_at < now()", true},
+		{"migrations/008_event_dedup.sql", allowed, false},
+		{"migrations/008_event_dedup.sql", allowed + "\nDELETE FROM events WHERE type = 'changed';", true},
+		{"migrations/009_x.sql", allowed, true}, // 白名单精确到文件
+		{"x.go", "DELETE FROM events_archive; SELECT * FROM events", false},
+		{"x.go", "DELETE FROM scope_rules WHERE id = $1", false},
+	} {
+		if got := eventDeletes(c.path, c.src); (len(got) > 0) != c.bad {
+			t.Errorf("%s %q: got %q want bad=%v", c.path, c.src, got, c.bad)
+		}
+	}
+}
 
 // 恢复的资产：窗口内只有资产级 recovered 事件（URL 早已存在、无 URL 级事件），资产维度复制 URL 应返回其当前 URL。
 func TestEventValuesRecoveredAssetURL(t *testing.T) {
@@ -206,4 +256,38 @@ func TestEventValuesRecoveredAssetURL(t *testing.T) {
 		}
 	}
 	_ = e
+}
+
+// 默认口径：不带 type = new,recovered；显式含 changed 才计 changed（events / stats / values 一致）。
+func TestEventsDefaultTypes(t *testing.T) {
+	e, c, _ := newAPITest(t, 100)
+	ctx := context.Background()
+	vid := e.vendorID()
+	var root string
+	e.pool.QueryRow(ctx, `SELECT domain FROM root_domains WHERE id = $1`, e.rootID).Scan(&root)
+	for i, typ := range []string{"new", "new", "recovered", "changed", "changed", "changed"} {
+		var aid int64
+		if err := e.pool.QueryRow(ctx, `INSERT INTO assets (root_id, subdomain) VALUES ($1, $2) RETURNING id`, e.rootID, fmt.Sprintf("d%d.%s", i, root)).Scan(&aid); err != nil {
+			t.Fatal(err)
+		}
+		e.pool.Exec(ctx, `INSERT INTO events (type, asset_id, detail) VALUES ($1, $2, '{}')`, typ, aid)
+	}
+	cnt := func(q string) (int, float64) {
+		ev := len(items(c.want(200, "GET", fmt.Sprintf("/api/events?limit=500&vendor=%d%s", vid, q), nil)))
+		st := c.want(200, "GET", fmt.Sprintf("/api/events/stats?vendor=%d%s", vid, q), nil)
+		vals := c.want(200, "GET", fmt.Sprintf("/api/events/values?field=subdomain&vendor=%d%s", vid, q), nil)
+		if int(vals["count"].(float64)) != ev {
+			t.Fatalf("%s values %v events %d", q, vals["count"], ev)
+		}
+		return ev, st["total"].(float64)
+	}
+	if ev, tot := cnt(""); ev != 3 || tot != 3 {
+		t.Fatalf("default events %d stats %v want 3 (new+recovered)", ev, tot)
+	}
+	if ev, tot := cnt("&type=new,recovered,changed"); ev != 6 || tot != 6 {
+		t.Fatalf("with changed events %d stats %v want 6", ev, tot)
+	}
+	if ev, tot := cnt("&type=changed"); ev != 3 || tot != 3 {
+		t.Fatalf("changed only %d %v", ev, tot)
+	}
 }

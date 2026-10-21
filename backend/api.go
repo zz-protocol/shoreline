@@ -876,7 +876,10 @@ func checkEventFilter(f *eventFilter) error {
 	if f.Level != "asset" && f.Level != "url" && f.Level != "all" {
 		return errf(400, "level must be asset|url|all")
 	}
-	if f.Type != "" {
+	if f.Type == "" {
+		f.Type = "new,recovered" // 默认口径（SPEC 10-21）：只有显式传 changed 才含 changed
+	}
+	{
 		for _, t := range strings.Split(f.Type, ",") { // 可逗号分隔多选，如 new,recovered
 			if t != "new" && t != "changed" && t != "recovered" {
 				return errf(400, "type must be new|changed|recovered")
@@ -908,7 +911,7 @@ func (f eventFilter) args() []any {
 	return []any{f.Cursor, f.Level, f.Type, f.Since, f.AssetID, f.Vendor, f.IncludeWildcard, f.Until, f.AfterID}
 }
 
-// queryEvents：level=asset（默认，资产级）|url|all；type 不传返回 new/changed/recovered；资产级 new 事件嵌套 url_events。
+// queryEvents：level=asset（默认，资产级）|url|all；type 不传默认 new,recovered（显式传 changed 才含 changed）；资产级 new 事件嵌套 url_events。
 // since/until 为时间窗 [since, until)；after_id 只取更新的事件（轮询）。
 func (a *api) queryEvents(ctx context.Context, f eventFilter) ([]map[string]any, error) {
 	if err := checkPage(f.Limit, f.Cursor); err != nil {

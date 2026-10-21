@@ -343,10 +343,11 @@ func TestAPIAssetsEventsScans(t *testing.T) {
 		return strings.Join(out, " ")
 	}
 	cases := map[string]string{
-		ev:                   "asset/new/old asset/changed/api asset/new/out asset/new/api asset/new/www",
-		ev + "&type=changed": "asset/changed/api",
-		ev + "&level=url":    "url/new/www",
-		ev + "&level=all":    "asset/new/old asset/changed/api asset/new/out asset/new/api url/new/www asset/new/www",
+		ev:                                 "asset/new/old asset/new/out asset/new/api asset/new/www", // 默认 new,recovered
+		ev + "&type=new,changed,recovered": "asset/new/old asset/changed/api asset/new/out asset/new/api asset/new/www",
+		ev + "&type=changed":               "asset/changed/api",
+		ev + "&level=url":                  "url/new/www",
+		ev + "&level=all&type=new,changed": "asset/new/old asset/changed/api asset/new/out asset/new/api url/new/www asset/new/www",
 		ev + "&since=" + time.Now().Add(-time.Hour).UTC().Format(time.RFC3339) + "&type=new": "asset/new/out asset/new/api asset/new/www",
 		fmt.Sprintf("%s&level=url&asset_id=%d", ev, api1-1):                                  "url/new/www",
 	}

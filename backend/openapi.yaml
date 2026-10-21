@@ -273,7 +273,7 @@ paths:
     get:
       summary: "事件（默认资产级，资产级 new 事件嵌套 url_events；不传 type 返回 new/changed/recovered）"
       parameters:
-        - {name: type, in: query, schema: {type: string}, description: "new | changed | recovered，可逗号分隔多选（如 new,recovered）"}
+        - {name: type, in: query, schema: {type: string, default: "new,recovered"}, description: "new | changed | recovered，可逗号分隔多选；不传默认 new,recovered，只有显式传 changed 才含 changed"}
         - {name: level, in: query, schema: {type: string, enum: [asset, url, all], default: asset}}
         - {name: since, in: query, schema: {type: string, format: date-time}, description: "时间窗起点（含），RFC3339"}
         - {name: until, in: query, schema: {type: string, format: date-time}, description: "时间窗终点（不含），RFC3339；须晚于 since"}
@@ -288,20 +288,20 @@ paths:
     get:
       summary: "时间窗内各厂商事件数（服务端全量聚合，不受分页影响）；筛选参数同 /api/events"
       parameters:
-        - {name: type, in: query, schema: {type: string}, description: "new | changed | recovered，可逗号分隔多选（如 new,recovered）"}
+        - {name: type, in: query, schema: {type: string, default: "new,recovered"}, description: "new | changed | recovered，可逗号分隔多选；不传默认 new,recovered，只有显式传 changed 才含 changed"}
         - {name: level, in: query, schema: {type: string, enum: [asset, url, all], default: asset}}
         - {name: since, in: query, schema: {type: string, format: date-time}, description: "时间窗起点（含），RFC3339"}
         - {name: until, in: query, schema: {type: string, format: date-time}, description: "时间窗终点（不含），RFC3339；须晚于 since"}
         - {name: asset_id, in: query, schema: {type: integer}, description: "只看某资产（配合 level=url 查其 URL 事件）"}
         - {name: vendor, in: query, schema: {type: integer}}
         - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
-      responses: {"200": {description: "{items: [{vendor_id, vendor, count, new, recovered}], total, totals: {new, recovered}}；new/recovered 按 type 分别计数（总计与各厂商）"}, "400": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: "{items: [{vendor_id, vendor, count, new, recovered}], total, totals: {new, recovered}}；count 为所选各 type 计数之和；new/recovered 按 type 分别计数（总计与各厂商）"}, "400": {$ref: "#/components/responses/Error"}}
   /api/events/values:
     get:
       summary: "整列复制：时间窗内全部匹配事件的子域或 URL，去重排序（上限 100000，超出 truncated=true）；level=asset 时 field=url 取这些资产当前的全部 URL（含恢复的资产）"
       parameters:
         - {name: field, in: query, required: true, schema: {type: string, enum: [subdomain, url]}}
-        - {name: type, in: query, schema: {type: string}, description: "new | changed | recovered，可逗号分隔多选（如 new,recovered）"}
+        - {name: type, in: query, schema: {type: string, default: "new,recovered"}, description: "new | changed | recovered，可逗号分隔多选；不传默认 new,recovered，只有显式传 changed 才含 changed"}
         - {name: level, in: query, schema: {type: string, enum: [asset, url, all], default: asset}}
         - {name: since, in: query, schema: {type: string, format: date-time}, description: "时间窗起点（含），RFC3339"}
         - {name: until, in: query, schema: {type: string, format: date-time}, description: "时间窗终点（不含），RFC3339；须晚于 since"}
