@@ -713,7 +713,7 @@ func int64Param(w http.ResponseWriter, r *http.Request, name string) (*int64, bo
 }
 
 const assetCols = `a.id, a.subdomain, a.root_id, r.domain AS root_domain, r.vendor_id, a.ips, a.cnames, a.cdn, a.resolved,
-	a.wildcard, a.in_scope, a.sources, a.first_seen, a.last_seen`
+	a.wildcard, a.in_scope, a.sources, a.first_seen, a.last_seen, a.alive, a.last_alive_at`
 
 // listAssets：vendor / in_scope / q（子域名或 URL 标题子串）/ new_since（资产 new 事件时间）/ include_wildcard（默认过滤）。
 // httpError 带状态码的业务错误（REST 映射为状态码，MCP 映射为工具错误）。
@@ -747,6 +747,7 @@ type assetFilter struct {
 	NewSince        *time.Time
 	Limit           int
 	Cursor          int64
+	Alive           string // alive / dead / unknown；空=不筛
 }
 
 // checkVendor：传了 vendor 必须 >= 1（REST 与 MCP 共用）。
@@ -785,6 +786,9 @@ func (a *api) queryAssets(ctx context.Context, f assetFilter) ([]map[string]any,
 	if strings.ContainsRune(f.Q, 0) {
 		return nil, errf(400, "NUL character not allowed")
 	}
+	if f.Alive != "" && f.Alive != "alive" && f.Alive != "dead" && f.Alive != "unknown" {
+		return nil, errf(400, "alive must be alive|dead|unknown")
+	}
 	q := strings.ToLower(strings.TrimSpace(f.Q))
 	return rowsJSON(a.db.Query(ctx, `SELECT `+assetCols+` FROM assets a JOIN root_domains r ON r.id = a.root_id
 		WHERE ($1::bigint = 0 OR a.id < $1)
@@ -795,7 +799,8 @@ func (a *api) queryAssets(ctx context.Context, f assetFilter) ([]map[string]any,
 		       OR EXISTS (SELECT 1 FROM urls u WHERE u.asset_id = a.id AND strpos(lower(u.title), $5) > 0))
 		  AND ($6::timestamptz IS NULL OR EXISTS (SELECT 1 FROM events e WHERE e.asset_id = a.id AND e.url_id IS NULL
 		       AND e.type = 'new' AND e.created_at >= $6))
-		ORDER BY a.id DESC LIMIT $7`, f.Cursor, f.Vendor, f.InScope, f.IncludeWildcard, q, f.NewSince, f.Limit))
+		  AND ($8::text = '' OR a.alive = $8)
+		ORDER BY a.id DESC LIMIT $7`, f.Cursor, f.Vendor, f.InScope, f.IncludeWildcard, q, f.NewSince, f.Limit, f.Alive))
 }
 
 func (a *api) listAssets(w http.ResponseWriter, r *http.Request) {
@@ -813,7 +818,7 @@ func (a *api) listAssets(w http.ResponseWriter, r *http.Request) {
 	if !ok3 || !ok4 {
 		return
 	}
-	list, err := a.queryAssets(r.Context(), assetFilter{vendor, inScope, wild != nil && *wild, r.URL.Query().Get("q"), newSince, limit, cursor})
+	list, err := a.queryAssets(r.Context(), assetFilter{vendor, inScope, wild != nil && *wild, r.URL.Query().Get("q"), newSince, limit, cursor, r.URL.Query().Get("alive")})
 	if err != nil {
 		writeAnyErr(w, err)
 		return
@@ -867,8 +872,12 @@ func checkEventFilter(f *eventFilter) error {
 	if f.Level != "asset" && f.Level != "url" && f.Level != "all" {
 		return errf(400, "level must be asset|url|all")
 	}
-	if f.Type != "" && f.Type != "new" && f.Type != "changed" && f.Type != "recovered" {
-		return errf(400, "type must be new|changed|recovered")
+	if f.Type != "" {
+		for _, t := range strings.Split(f.Type, ",") { // 可逗号分隔多选，如 new,recovered
+			if t != "new" && t != "changed" && t != "recovered" {
+				return errf(400, "type must be new|changed|recovered")
+			}
+		}
 	}
 	if f.Since != nil && f.Until != nil && !f.Until.After(*f.Since) {
 		return errf(400, "until must be after since")
@@ -883,7 +892,7 @@ func checkEventFilter(f *eventFilter) error {
 const eventWhere = `FROM events e JOIN assets a ON a.id = e.asset_id JOIN root_domains r ON r.id = a.root_id JOIN vendors v ON v.id = r.vendor_id LEFT JOIN urls u ON u.id = e.url_id
 		WHERE ($1::bigint = 0 OR e.id < $1)
 		  AND ($2::text = 'all' OR ($2 = 'asset') = (e.url_id IS NULL))
-		  AND ($3::text = '' OR e.type = $3)
+		  AND ($3::text = '' OR e.type = ANY(string_to_array($3, ',')))
 		  AND ($4::timestamptz IS NULL OR e.created_at >= $4)
 		  AND ($5::bigint IS NULL OR e.asset_id = $5)
 		  AND ($6::bigint IS NULL OR r.vendor_id = $6)
@@ -1014,7 +1023,7 @@ func (a *api) eventValues(w http.ResponseWriter, r *http.Request) {
 		q = `SELECT DISTINCT uu.scheme || '://' || uu.host || ':' || uu.port AS v
 			FROM events ue JOIN urls uu ON uu.id = ue.url_id
 			WHERE ue.asset_id IN (SELECT e.asset_id ` + eventWhere + `)
-			  AND ($3::text = '' OR ue.type = $3)
+			  AND ($3::text = '' OR ue.type = ANY(string_to_array($3, ',')))
 			  AND ($4::timestamptz IS NULL OR ue.created_at >= $4)
 			  AND ($8::timestamptz IS NULL OR ue.created_at < $8)
 			ORDER BY 1 LIMIT $10`

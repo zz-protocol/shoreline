@@ -22,8 +22,8 @@ describe('eventsWindow', () => {
   })
   it('filterParams 列表/统计/复制共用同一时间窗', () => {
     const p = filterParams({ level: 'asset', vendor: 3, since: 'S', until: 'U' })
-    expect(p.toString()).toBe('level=asset&type=new&vendor=3&since=S&until=U')
-    expect(filterParams({ level: 'url' }).toString()).toBe('level=url&type=new')
+    expect(p.toString()).toBe('level=asset&type=new%2Crecovered&vendor=3&since=S&until=U')
+    expect(filterParams({ level: 'url' }).toString()).toBe('level=url&type=new%2Crecovered')
   })
   it('轮询：新事件置顶、不替换旧列表、按 id 去重', () => {
     const old = [{ id: 5 }, { id: 4 }, { id: 3 }]

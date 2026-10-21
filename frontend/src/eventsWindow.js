@@ -15,7 +15,7 @@ export function windowRange(win, custom, now = new Date()) {
 
 /** 公共筛选参数（列表 / 统计 / 整列复制共用，保证同一时间窗）。 */
 export function filterParams({ level, vendor, since, until }) {
-  const p = new URLSearchParams({ level, type: 'new' })
+  const p = new URLSearchParams({ level, type: 'new,recovered' })
   if (vendor) p.set('vendor', String(vendor))
   if (since) p.set('since', since)
   if (until) p.set('until', until)

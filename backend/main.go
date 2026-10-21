@@ -97,9 +97,9 @@ func main() {
 	}
 	asynqClient := asynq.NewClient(asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")})
 	a := &api{db: pool, client: asynqClient, cfg: apiCfg, bg: context.Background()}
-	if scfg.Passive > 0 || scfg.Active > 0 {
+	if scfg.Passive > 0 || scfg.Active > 0 || scfg.Alive > 0 {
 		go newScheduler(pool, asynqClient, scfg, cfg.MaxRetry).Run(context.Background())
-		log.Printf("scheduler: passive=%v active=%v", scfg.Passive, scfg.Active)
+		log.Printf("scheduler: passive=%v active=%v alive=%v", scfg.Passive, scfg.Active, scfg.Alive)
 	}
 	if n, err := a.resumeScopeTasks(context.Background()); err != nil {
 		log.Fatalf("resume scope tasks: %v", err)

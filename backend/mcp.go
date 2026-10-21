@@ -26,6 +26,7 @@ type searchAssetsIn struct {
 	InScope         *bool  `json:"in_scope,omitempty" jsonschema:"filter by in_scope"`
 	NewSince        string `json:"new_since,omitempty" jsonschema:"RFC3339; asset new event at or after this time"`
 	IncludeWildcard bool   `json:"include_wildcard,omitempty" jsonschema:"include wildcard assets (default false)"`
+	Alive           string `json:"alive,omitempty" jsonschema:"filter by liveness: alive | dead | unknown"`
 	Limit           *int   `json:"limit,omitempty" jsonschema:"1..500, default 50"`
 	Cursor          string `json:"cursor,omitempty" jsonschema:"next_cursor from the previous page"`
 }
@@ -113,7 +114,7 @@ func (a *api) mcpServer() *mcp.Server {
 			if err != nil {
 				return toolErr[pageOut](err)
 			}
-			list, err := a.queryAssets(ctx, assetFilter{in.Vendor, in.InScope, in.IncludeWildcard, in.Q, since, limit, cursor})
+			list, err := a.queryAssets(ctx, assetFilter{in.Vendor, in.InScope, in.IncludeWildcard, in.Q, since, limit, cursor, in.Alive})
 			if err != nil {
 				return toolErr[pageOut](err)
 			}

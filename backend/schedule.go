@@ -17,10 +17,11 @@ import (
 type scheduleConfig struct {
 	Passive time.Duration
 	Active  time.Duration
+	Alive   time.Duration // T21：dead 资产复查（DNS+HTTP）
 }
 
 func scheduleConfigFromEnv() (scheduleConfig, error) {
-	c := scheduleConfig{Passive: 6 * time.Hour, Active: 24 * time.Hour}
+	c := scheduleConfig{Passive: 6 * time.Hour, Active: 24 * time.Hour, Alive: 24 * time.Hour}
 	parse := func(name string, dst *time.Duration) error {
 		s := os.Getenv(name)
 		if s == "" {
@@ -41,6 +42,9 @@ func scheduleConfigFromEnv() (scheduleConfig, error) {
 		return c, err
 	}
 	if err := parse("SCHEDULE_ACTIVE", &c.Active); err != nil {
+		return c, err
+	}
+	if err := parse("SCHEDULE_ALIVE", &c.Alive); err != nil {
 		return c, err
 	}
 	return c, nil
@@ -85,9 +89,10 @@ func (s *scheduler) reloadCh() <-chan struct{} {
 
 func (s *scheduler) Run(ctx context.Context) {
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() { defer wg.Done(); s.loop(ctx, "passive") }()
 	go func() { defer wg.Done(); s.loop(ctx, "active") }()
+	go func() { defer wg.Done(); s.loop(ctx, "alive") }()
 	wg.Wait()
 }
 
@@ -97,6 +102,8 @@ func (s *scheduler) loop(ctx context.Context, kind string) {
 		d := s.cfg.Passive
 		if kind == "active" {
 			d = s.cfg.Active
+		} else if kind == "alive" {
+			d = s.cfg.Alive
 		}
 		s.mu.Unlock()
 		if d <= 0 {
@@ -128,6 +135,9 @@ func (s *scheduler) loop(ctx context.Context, kind string) {
 
 // tick 为符合条件的根域触发扫描；返回触发数量。可单测直接调用。
 func (s *scheduler) tick(ctx context.Context, kind string) (int, error) {
+	if kind == "alive" {
+		return s.tickAlive(ctx)
+	}
 	if kind != "passive" && kind != "active" {
 		return 0, fmt.Errorf("schedule kind %q not supported", kind)
 	}
@@ -163,6 +173,48 @@ func (s *scheduler) tick(ctx context.Context, kind string) (int, error) {
 			continue
 		}
 		if _, err := TriggerScan(ctx, s.db, s.client, rootID, kind, s.maxRetry); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
+// tickAlive：对有 dead 资产（非泛解析）的根域，把这些主机交给 dns 任务重做 DNS+HTTP；已有 pending/running dns 任务则跳过。
+func (s *scheduler) tickAlive(ctx context.Context) (int, error) {
+	rows, err := s.db.Query(ctx, `SELECT root_id, array_agg(subdomain ORDER BY id) FROM assets
+		WHERE alive = 'dead' AND NOT wildcard GROUP BY root_id ORDER BY root_id`)
+	if err != nil {
+		return 0, err
+	}
+	type job struct {
+		root  int64
+		hosts []string
+	}
+	var jobs []job
+	for rows.Next() {
+		var j job
+		if err := rows.Scan(&j.root, &j.hosts); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		jobs = append(jobs, j)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, j := range jobs {
+		var busy int
+		if err := s.db.QueryRow(ctx, `SELECT count(*) FROM scan_tasks
+			WHERE root_id = $1 AND kind = 'dns' AND status IN ('pending', 'running')`, j.root).Scan(&busy); err != nil {
+			return n, err
+		}
+		if busy > 0 {
+			continue
+		}
+		if _, err := enqueueScan(ctx, s.db, s.client, j.root, "dns", j.hosts, 0, s.maxRetry); err != nil {
 			return n, err
 		}
 		n++

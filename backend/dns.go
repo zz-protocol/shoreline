@@ -368,8 +368,9 @@ func (r *resolver) storeDNS(ctx context.Context, tx pgx.Tx, host string, hd host
 	} else if err != nil {
 		return false, err
 	}
-	if !hd.Resolved { // 失联：保留最后一次成功的 IP/CNAME，只记 resolved=false
-		_, err := tx.Exec(ctx, `UPDATE assets SET resolved = false, resolved_at = now() WHERE id = $1`, assetID)
+	if !hd.Resolved { // 失联：保留最后一次成功的 IP/CNAME，只记 resolved=false；探活 DNS 失败直接 dead（已 alive 不改回）
+		_, err := tx.Exec(ctx, `UPDATE assets SET resolved = false, resolved_at = now(),
+			alive = CASE WHEN alive = 'alive' THEN alive ELSE 'dead' END WHERE id = $1`, assetID)
 		return false, err
 	}
 	wild, parentWild := hd.Wildcard, hd.ParentWild
@@ -392,12 +393,8 @@ func (r *resolver) storeDNS(ctx context.Context, tx pgx.Tx, host string, hd host
 	if oldResolved == nil || oldWild && !verified {
 		return true, nil // 首次解析，或上次是泛解析
 	}
-	if !*oldResolved && len(oldIPs) == 0 {
-		return true, nil // 之前从未解析成功
-	}
 	if !*oldResolved {
-		return true, emitEvent(ctx, tx, "recovered", assetID, nil, map[string]any{"subdomain": host,
-			"last_ips": oldIPs, "ips": ips, "last_cnames": oldCNAMEs, "cnames": cnames})
+		return true, nil // 失联后再解析：DNS 层不报；recovered 只在 HTTP 阶段 dead→alive 时产生（T21）
 	}
 	changes := map[string]change{}
 	if !sameSet(oldIPs, ips) {

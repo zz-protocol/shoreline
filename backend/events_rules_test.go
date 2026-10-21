@@ -67,7 +67,7 @@ func dnsRound(t *testing.T, e *testEnv, r *resolver, host string, hd hostDNS) {
 
 func ok(ips ...string) hostDNS { return hostDNS{Resolved: true, Result: dnsResult{IPs: ips}} }
 
-// 规则：新增 IPv6、恢复原值、CNAME 变化 = changed；失联保留最后 IP，再解析成功 = recovered；失联本身不报。
+// 规则：新增 IPv6、恢复原值、CNAME 变化 = changed；失联保留最后 IP，失联与再解析成功 DNS 层都不报（T21：recovered 只在 HTTP 阶段 dead→alive 产生）。
 func TestAssetEventRules(t *testing.T) {
 	e := newTestEnv(t)
 	r := testResolver("127.0.0.1:1")
@@ -93,7 +93,6 @@ func TestAssetEventRules(t *testing.T) {
 		`changed {"ips": {"new": ["192.0.2.10", "2001:db8::1"], "old": ["192.0.2.10"]}}`,
 		`changed {"ips": {"new": ["192.0.2.10"], "old": ["192.0.2.10", "2001:db8::1"]}}`,
 		`changed {"cnames": {"new": ["x.cdn.test"], "old": []}}`,
-		`recovered ["192.0.2.10"]->["192.0.2.20"]`,
 	})
 	if got != want {
 		t.Fatalf("events\n got %s\nwant %s", got, want)

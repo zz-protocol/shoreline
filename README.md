@@ -121,7 +121,8 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 
 - 资产新增 `new`：子域首次解析成功且非泛解析时生成一次；解析失败照样入库但不发。wildcard=true 的不生成；父域有泛解析的主机等 HTTP 复核为真实后才生成。
 - 资产变更 `changed`：上次与本次都解析成功且非泛解析，IP 或 CNAME 集合变化（含新增 IPv6、恢复到原值），detail.changes.ips / cnames 记新旧值；CDN 不单独算。
-- 资产恢复 `recovered`：解析失败（如 NXDOMAIN）时保留最后一次成功的 IP/CNAME 只记 resolved=false；再次解析成功时发 recovered，detail 带 last_ips/ips、last_cnames/cnames。
+- 资产探活（T21）：`alive` = alive / dead / unknown，`last_alive_at`。HTTP 阶段判定：DNS 能解析且任一协议有响应（任何状态码）为 alive，一旦 alive 不再改回、不再复查；DNS 失败或无响应为 dead；未探测或 HTTP 复核确认为泛解析为 unknown。dead 资产由 `SCHEDULE_ALIVE` 定时复查。
+- 资产恢复 `recovered`：仅在 dead→alive 时产生一条（同一事务锁行，并发只发一次）。DNS 解析失败时仍保留最后一次成功的 IP/CNAME，只记 resolved=false，DNS 层不再发 recovered。`GET /api/assets?alive=` 可筛选。
 - 已复核为真实的主机在有效期内 IP 全部回落到泛解析 IP 时不报（v1）。
 - URL 新增 `new`：scheme+host+port 首次入库时生成一次（url_id 非空）。资产 new 与 URL new 都存，默认按资产聚合留给 T12/T13。
 - URL 变更 `changed`：状态码、标题或指纹 hash 变化，detail.changes 记各字段新旧值；只改正文不算。
@@ -167,6 +168,7 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 | RATE_EXPAND | 1 | expand 任务速率（任务/秒，同 RATE_*） |
 | SCHEDULE_PASSIVE | 6h | 定时被动扫描间隔（Go duration）；`0`/`off` 关闭；非法启动退出 |
 | SCHEDULE_ACTIVE | 24h | 定时主动扫描间隔；仅 `active_enabled` 厂商的根域；`0`/`off` 关闭 |
+| SCHEDULE_ALIVE | 24h | dead 资产复查间隔（重做 DNS+HTTP）；alive 不再复查；`0`/`off` 关闭；非法启动退出 |
 
 - ICP 接口约定：`GET <ICP_API_URL>?company=<主体名>` 或 `?domain=<域名>`，响应 `{"records":[{"domain":"...","company":"...","license":"备案号"}]}`。对接具体服务商时需按此约定加一层转换。
 - `ICP_PROVIDER=icp_yanzhenma`：对接自建的 [zz-protocol/icp_yanzhenma](https://github.com/zz-protocol/icp_yanzhenma)（FastAPI，MIT；本仓库不含其代码，只走 HTTP）。`ICP_API_URL` 填该服务根地址（如 `http://icp:8000`），请求 `GET <ICP_API_URL>/query?domain=<值>`；该服务把参数作为工信部查询的 unitName 透传，主体名与域名都走此接口（**推断，待真实联调确认**）。响应 `status=success` 时从 `data.params.list`（或 `data.list`）取 `domain`/`unitName`/`mainLicence`（`domain` 字段取法为**推断，待真实联调确认**）；`status=failed`、HTTP 非 200、超时（30s）或连不上都计入 `icp_failures`，若本轮全部失败扫描一律为 done 并标 `degraded:true`，不重试；`GET /api/scans/{id}` 返回 `degraded` 与 `degraded_reason`。该服务按其自述**仅限安全研究**用途，需控制请求频率：本项目超时 30s，`RATE_EXPAND` 默认 1 任务/秒。真实联调留到部署时做。

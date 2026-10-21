@@ -178,7 +178,7 @@ export default function Events() {
         columns={[
           { title: '时间', dataIndex: 'created_at', render: (v) => dayjs(v).format('YYYY-MM-DD HH:mm:ss'), width: 180 },
           { title: '厂商', dataIndex: 'vendor_id', render: name, width: 120 },
-          { title: '类型', dataIndex: 'type', render: (v) => <Tag color="green">{v}</Tag>, width: 90 },
+          { title: '类型', dataIndex: 'type', render: (v) => <Tag color={v === 'recovered' ? 'gold' : 'green'}>{v === 'recovered' ? '恢复' : v}</Tag>, width: 90 },
           { title: '层级', dataIndex: 'level', width: 80 },
           { title: colTitle('子域', 'subdomain'), dataIndex: 'subdomain' },
           { title: colTitle('URL', 'url'), dataIndex: 'url' },

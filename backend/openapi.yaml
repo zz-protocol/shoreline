@@ -88,6 +88,8 @@ components:
         sources: {type: array, items: {type: string}}
         first_seen: {type: string, format: date-time}
         last_seen: {type: string, format: date-time}
+        alive: {type: string, enum: [alive, dead, unknown], description: "探活：DNS 能解析且 HTTP 任一协议有响应为 alive（确认后不再改回）；DNS 失败或无响应为 dead；未探测或复核为泛解析为 unknown"}
+        last_alive_at: {type: string, format: date-time, nullable: true, description: "判定为 alive 的时间"}
         urls: {type: array, items: {type: object}, description: "仅 GET /api/assets/{id} 返回"}
     Event:
       type: object
@@ -235,6 +237,7 @@ paths:
       parameters:
         - {name: vendor, in: query, schema: {type: integer}}
         - {name: in_scope, in: query, schema: {type: boolean}}
+        - {name: alive, in: query, schema: {type: string, enum: [alive, dead, unknown]}, description: "按探活状态筛选"}
         - {name: q, in: query, schema: {type: string}, description: "子域名或 URL 标题子串（不区分大小写）"}
         - {name: new_since, in: query, schema: {type: string, format: date-time}, description: "资产 new 事件时间 >= 该值（RFC3339）"}
         - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
@@ -270,7 +273,7 @@ paths:
     get:
       summary: "事件（默认资产级，资产级 new 事件嵌套 url_events；不传 type 返回 new/changed/recovered）"
       parameters:
-        - {name: type, in: query, schema: {type: string, enum: [new, changed, recovered]}}
+        - {name: type, in: query, schema: {type: string}, description: "new | changed | recovered，可逗号分隔多选（如 new,recovered）"}
         - {name: level, in: query, schema: {type: string, enum: [asset, url, all], default: asset}}
         - {name: since, in: query, schema: {type: string, format: date-time}, description: "时间窗起点（含），RFC3339"}
         - {name: until, in: query, schema: {type: string, format: date-time}, description: "时间窗终点（不含），RFC3339；须晚于 since"}
@@ -285,7 +288,7 @@ paths:
     get:
       summary: "时间窗内各厂商事件数（服务端全量聚合，不受分页影响）；筛选参数同 /api/events"
       parameters:
-        - {name: type, in: query, schema: {type: string, enum: [new, changed, recovered]}}
+        - {name: type, in: query, schema: {type: string}, description: "new | changed | recovered，可逗号分隔多选（如 new,recovered）"}
         - {name: level, in: query, schema: {type: string, enum: [asset, url, all], default: asset}}
         - {name: since, in: query, schema: {type: string, format: date-time}, description: "时间窗起点（含），RFC3339"}
         - {name: until, in: query, schema: {type: string, format: date-time}, description: "时间窗终点（不含），RFC3339；须晚于 since"}
@@ -298,7 +301,7 @@ paths:
       summary: "整列复制：时间窗内全部匹配事件的子域或 URL，去重排序（上限 100000，超出 truncated=true）；level=asset 时 field=url 取这些资产在同一时间窗内的 URL 级事件"
       parameters:
         - {name: field, in: query, required: true, schema: {type: string, enum: [subdomain, url]}}
-        - {name: type, in: query, schema: {type: string, enum: [new, changed, recovered]}}
+        - {name: type, in: query, schema: {type: string}, description: "new | changed | recovered，可逗号分隔多选（如 new,recovered）"}
         - {name: level, in: query, schema: {type: string, enum: [asset, url, all], default: asset}}
         - {name: since, in: query, schema: {type: string, format: date-time}, description: "时间窗起点（含），RFC3339"}
         - {name: until, in: query, schema: {type: string, format: date-time}, description: "时间窗终点（不含），RFC3339；须晚于 since"}

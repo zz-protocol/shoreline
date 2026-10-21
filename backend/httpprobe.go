@@ -528,6 +528,9 @@ func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 							fail(err)
 						}
 					}
+					if err := markAlive(ctx, d, it.assetID, it.host, len(results) > 0); err != nil {
+						fail(err)
+					}
 					return
 				}
 				got[i] = results
@@ -544,7 +547,13 @@ func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 		// 第二阶段：逐个判定候选。
 		for i, it := range items {
 			results := got[i]
-			if !it.candidate || len(results) == 0 {
+			if !it.candidate {
+				continue
+			}
+			if len(results) == 0 { // 候选无任何响应：dead
+				if err := markAlive(ctx, d, it.assetID, it.host, false); err != nil {
+					fail(err)
+				}
 				continue
 			}
 			wg.Add(1)
@@ -558,7 +567,8 @@ func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 						allWild = p.isWildcardPage(ctx, cache, r) && allWild
 					}
 					_, err := d.Exec(ctx, `UPDATE assets SET wildcard = $2, parent_wildcard = $2,
-						verified_real_at = CASE WHEN $2 THEN NULL ELSE now() END WHERE id = $1`, it.assetID, allWild)
+						verified_real_at = CASE WHEN $2 THEN NULL ELSE now() END,
+						alive = CASE WHEN $2 AND alive = 'dead' THEN 'unknown' ELSE alive END WHERE id = $1`, it.assetID, allWild)
 					if err == nil && !allWild { // 页面复核为真实主机：此时才算新增资产
 						err = emitNew(ctx, d, it.assetID, nil, map[string]any{"subdomain": it.host, "verified_real": true})
 					}
@@ -566,7 +576,10 @@ func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 						if err != nil {
 							fail(err)
 						}
-						return // 确认泛解析：不入库 URL
+						return // 确认泛解析：不入库 URL；alive 保持不动（unknown），不进复查
+					}
+					if err := markAlive(ctx, d, it.assetID, it.host, true); err != nil {
+						fail(err)
 					}
 				}
 				for _, r := range results {

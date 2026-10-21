@@ -35,10 +35,16 @@ func TestSchedulerTickAndConfigChange(t *testing.T) {
 	e.pool.QueryRow(ctx, `INSERT INTO root_domains (vendor_id, domain) VALUES ($1, $2) RETURNING id`, v, strings.ToLower(strings.ReplaceAll(t.Name(), "_", "-"))+".sched.test").Scan(&root2)
 
 	s := newScheduler(e.pool, e.client, scheduleConfig{Passive: time.Hour, Active: time.Hour}, 1)
+	// 库里可能有其它测试留下的根域：只按本测试两个根域的 pending 任务数断言
+	mine := func(kind string) int {
+		var n int
+		e.pool.QueryRow(ctx, `SELECT count(*) FROM scan_tasks WHERE kind = $1 AND status = 'pending' AND root_id IN ($2,$3)`, kind, e.rootID, root2).Scan(&n)
+		return n
+	}
 
 	// passive：两个根域都触发
 	n, err := s.tick(ctx, "passive")
-	if err != nil || n != 2 {
+	if err != nil || n < 2 || mine("passive") != 2 {
 		t.Fatalf("passive tick: n=%d err=%v", n, err)
 	}
 	var pending int
@@ -47,19 +53,19 @@ func TestSchedulerTickAndConfigChange(t *testing.T) {
 		t.Fatalf("pending passive %d", pending)
 	}
 	// 已有 pending 再 tick → 跳过
-	n, err = s.tick(ctx, "passive")
-	if err != nil || n != 0 {
+	_, err = s.tick(ctx, "passive")
+	if err != nil || mine("passive") != 2 {
 		t.Fatalf("skip busy: n=%d err=%v", n, err)
 	}
 
 	// active：厂商未开 → 0
-	n, err = s.tick(ctx, "active")
-	if err != nil || n != 0 {
+	_, err = s.tick(ctx, "active")
+	if err != nil || mine("active") != 0 {
 		t.Fatalf("active disabled: n=%d err=%v", n, err)
 	}
 	e.pool.Exec(ctx, `UPDATE vendors SET active_enabled = true WHERE id = $1`, v)
 	n, err = s.tick(ctx, "active")
-	if err != nil || n != 2 {
+	if err != nil || mine("active") != 2 {
 		t.Fatalf("active enabled: n=%d err=%v", n, err)
 	}
 
