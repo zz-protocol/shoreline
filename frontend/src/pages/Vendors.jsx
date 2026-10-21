@@ -4,6 +4,7 @@ import {
 } from 'antd'
 import { del, get, patch, post } from '../api'
 import { Guide, HELP, Hint } from '../help'
+import ExpandPanel from './ExpandPanel'
 
 export default function Vendors() {
   const { message } = App.useApp()
@@ -58,7 +59,7 @@ export default function Vendors() {
         loading={loading}
         dataSource={vendors}
         pagination={false}
-        locale={{ emptyText: <Guide title="还没有厂商" steps={['1. 点右上「新建厂商」，填名称（主体名可选，用于 ICP 扩展）', '2. 点厂商行，在下方添加根域', '3. 到「扫描任务」触发 passive 扫描']} /> }}
+        locale={{ emptyText: <Guide title="还没有厂商" steps={['1. 点右上「新建厂商」，填名称（主体名可选，用于 ICP 扩展）', '2. 点厂商行，在下方添加根域', '3. 到「扫描任务」触发 passive 扫描；点厂商行后可「一键发现新根域」']} /> }}
         onRow={(r) => ({ onClick: () => loadDetail(r), style: { cursor: 'pointer' } })}
         columns={[
           { title: 'ID', dataIndex: 'id', width: 80 },
@@ -107,6 +108,7 @@ export default function Vendors() {
         ]}
       />
       {!cur && vendors.length > 0 && <Typography.Text type="secondary">点击厂商行，查看并管理它的根域、范围规则和待确认根域。</Typography.Text>}
+      {cur && <ExpandPanel vendor={cur} roots={roots} onDone={() => loadDetail(cur)} />}
       {cur && (
         <Tabs
           items={[
@@ -206,7 +208,7 @@ export default function Vendors() {
                   rowKey="id"
                   dataSource={cands}
                   pagination={false}
-                  locale={{ emptyText: <Guide title="暂无待确认根域" steps={['填写厂商主体名后，到「扫描任务」对任一根域触发 expand', 'ICP 发现的新根域会出现在这里，确认后才加入扫描']} /> }}
+                  locale={{ emptyText: <Guide title="暂无待确认根域" steps={['填写厂商主体名后，点上方「一键发现新根域（expand）」', 'ICP 发现的新根域会出现在这里，确认后才加入扫描']} /> }}
                   columns={[
                     { title: '域名', dataIndex: 'domain' },
                     { title: '来源', dataIndex: 'sources', render: (s) => (s || []).join(', ') },
