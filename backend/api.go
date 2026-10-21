@@ -1029,12 +1029,9 @@ func (a *api) eventValues(w http.ResponseWriter, r *http.Request) {
 	case field == "subdomain":
 		q = `SELECT DISTINCT a.subdomain AS v ` + eventWhere + ` ORDER BY 1 LIMIT $10`
 	case field == "url" && f.Level == "asset":
+		// 资产维度：取窗口内事件对应资产的当前 URL（恢复的资产窗口内没有 URL 级事件，不能按 URL 事件取）
 		q = `SELECT DISTINCT uu.scheme || '://' || uu.host || ':' || uu.port AS v
-			FROM events ue JOIN urls uu ON uu.id = ue.url_id
-			WHERE ue.asset_id IN (SELECT e.asset_id ` + eventWhere + `)
-			  AND ($3::text = '' OR ue.type = ANY(string_to_array($3, ',')))
-			  AND ($4::timestamptz IS NULL OR ue.created_at >= $4)
-			  AND ($8::timestamptz IS NULL OR ue.created_at < $8)
+			FROM urls uu WHERE uu.asset_id IN (SELECT e.asset_id ` + eventWhere + `)
 			ORDER BY 1 LIMIT $10`
 	case field == "url":
 		q = `SELECT DISTINCT u.scheme || '://' || u.host || ':' || u.port AS v ` + eventWhere + ` AND u.id IS NOT NULL ORDER BY 1 LIMIT $10`

@@ -177,3 +177,33 @@ func readSource(f string) (string, error) {
 }
 
 func containsFold(s, sub string) bool { return strings.Contains(strings.ToLower(s), sub) }
+
+// 恢复的资产：窗口内只有资产级 recovered 事件（URL 早已存在、无 URL 级事件），资产维度复制 URL 应返回其当前 URL。
+func TestEventValuesRecoveredAssetURL(t *testing.T) {
+	e, c, _ := newAPITest(t, 100)
+	ctx := context.Background()
+	o := c.want(201, "POST", "/api/vendors", map[string]any{"name": fmt.Sprintf("%s-%d", t.Name(), time.Now().UnixNano())})
+	vid := int64(o["id"].(float64))
+	r := c.want(201, "POST", fmt.Sprintf("/api/vendors/%d/roots", vid), map[string]any{"domain": fmt.Sprintf("t25r%d.example.test", time.Now().UnixNano())})
+	host := "rec." + r["domain"].(string)
+	var aid, uid int64
+	if err := e.pool.QueryRow(ctx, `INSERT INTO assets (root_id, subdomain) VALUES ($1, $2) RETURNING id`, int64(r["id"].(float64)), host).Scan(&aid); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-60 * 24 * time.Hour)
+	e.pool.QueryRow(ctx, `INSERT INTO urls (asset_id, scheme, host, port) VALUES ($1, 'https', $2, 443) RETURNING id`, aid, host).Scan(&uid)
+	e.pool.Exec(ctx, `INSERT INTO events (type, asset_id, url_id, detail, created_at) VALUES ('new', $1, $2, '{}', $3)`, aid, uid, old)
+	e.pool.Exec(ctx, `INSERT INTO events (type, asset_id, detail, created_at) VALUES ('new', $1, '{}', $2)`, aid, old)
+	if _, err := e.pool.Exec(ctx, `INSERT INTO events (type, asset_id, detail) VALUES ('recovered', $1, '{}')`, aid); err != nil {
+		t.Fatal(err)
+	}
+	since := url.QueryEscape(time.Now().Add(-7 * 24 * time.Hour).UTC().Format(time.RFC3339))
+	for _, typ := range []string{"recovered", "new,recovered"} {
+		out := c.want(200, "GET", fmt.Sprintf("/api/events/values?field=url&level=asset&vendor=%d&type=%s&since=%s", vid, typ, since), nil)
+		got := out["items"].([]any)
+		if len(got) != 1 || got[0] != "https://"+host+":443" {
+			t.Fatalf("type=%s values url %v", typ, got)
+		}
+	}
+	_ = e
+}

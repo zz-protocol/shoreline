@@ -61,6 +61,7 @@ describe('T25-3 / T25-5 轮询溢出与按类型统计', () => {
     expect(statsLabel(undefined)).toBe('新增 0 · 恢复 0')
     expect(TYPE_TAG.new.label).toBe('新增')
     expect(TYPE_TAG.recovered.label).toBe('恢复')
+    expect(TYPE_TAG.changed.label).toBe('变更')
   })
 })
 

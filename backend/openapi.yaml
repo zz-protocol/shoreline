@@ -298,7 +298,7 @@ paths:
       responses: {"200": {description: "{items: [{vendor_id, vendor, count, new, recovered}], total, totals: {new, recovered}}；new/recovered 按 type 分别计数（总计与各厂商）"}, "400": {$ref: "#/components/responses/Error"}}
   /api/events/values:
     get:
-      summary: "整列复制：时间窗内全部匹配事件的子域或 URL，去重排序（上限 100000，超出 truncated=true）；level=asset 时 field=url 取这些资产在同一时间窗内的 URL 级事件"
+      summary: "整列复制：时间窗内全部匹配事件的子域或 URL，去重排序（上限 100000，超出 truncated=true）；level=asset 时 field=url 取这些资产当前的全部 URL（含恢复的资产）"
       parameters:
         - {name: field, in: query, required: true, schema: {type: string, enum: [subdomain, url]}}
         - {name: type, in: query, schema: {type: string}, description: "new | changed | recovered，可逗号分隔多选（如 new,recovered）"}
