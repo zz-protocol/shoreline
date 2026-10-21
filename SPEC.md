@@ -109,3 +109,23 @@
 6. UI 开关：厂商 active_enabled、资产 include_wildcard、事件 level；只做深色主题，不做浅色切换。
 7. 播报流：每 30s 轮询 GET /api/events?since=，不做 SSE/WebSocket。
 - 补充（10-21）：事件播报轮询 since 首次可用「现在−1天」，之后按本轮最新事件时间推进，避免重复拉取。
+
+## 第二轮需求（2026-10-21 用户确认）
+顺序：T18 → T22 → T20 → T21 → T24 → T23 → T19。新代码在 zz-protocol/shoreline 的 master 上提交，并推到远程。
+
+- T18 Swagger 修复：openapi.yaml 里的 flow 写法中，含 {} 的描述一律加引号。加一个单测：用 YAML 解析器加载整份文档，并校验 openapi 版本字段。交付必须用真实后端打开 /docs 验证。
+- T22 文案：根域、范围、待确认根域，以及 passive/active/expand 三种扫描类型，在界面上都要有中文说明（tooltip 或旁注），空状态要有引导。
+- T20 播报：
+  - 可按厂商筛选。
+  - 时间窗可选今日、近 7 天、自定义，并显示各厂商在该时间窗内的新增数。统计接口在后端实现（例如 GET /api/events/stats?from=&to=&vendor=）。
+  - 子域列、URL 列各加「复制本列」，复制当前筛选结果的全部数据，不只当前页；一行一个，去重。
+- T21 探活：
+  - 资产增加 alive 状态，取值 alive / dead / unknown，并记录 last_alive_at。判定为存活的条件：DNS 能解析，且 HTTP 任一协议有响应（任何状态码都算）。
+  - 一旦判定存活，就不再复查。dead 的资产随定时任务复查，默认 24h，可配置。
+  - 由 dead 转为 alive 时生成 recovered 事件进播报，每次转换只产生一次。
+  - 列表可按状态筛选。
+- T24 客户托管排除：
+  - 规则表 customer_hosted_rules，Web 上可增删。命中的资产标记 customer_hosted=true，不删除；列表和播报默认隐藏，可切换查看。改规则后异步重算。
+  - 内置规则清单先列给架构，由用户过目，不要凭印象写死。
+- T23 一键 expand：厂商页放显眼按钮，结果进待确认根域；运行状态要能看到。
+- T19 换 UI：参考 grok.com 官网风格（极简、深色、大留白）。先出 2–3 张关键页面的设计稿截图（资产、播报、厂商），用户确认后再全量改。
