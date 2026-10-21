@@ -16,9 +16,9 @@
 | T11 | ICP/子公司扩展：发现的新根域进"待确认"列表 | 不自动加入扫描；确认后才加入 | 完成（复验 498ce29） |
 | T12 | REST API + OpenAPI + token 认证 | 接口与 SPEC 接口草图一致；文档可访问 | 完成（复验 6edc406） |
 | T13 | MCP server：list_new_assets、search_assets、check_scope、trigger_scan | MCP 客户端能调通四个工具 | 完成（c2549b4：校验一致；nginx /mcp 实测通，响应为 JSON 非流式） |
-| T14 | Web 端：厂商/根域/范围管理、资产检索、新增播报流、扫描状态、API key 配置；深色主题 | 页面全部可用，交互走真实 API | 待验收 |
-| T15 | 定时调度（被动 6h、主动 1d，可配） | 配置修改生效有测试 | 待验收 |
-| T16 | 压测：10 万条模拟子域 | 列表接口 < 1s，报告写入 docs/bench.md | 待验收 |
-| T17 | ICP 适配器预设 icp_yanzhenma（见 SPEC「ICP 数据源」）：读该仓库 API 定义写客户端，配置 ICP_PROVIDER/ICP_API_URL | mock 服务下按根域/企业名查询能解析入"待确认"；服务不可达时降级不报错；未配置时自动关闭 | 待验收 |
+| T14 | Web 端：厂商/根域/范围管理、资产检索、新增播报流、扫描状态、API key 配置；深色主题 | 页面全部可用，交互走真实 API | 完成（cffaee7+since 5e21c00+切 level 清 since 6394e50：配套 API；npm 10 PASS） |
+| T15 | 定时调度（被动 6h、主动 1d，可配） | 配置修改生效有测试 | 完成（交付复验 e515426：默认 6h/24h、off、不 expand、pending 跳过、非法 duration 退出） |
+| T16 | 压测：10 万条模拟子域 | 列表接口 < 1s，报告写入 docs/bench.md | 完成（交付复验 27a432d：TEST_BENCH 100k 五场景均 <1s；无 flag SKIP；bench.md 有报告） |
+| T17 | ICP 适配器预设 icp_yanzhenma（见 SPEC「ICP 数据源」）：读该仓库 API 定义写客户端，配置 ICP_PROVIDER/ICP_API_URL | mock 服务下按根域/企业名查询能解析入"待确认"；服务不可达时降级不报错；未配置时自动关闭 | 完成（交付复验 24a1b49：yanzhenma 解析/IP丢弃/punycode；不可达与 status=failed→done+degraded；未配置关闭；非法 provider 退出；compose 三变量；MIT 未复制） |
 
 约束：只开发，不对真实厂商跑扫描、不部署。不复制 GPL/AGPL 代码。

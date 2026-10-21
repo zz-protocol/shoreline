@@ -1,6 +1,6 @@
-# SRC 资产发现与新增监控（代号 src-asset-monitor）
+# 岸线 Shoreline（原代号 src-asset-monitor）
 
-状态：已确认（2026-10-21）。只开发，暂不部署、不运行线上扫描。
+状态：开发完成（2026-10-21）。开源仓库 zz-protocol/shoreline；部署见 docs/DEPLOY.md。
 
 ## 目标
 1. 按"厂商 → 根域"配置目标，自动收集子域名和可访问的业务 URL 并入库。

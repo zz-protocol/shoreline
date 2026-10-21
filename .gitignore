@@ -1,3 +1,6 @@
 node_modules/
 dist/
 backend/backend
+.env
+screenshots/
+*.log

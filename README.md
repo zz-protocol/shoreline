@@ -1,10 +1,20 @@
-# src-asset-monitor
+# 岸线 Shoreline
 
-SRC 资产发现与新增监控。MIT 许可。规格见 SPEC.md，任务见 TASKS.md。
+攻击面的海岸线：SRC / 厂商资产（子域名与可访问业务 URL）发现与新增监控。被动 + 可选主动，无攻击行为。MIT。
 
-## 本地运行
+- 部署一步步说明：**[docs/DEPLOY.md](docs/DEPLOY.md)**
+- 规格：`SPEC.md` · 任务进度：`TASKS.md` · 压测：`docs/bench.md`
 
-    docker compose up --build    # 后端 127.0.0.1:8080，前端 127.0.0.1:5173；队列存储用 Valkey 8（Redis 兼容，BSD-3）
+## 一分钟本地起
+
+```bash
+cp .env.example .env   # 填入 API_BOOTSTRAP_TOKEN
+docker compose up --build -d
+# Web: http://127.0.0.1:5173  · API: http://127.0.0.1:8080
+# 队列用 Valkey 8（Redis 兼容，BSD-3）
+```
+
+公网 VPS、反代、Certstream、ICP 见 [部署指南](docs/DEPLOY.md)。
 
 ## Worker 配置（环境变量）
 

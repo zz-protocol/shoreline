@@ -6,30 +6,39 @@ services:
       POSTGRES_PASSWORD: sam
       POSTGRES_DB: sam
     volumes: [pgdata:/var/lib/postgresql/data]
+    restart: unless-stopped
   redis:
     image: valkey/valkey:8-alpine
+    restart: unless-stopped
   backend:
     build: ./backend
     environment:
       DATABASE_URL: postgres://sam:sam@postgres:5432/sam?sslmode=disable
       REDIS_ADDR: redis:6379
+      API_BOOTSTRAP_TOKEN: ${API_BOOTSTRAP_TOKEN:-}
       CERTSTREAM_URL: ${CERTSTREAM_URL:-}
       ICP_PROVIDER: ${ICP_PROVIDER:-}
       ICP_API_URL: ${ICP_API_URL:-}
       ICP_API_KEY: ${ICP_API_KEY:-}
-      SCHEDULE_PASSIVE: ${SCHEDULE_PASSIVE:-}
-      SCHEDULE_ACTIVE: ${SCHEDULE_ACTIVE:-}
+      SCHEDULE_PASSIVE: ${SCHEDULE_PASSIVE:-6h}
+      SCHEDULE_ACTIVE: ${SCHEDULE_ACTIVE:-24h}
+      FOFA_KEY: ${FOFA_KEY:-}
+      QUAKE_KEY: ${QUAKE_KEY:-}
+      HUNTER_KEY: ${HUNTER_KEY:-}
     ports: ["127.0.0.1:8080:8080"]
     depends_on: [postgres, redis]
-  # 可选：自建 CT 流服务。启用：docker compose --profile certstream up，
-  # 并给 backend 设 CERTSTREAM_URL=ws://certstream:8080/（见 README）。不对宿主暴露端口。
+    restart: unless-stopped
+  # 可选：自建 CT 流。启用：docker compose --profile certstream up
+  # 并设 CERTSTREAM_URL=ws://certstream:8080/
   certstream:
     image: 0rickyy0/certstream-server-go:v1.10.1
     profiles: [certstream]
     volumes: ["./certstream/config.yaml:/app/config.yaml:ro"]
+    restart: unless-stopped
   frontend:
     build: ./frontend
     ports: ["127.0.0.1:5173:80"]
     depends_on: [backend]
+    restart: unless-stopped
 volumes:
   pgdata:
