@@ -279,6 +279,22 @@ func TestEventsDefaultTypes(t *testing.T) {
 		if int(vals["count"].(float64)) != ev {
 			t.Fatalf("%s values %v events %d", q, vals["count"], ev)
 		}
+		// 各类之和 == count（总计与各厂商）
+		sum := func(m map[string]any) float64 {
+			return m["new"].(float64) + m["recovered"].(float64) + m["changed"].(float64)
+		}
+		tt := st["totals"].(map[string]any)
+		if sum(tt) != st["total"].(float64) {
+			t.Fatalf("%s totals %v != total %v", q, tt, st["total"])
+		}
+		for _, it := range st["items"].([]any) {
+			if m := it.(map[string]any); sum(m) != m["count"].(float64) {
+				t.Fatalf("%s vendor %v sum != count", q, m)
+			}
+		}
+		if q == "&type=changed" && (tt["changed"].(float64) != 3 || tt["new"].(float64) != 0) {
+			t.Fatalf("changed-only totals %v", tt)
+		}
 		return ev, st["total"].(float64)
 	}
 	if ev, tot := cnt(""); ev != 3 || tot != 3 {

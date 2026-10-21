@@ -1009,7 +1009,8 @@ func (a *api) eventStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	list, err := rowsJSON(a.db.Query(r.Context(), `SELECT r.vendor_id, v.name AS vendor, count(*) AS count,
-		count(*) FILTER (WHERE e.type = 'new') AS new, count(*) FILTER (WHERE e.type = 'recovered') AS recovered
+		count(*) FILTER (WHERE e.type = 'new') AS new, count(*) FILTER (WHERE e.type = 'recovered') AS recovered,
+		count(*) FILTER (WHERE e.type = 'changed') AS changed
 		`+eventWhere+` GROUP BY r.vendor_id, v.name ORDER BY count(*) DESC, r.vendor_id`,
 		f.args()...))
 	if err != nil {
@@ -1017,11 +1018,13 @@ func (a *api) eventStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	total := int64(0)
-	totals := map[string]int64{"new": 0, "recovered": 0}
+	// 各 type 分别计数（未选中的 type 为 0），new+recovered+changed == count
+	totals := map[string]int64{"new": 0, "recovered": 0, "changed": 0}
 	for _, m := range list {
 		total += m["count"].(int64)
-		totals["new"] += m["new"].(int64)
-		totals["recovered"] += m["recovered"].(int64)
+		for k := range totals {
+			totals[k] += m[k].(int64)
+		}
 	}
 	writeJSON(w, 200, map[string]any{"items": list, "total": total, "totals": totals})
 }

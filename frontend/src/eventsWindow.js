@@ -57,9 +57,13 @@ export function applyPoll(prev, page) {
 }
 
 /** 统计文案：「新增 X · 恢复 Y」。 */
-export function statsLabel(s) {
-  return `新增 ${s?.new ?? 0} · 恢复 ${s?.recovered ?? 0}`
+/** 统计文案：只显示已选中的类型（默认新增+恢复），如「新增 4 · 恢复 1 · 变更 2」。 */
+export function statsLabel(s, types = ['new', 'recovered']) {
+  const order = ['new', 'recovered', 'changed']
+  const sel = order.filter((t) => (types?.length ? types : ['new', 'recovered']).includes(t))
+  return sel.map((t) => `${TYPE_LABEL[t]} ${s?.[t] ?? 0}`).join(' · ')
 }
+const TYPE_LABEL = { new: '新增', recovered: '恢复', changed: '变更' }
 
 /** 事件类型标签：新增 / 恢复 / 变更。 */
 export const TYPE_TAG = {

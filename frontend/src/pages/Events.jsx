@@ -177,10 +177,10 @@ export default function Events() {
       </Space>
       {stats && (
         <Space wrap data-testid="stats">
-          <Typography.Text>时间窗内 {statsLabel(stats.totals)}</Typography.Text>
+          <Typography.Text>时间窗内 {statsLabel(stats.totals, types)}</Typography.Text>
           {(stats.items || []).map((s) => (
             <Tag key={s.vendor_id} color="blue" style={{ cursor: 'pointer' }} onClick={() => setVendor(s.vendor_id)}>
-              {name(s.vendor_id)}：{statsLabel(s)}
+              {name(s.vendor_id)}：{statsLabel(s, types)}
             </Tag>
           ))}
         </Space>

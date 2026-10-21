@@ -59,3 +59,39 @@ describe('T19 类型多选', () => {
     expect(typeOf(last('/api/events?'))).toBe('new,recovered')
   })
 })
+
+describe('T19 打回①：统计按所选类型显示', async () => {
+  const { statsLabel } = await import('./eventsWindow')
+  it('statsLabel 只显示已选类型', () => {
+    const s = { new: 4, recovered: 1, changed: 2 }
+    expect(statsLabel(s)).toBe('新增 4 · 恢复 1')
+    expect(statsLabel(s, ['new', 'recovered', 'changed'])).toBe('新增 4 · 恢复 1 · 变更 2')
+    expect(statsLabel(s, ['changed'])).toBe('变更 2')
+    expect(statsLabel(s, ['changed', 'new'])).toBe('新增 4 · 变更 2')
+  })
+  it('页面只选变更：总计与各厂商显示「变更 N」，不出现「新增 0 · 恢复 0」', async () => {
+    global.fetch = vi.fn(async (url) => {
+      const u = String(url)
+      let body
+      if (u.startsWith('/api/vendors')) body = { items: [{ id: 1, name: 'V1' }] }
+      else if (u.startsWith('/api/events/stats')) {
+        const t = typeOf(u)
+        body = t === 'changed'
+          ? { items: [{ vendor_id: 1, count: 3, new: 0, recovered: 0, changed: 3 }], total: 3, totals: { new: 0, recovered: 0, changed: 3 } }
+          : { items: [{ vendor_id: 1, count: 2, new: 2, recovered: 0, changed: 0 }], total: 2, totals: { new: 2, recovered: 0, changed: 0 } }
+      } else body = { items: [], next_cursor: null }
+      return { ok: true, status: 200, text: async () => JSON.stringify(body) }
+    })
+    render(<AntApp><Events /></AntApp>)
+    await waitFor(() => expect(screen.getByText('时间窗内 新增 2 · 恢复 0')).toBeTruthy())
+    const sel = screen.getAllByTestId('type-select').at(-1)
+    fireEvent.mouseDown(sel.querySelector('.ant-select-selector'))
+    const opt = await waitFor(() => [...document.querySelectorAll('.ant-select-item-option')].find((e) => e.textContent === '变更'))
+    fireEvent.click(opt)
+    fireEvent.click(sel.querySelector('.ant-select-selection-item-remove')) // 去掉新增
+    fireEvent.click(sel.querySelector('.ant-select-selection-item-remove')) // 去掉恢复
+    await waitFor(() => expect(screen.getByText('时间窗内 变更 3')).toBeTruthy())
+    expect(screen.getByText('V1：变更 3')).toBeTruthy()
+    expect(screen.queryByText(/新增 0 · 恢复 0/)).toBeNull()
+  })
+})

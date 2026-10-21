@@ -323,7 +323,7 @@ paths:
         - {name: vendor, in: query, schema: {type: integer}}
         - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
         - {name: include_customer_hosted, in: query, schema: {type: boolean, default: false}, description: "包含客户托管资产（默认隐藏）"}
-      responses: {"200": {description: "{items: [{vendor_id, vendor, count, new, recovered}], total, totals: {new, recovered}}；count 为所选各 type 计数之和；new/recovered 按 type 分别计数（总计与各厂商）"}, "400": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: "{items: [{vendor_id, vendor, count, new, recovered, changed}], total, totals: {new, recovered, changed}}；new/recovered/changed 按 type 分别计数（总计与各厂商，未选中的 type 为 0），三者之和等于 count；count 为所选各 type 计数之和"}, "400": {$ref: "#/components/responses/Error"}}
   /api/events/values:
     get:
       summary: "整列复制：时间窗内全部匹配事件的子域或 URL，去重排序（上限 100000，超出 truncated=true）；level=asset 时 field=url 取这些资产当前的全部 URL（含恢复的资产）"

@@ -30,3 +30,15 @@
 .docs-dark .swagger-ui .info a, .docs-dark .swagger-ui a.nostyle { color: #93c5fd; }
 .docs-dark .swagger-ui .prop-type { color: #93c5fd; }
 .docs-dark .swagger-ui .microlight { background: #0a0a0a !important; }
+/* T19 打回②：请求方式标签 = 半透明同色底 + 浅色同色系文字（全部方法对比度 ≥ 4.5，按合成后底色实测） */
+.docs-dark .swagger-ui .opblock .opblock-summary-method { text-shadow: none; font-weight: 700; border: 1px solid transparent; }
+.docs-dark .swagger-ui .opblock.opblock-get .opblock-summary-method { background: rgba(96,165,250,.18); border-color: rgba(96,165,250,.5); color: #bfdbfe; }
+.docs-dark .swagger-ui .opblock.opblock-post .opblock-summary-method { background: rgba(74,222,128,.18); border-color: rgba(74,222,128,.5); color: #bbf7d0; }
+.docs-dark .swagger-ui .opblock.opblock-put .opblock-summary-method { background: rgba(251,146,60,.18); border-color: rgba(251,146,60,.5); color: #fed7aa; }
+.docs-dark .swagger-ui .opblock.opblock-patch .opblock-summary-method { background: rgba(251,191,36,.18); border-color: rgba(251,191,36,.5); color: #fde68a; }
+.docs-dark .swagger-ui .opblock.opblock-delete .opblock-summary-method { background: rgba(248,113,113,.18); border-color: rgba(248,113,113,.5); color: #fecaca; }
+.docs-dark .swagger-ui .opblock.opblock-head .opblock-summary-method { background: rgba(192,132,252,.18); border-color: rgba(192,132,252,.5); color: #e9d5ff; }
+.docs-dark .swagger-ui .opblock.opblock-options .opblock-summary-method { background: rgba(56,189,248,.18); border-color: rgba(56,189,248,.5); color: #bae6fd; }
+.docs-dark .swagger-ui .opblock.opblock-put { background: rgba(251,146,60,.08); border-color: rgba(251,146,60,.45); }
+.docs-dark .swagger-ui .opblock.opblock-head { background: rgba(192,132,252,.08); border-color: rgba(192,132,252,.45); }
+.docs-dark .swagger-ui .opblock.opblock-options { background: rgba(56,189,248,.08); border-color: rgba(56,189,248,.45); }
