@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react'
 import {
-  App, Button, Form, Input, Modal, Space, Switch, Table, Tabs, Typography, Popconfirm,
+  App, Button, Form, Input, Modal, Select, Space, Switch, Table, Tabs, Typography, Popconfirm,
 } from 'antd'
 import { del, get, patch, post } from '../api'
+import { Guide, HELP, Hint } from '../help'
 
 export default function Vendors() {
   const { message } = App.useApp()
@@ -16,6 +17,7 @@ export default function Vendors() {
   const [rOpen, setROpen] = useState(false)
   const [vForm] = Form.useForm()
   const [rForm] = Form.useForm()
+  const [sForm] = Form.useForm()
 
   const loadVendors = async () => {
     setLoading(true)
@@ -48,7 +50,7 @@ export default function Vendors() {
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="large">
       <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-        <Typography.Title level={3} style={{ margin: 0 }}>厂商 / 根域</Typography.Title>
+        <Hint text={HELP.vendor}><Typography.Title level={3} style={{ margin: 0 }}>厂商 / 根域</Typography.Title></Hint>
         <Button type="primary" onClick={() => { vForm.resetFields(); setVOpen(true) }}>新建厂商</Button>
       </Space>
       <Table
@@ -56,13 +58,14 @@ export default function Vendors() {
         loading={loading}
         dataSource={vendors}
         pagination={false}
+        locale={{ emptyText: <Guide title="还没有厂商" steps={['1. 点右上「新建厂商」，填名称（主体名可选，用于 ICP 扩展）', '2. 点厂商行，在下方添加根域', '3. 到「扫描任务」触发 passive 扫描']} /> }}
         onRow={(r) => ({ onClick: () => loadDetail(r), style: { cursor: 'pointer' } })}
         columns={[
           { title: 'ID', dataIndex: 'id', width: 80 },
           { title: '名称', dataIndex: 'name' },
           { title: '主体名', dataIndex: 'company_name' },
           {
-            title: '主动发现',
+            title: <Hint text={HELP.activeSwitch}>主动发现</Hint>,
             dataIndex: 'active_enabled',
             render: (v, r) => (
               <Switch
@@ -103,12 +106,13 @@ export default function Vendors() {
           },
         ]}
       />
+      {!cur && vendors.length > 0 && <Typography.Text type="secondary">点击厂商行，查看并管理它的根域、范围规则和待确认根域。</Typography.Text>}
       {cur && (
         <Tabs
           items={[
             {
               key: 'roots',
-              label: `根域（${roots.length}）`,
+              label: <Hint text={HELP.root}>{`根域（${roots.length}）`}</Hint>,
               children: (
                 <>
                   <Button type="dashed" onClick={() => { rForm.resetFields(); setROpen(true) }} style={{ marginBottom: 12 }}>添加根域</Button>
@@ -116,6 +120,7 @@ export default function Vendors() {
                     rowKey="id"
                     dataSource={roots}
                     pagination={false}
+                    locale={{ emptyText: <Guide title="该厂商还没有根域" steps={['点「添加根域」填 example.com 这样的顶级域名', '添加后到「扫描任务」触发 passive 开始收集子域']} /> }}
                     columns={[
                       { title: 'ID', dataIndex: 'id', width: 80 },
                       { title: '域名', dataIndex: 'domain' },
@@ -145,12 +150,27 @@ export default function Vendors() {
             },
             {
               key: 'scopes',
-              label: `范围（${scopes.length}）`,
+              label: <Hint text={HELP.scope}>{`范围（${scopes.length}）`}</Hint>,
               children: (
+                <>
+                <Form form={sForm} layout="inline" style={{ marginBottom: 12 }} initialValues={{ kind: 'include' }}
+                  onFinish={async (vals) => {
+                    try {
+                      await post(`/api/vendors/${cur.id}/scopes`, vals)
+                      message.success('已添加，后台重算 in_scope')
+                      sForm.resetFields()
+                      loadDetail(cur)
+                    } catch (e) { message.error(e.message) }
+                  }}>
+                  <Form.Item name="kind"><Select style={{ width: 150 }} options={[{ value: 'include', label: 'include 加入范围' }, { value: 'exclude', label: 'exclude 排除' }]} /></Form.Item>
+                  <Form.Item name="pattern" rules={[{ required: true, message: '填域名或 *.域名' }]}><Input placeholder="*.example.com 或 a.example.com" style={{ width: 260 }} /></Form.Item>
+                  <Button htmlType="submit">添加规则</Button>
+                </Form>
                 <Table
                   rowKey="id"
                   dataSource={scopes}
                   pagination={false}
+                  locale={{ emptyText: <Guide title="还没有范围规则，所有资产都算「不在范围内」" steps={['常用：include *.example.com 把根域下全部子域纳入', '再用 exclude 排除不测的子域，如 exclude *.cdn.example.com']} /> }}
                   columns={[
                     { title: '类型', dataIndex: 'kind' },
                     { title: '规则', dataIndex: 'pattern' },
@@ -175,16 +195,18 @@ export default function Vendors() {
                     },
                   ]}
                 />
+                </>
               ),
             },
             {
               key: 'cands',
-              label: `待确认根域（${cands.length}）`,
+              label: <Hint text={HELP.candidate}>{`待确认根域（${cands.length}）`}</Hint>,
               children: (
                 <Table
                   rowKey="id"
                   dataSource={cands}
                   pagination={false}
+                  locale={{ emptyText: <Guide title="暂无待确认根域" steps={['填写厂商主体名后，到「扫描任务」对任一根域触发 expand', 'ICP 发现的新根域会出现在这里，确认后才加入扫描']} /> }}
                   columns={[
                     { title: '域名', dataIndex: 'domain' },
                     { title: '来源', dataIndex: 'sources', render: (s) => (s || []).join(', ') },

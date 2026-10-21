@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { App, Input, Select, Space, Switch, Table, Typography } from 'antd'
 import { get } from '../api'
+import { Guide, HELP, Hint } from '../help'
 
 export default function Assets() {
   const { message } = App.useApp()
@@ -48,7 +49,7 @@ export default function Assets() {
         />
         <Input.Search placeholder="子域 / 标题" value={q} onChange={(e) => setQ(e.target.value)} onSearch={() => load()} style={{ width: 240 }} />
         <span>
-          含泛解析 <Switch checked={wild} onChange={setWild} />
+          <Hint text={HELP.wildcard}>含泛解析</Hint> <Switch checked={wild} onChange={setWild} />
         </span>
       </Space>
       <Table
@@ -56,11 +57,12 @@ export default function Assets() {
         loading={loading}
         dataSource={items}
         pagination={false}
+        locale={{ emptyText: <Guide title="没有资产" steps={['先在「厂商 / 根域」添加根域', '再到「扫描任务」触发 passive，完成后子域会出现在这里']} /> }}
         columns={[
           { title: 'ID', dataIndex: 'id', width: 80 },
           { title: '子域', dataIndex: 'subdomain' },
           { title: 'IP', dataIndex: 'ips', render: (v) => (v || []).join(', ') },
-          { title: '范围内', dataIndex: 'in_scope', render: (v) => (v ? '是' : '否') },
+          { title: <Hint text={HELP.scope}>范围内</Hint>, dataIndex: 'in_scope', render: (v) => (v ? '是' : '否') },
           { title: '泛解析', dataIndex: 'wildcard', render: (v) => (v ? '是' : '') },
           { title: '来源', dataIndex: 'sources', render: (v) => (v || []).join(', ') },
         ]}

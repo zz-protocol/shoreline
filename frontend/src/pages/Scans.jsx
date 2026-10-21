@@ -4,6 +4,7 @@ import {
 } from 'antd'
 import dayjs from 'dayjs'
 import { get, post } from '../api'
+import { Guide, HELP, Hint } from '../help'
 
 const statuses = ['pending', 'running', 'retrying', 'done', 'failed']
 const kinds = ['passive', 'active', 'dns', 'http', 'expand']
@@ -64,7 +65,7 @@ export default function Scans() {
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="large">
       <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
-        <Typography.Title level={3} style={{ margin: 0 }}>扫描任务</Typography.Title>
+        <Hint text="扫描链路：passive / active 找子域 → dns 解析 → http 探测；expand 单独找新根域。"><Typography.Title level={3} style={{ margin: 0 }}>扫描任务</Typography.Title></Hint>
         <Button type="primary" onClick={() => { form.resetFields(); form.setFieldsValue({ kind: 'passive' }); setOpen(true) }}>触发扫描</Button>
       </Space>
       <Space wrap>
@@ -74,7 +75,7 @@ export default function Scans() {
           value={filters.root} onChange={(v) => setFilters({ ...filters, root: v })} />
         <Select allowClear placeholder="状态" style={{ width: 140 }} options={statuses.map((s) => ({ value: s, label: s }))}
           value={filters.status} onChange={(v) => setFilters({ ...filters, status: v })} />
-        <Select allowClear placeholder="类型" style={{ width: 140 }} options={kinds.map((k) => ({ value: k, label: k }))}
+        <Select allowClear placeholder="类型" style={{ width: 140 }} options={kinds.map((k) => ({ value: k, label: <Tooltip title={HELP.kinds[k]} placement="right">{k}</Tooltip> }))}
           value={filters.kind} onChange={(v) => setFilters({ ...filters, kind: v })} />
         <span>仅降级 <Switch checked={!!filters.degraded} onChange={(v) => setFilters({ ...filters, degraded: v })} /></span>
       </Space>
@@ -83,9 +84,10 @@ export default function Scans() {
         loading={loading}
         dataSource={items}
         pagination={false}
+        locale={{ emptyText: <Guide title="还没有扫描任务" steps={['点「触发扫描」：选厂商、根域、类型', '新根域建议先跑 passive；要找新根域跑 expand']} /> }}
         columns={[
           { title: 'ID', dataIndex: 'id', width: 70 },
-          { title: '类型', dataIndex: 'kind', width: 90 },
+          { title: '类型', dataIndex: 'kind', width: 90, render: (k) => <Tooltip title={HELP.kinds[k]}><span style={{ borderBottom: '1px dashed' }}>{k}</span></Tooltip> },
           {
             title: '状态', dataIndex: 'status', width: 120,
             render: (s, r) => (
@@ -95,7 +97,7 @@ export default function Scans() {
               </Space>
             ),
           },
-          { title: '降级原因', dataIndex: 'degraded_reason', ellipsis: true, render: (v, r) => (r.degraded ? (v || '-') : '') },
+          { title: <Hint text={HELP.degraded}>降级原因</Hint>, dataIndex: 'degraded_reason', ellipsis: true, render: (v, r) => (r.degraded ? (v || '-') : '') },
           { title: '创建', dataIndex: 'created_at', width: 170, render: (v) => dayjs(v).format('YYYY-MM-DD HH:mm:ss') },
           {
             title: '操作', width: 160,
@@ -129,6 +131,9 @@ export default function Scans() {
           </Form.Item>
           <Form.Item name="kind" label="类型" rules={[{ required: true }]}>
             <Select options={[...manual].map((k) => ({ value: k, label: k }))} />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate>
+            {() => <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>{HELP.kinds[form.getFieldValue('kind')]}</Typography.Paragraph>}
           </Form.Item>
         </Form>
       </Modal>

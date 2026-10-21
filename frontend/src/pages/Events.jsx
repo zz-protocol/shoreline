@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { App, Select, Space, Table, Tag, Typography } from 'antd'
 import dayjs from 'dayjs'
 import { get } from '../api'
+import { Guide, HELP, Hint } from '../help'
 import { advanceSince, initialSince, mergeEvents, resetSince } from '../eventsSince'
 
 export default function Events() {
@@ -44,7 +45,7 @@ export default function Events() {
     <Space direction="vertical" style={{ width: '100%' }} size="large">
       <Space style={{ width: '100%', justifyContent: 'space-between' }}>
         <Typography.Title level={3} style={{ margin: 0 }}>新增播报</Typography.Title>
-        <Select
+        <Hint text={HELP.level}><Select
           value={level}
           style={{ width: 160 }}
           options={[
@@ -53,7 +54,7 @@ export default function Events() {
             { value: 'all', label: '全部' },
           ]}
           onChange={setLevel}
-        />
+        /></Hint>
       </Space>
       <Typography.Text type="secondary">
         每 30 秒轮询；since 首次为现在−1天（或 localStorage），之后按本轮最新事件时间推进；切换 level 会清 since 并重拉近一天；本地按 id 去重兜底。
@@ -63,6 +64,7 @@ export default function Events() {
         loading={loading}
         dataSource={items}
         pagination={false}
+        locale={{ emptyText: <Guide title="近一天没有新增" steps={['扫描发现的新子域 / 新站点会出现在这里，每 30 秒自动刷新', '还没扫描？到「扫描任务」触发 passive']} /> }}
         columns={[
           { title: '时间', dataIndex: 'created_at', render: (v) => dayjs(v).format('YYYY-MM-DD HH:mm:ss'), width: 180 },
           { title: '类型', dataIndex: 'type', render: (v) => <Tag color="green">{v}</Tag>, width: 90 },
