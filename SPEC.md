@@ -146,3 +146,4 @@
   - 每条规则至少要多出一层客户子域，服务端点本身不命中，用通用单测守住。
   - 共 64 条，按工程清单收录，修正如下：fc 改为 `*.*.fc.aliyuncs.com`；去掉 `*.fastly.net`；cos-website 要找到官方文档才收。
   - 不收 volccdn、又拍云、网宿、金山云、京东云、UCloud、Vercel、Netlify，由用户手动添加。
+- stats 口径（10-21）：events、stats、values 三个接口不带 type 时，默认 type=new,recovered；count 等于所选各 type 计数之和；只有显式传入 changed 才统计 changed。事件清理守卫用正则递归扫描 .go 和 .sql 文件，白名单精确到具体文件和语句。

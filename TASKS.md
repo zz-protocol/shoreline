@@ -27,8 +27,8 @@
 | T18 | 修 /docs Swagger：openapi.yaml 第 55 行附近 YAML 解析错误（flow 集合缺逗号），导致读不到 openapi 版本字段 | 真实后端下 /docs 能渲染全部 28 个接口；加 YAML 解析单测 | 完成（复验 fe19f5f：真实栈 /docs 渲染 28 接口无错，Try it out 200/401；js-yaml/PyYAML/yaml.v3 旧版报错新版通过） |
 | T19 | UI 换风格：参考 grok.com 官网（极简、深色、大留白）；含 /docs Swagger 深色适配（对比度、Authorize 白条） | 用户看过设计稿确认后再做 | 待排 |
 | T20 | 新增播报（可回溯记录，默认近7天，事件不自动清）：按厂商筛选；按时间窗（今日/近7天/自定义）筛选并显示各厂商新增数统计；子域列、URL 列各加「一键复制本列」，复制当前筛选结果的全部数据（非仅当前页），一行一个、去重 | 筛选与统计数与 API 一致；复制内容与筛选结果一致 | 完成（复验 a5fbf25：真实栈+Chromium；list/stats/values 六组口径一致；轮询顶部追加；复制全窗；全量 6 连跑无偶发） |
-| T21 | 资产探活：列表显示存活/失活（DNS 解析 + HTTP 可达）与最后存活时间，可按状态筛选。规则（用户 10-21 定）：一旦确认存活就不再复查；失活的资产定时复查，恢复为存活时生成播报事件。 | 存活后不再复查；失活转存活产生一条恢复播报且不重复 | 打回（2a104d1：TestEventsWindowStatsValues 同库重复跑 409，-count=2 必挂；其余全过） |
+| T21 | 资产探活：列表显示存活/失活（DNS 解析 + HTTP 可达）与最后存活时间，可按状态筛选。规则（用户 10-21 定）：一旦确认存活就不再复查；失活的资产定时复查，恢复为存活时生成播报事件。 | 存活后不再复查；失活转存活产生一条恢复播报且不重复 | 完成（d2662aa 复验：空库 -count=3、残留库全量 -count=2 均 ok） |
 | T22 | 文案与引导：根域/范围/待确认根域、扫描类型 passive/active/expand 加中文说明和提示 | 用户不看文档能看懂 | 完成（复验 55efa20：真实后端+生产构建+Chromium，说明/空状态/范围表单 37 项全过；范围文案与 check-scope 一致） |
 | T23 | 根域自动发现入口更显眼：一键对厂商跑 expand（ICP/子公司），结果进待确认 | 页面可直接触发并看到结果 | 待排 |
 | T24 | 云上客户资产排除：内置可编辑的「客户托管」规则表（如 *.aliyuncs.com 的 OSS/FC、*.myqcloud.com 的 COS、*.volces.com/*.volccdn.com、各家 CDN/函数/网站托管默认域），命中的资产标记 customer_hosted（不删），列表/播报默认隐藏、可切换查看；Web 可增删规则；改规则后异步重算 | 内置样例命中正确；默认隐藏、可查看；改规则后重算生效 | 待排 |
-| T25 | T20/T21 尾巴（含 stats 按 type 分开计数；事件类型标签中文化；修复恢复资产按资产维度复制 URL 为空）：①复制在非安全上下文（HTTP 内网地址）回退到 textarea+execCommand，失败时弹出文本框供手动复制；②总数正好是页大小整数倍时不返回 next_cursor；③轮询单次新增超 500 时显示「有更多新事件，点此刷新」；④TestNoEventCleanupCode 改为扫描 backend 全部非测试 .go 文件；⑤事件类型标签中文：new「新增」、recovered「恢复」、changed「变更」；⑥恢复的资产按资产维度复制 URL 列返回该资产当前 URL | 六项各有测试或实测 | 待验收 |
+| T25 | T20/T21 尾巴（含 stats 按 type 分开计数；事件类型标签中文化；修复恢复资产按资产维度复制 URL 为空）：①复制在非安全上下文（HTTP 内网地址）回退到 textarea+execCommand，失败时弹出文本框供手动复制；②总数正好是页大小整数倍时不返回 next_cursor；③轮询单次新增超 500 时显示「有更多新事件，点此刷新」；④TestNoEventCleanupCode 改为扫描 backend 全部非测试 .go 文件；⑤事件类型标签中文：new「新增」、recovered「恢复」、changed「变更」；⑥恢复的资产按资产维度复制 URL 列返回该资产当前 URL | 六项各有测试或实测 | 打回（d2662aa：④清理守卫漏 双空格/public.events/"events"/换行/子目录，测试仍 ok；stats 不带 type 时 count 含 changed，new+recovered≠count；①②③过） |
