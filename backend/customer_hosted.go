@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"path"
@@ -110,9 +111,24 @@ var builtinHostedRules = []hostedRule{
 var hostedLabelRe = regexp.MustCompile(`^[a-z0-9*-]+$`)
 
 // validHostedPattern：以 `*.` 开头，各标签只含 a-z0-9-*；最后一个含 * 的标签之后的固定后缀
-// 必须是 eTLD+1 或更长（按 golang.org/x/net/publicsuffix 判断），防止 `*.*.com`、`*.co.uk` 把整个公共后缀排除。
+// 必须比 PSL 的 ICANN 段公共后缀至少多一层（eTLD+1 或更长，golang.org/x/net/publicsuffix，只看 ICANN 段、
+// 不看私有段），防止 `*.*.com`、`*.co.uk` 把整个公共后缀排除；github.io 这类私有段后缀允许。
+// 内置规则与用户新增走同一校验（seedHostedRules 也校验）。
 func validHostedPattern(p string) bool {
 	return hostedPatternErr(p) == ""
+}
+
+// icannSuffix 返回 d 的 ICANN 段公共后缀：命中私有段规则时逐层去掉左侧标签再查，直到 ICANN 规则或顶级域。
+func icannSuffix(d string) string {
+	ps, icann := publicsuffix.PublicSuffix(d)
+	for !icann {
+		i := strings.IndexByte(ps, '.')
+		if i < 0 {
+			return ps
+		}
+		ps, icann = publicsuffix.PublicSuffix(ps[i+1:])
+	}
+	return ps
 }
 
 // hostedPatternErr 返回中文错误说明，合法返回空串。
@@ -135,7 +151,7 @@ func hostedPatternErr(p string) string {
 	if suffix == "" {
 		return "规则末尾须是固定域名，不能以 * 结尾"
 	}
-	if _, err := publicsuffix.EffectiveTLDPlusOne(suffix); err != nil {
+	if strings.Count(suffix, ".") <= strings.Count(icannSuffix(suffix), ".") {
 		return "通配符之后的固定后缀「" + suffix + "」是公共后缀，至少要到可注册域名（eTLD+1）一级，如 *.oss-*.aliyuncs.com"
 	}
 	return ""
@@ -193,6 +209,9 @@ func loadHostedPatterns(ctx context.Context, d *pgxpool.Pool) ([]string, error) 
 func seedHostedRules(ctx context.Context, d *pgxpool.Pool) (int, error) {
 	n := 0
 	for _, r := range builtinHostedRules {
+		if msg := hostedPatternErr(r.Pattern); msg != "" {
+			return n, fmt.Errorf("builtin customer_hosted rule %s invalid: %s", r.Pattern, msg)
+		}
 		tag, err := d.Exec(ctx, `INSERT INTO customer_hosted_rules (pattern, note, builtin) VALUES ($1, $2, true)
 			ON CONFLICT (pattern) DO NOTHING`, r.Pattern, r.Note)
 		if err != nil {

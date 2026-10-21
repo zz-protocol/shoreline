@@ -258,7 +258,7 @@ func TestHostedRulesRecalcAndHide(t *testing.T) {
 
 func TestHostedPatternPSL(t *testing.T) {
 	for p, ok := range map[string]bool{
-		"*.example.com": true, "*.oss-*.aliyuncs.com": true, "*.a.example.co.uk": true, "*.example.co.uk": true,
+		"*.github.io": true, "*.appspot.com": true, "*.blob.core.windows.net": true, "*.example.com": true, "*.oss-*.aliyuncs.com": true, "*.a.example.co.uk": true, "*.example.co.uk": true,
 		"*.*.com": false, "*.*-*.com": false, "*.com": false, "*.*.*": false, "*.co.uk": false, "*.x-*.co.uk": false,
 	} {
 		if got := validHostedPattern(p); got != ok {
@@ -267,28 +267,11 @@ func TestHostedPatternPSL(t *testing.T) {
 	}
 }
 
-// pslPrivatePending：固定后缀落在 PSL 私有段（如 github.io、appspot.com）的内置规则，publicsuffix 校验不通过。
-// 处理方案待架构定（只用 ICANN 段 / 内置免检）；这里钉住清单，其余内置必须通过校验。
-var pslPrivatePending = map[string]bool{
-	"*.cloudfront.net": true, "*.s3.amazonaws.com": true, "*.elasticbeanstalk.com": true, "*.amplifyapp.com": true,
-	"*.azurewebsites.net": true, "*.blob.core.windows.net": true, "*.web.core.windows.net": true, "*.file.core.windows.net": true,
-	"*.azureedge.net": true, "*.azurefd.net": true, "*.azurestaticapps.net": true, "*.trafficmanager.net": true, "*.azure-api.net": true,
-	"*.appspot.com": true, "*.cloudfunctions.net": true, "*.web.app": true, "*.firebaseapp.com": true,
-	"*.cdn.cloudflare.net": true, "*.workers.dev": true, "*.pages.dev": true, "*.r2.dev": true,
-	"*.edgekey.net": true, "*.edgesuite.net": true, "*.akamaized.net": true, "*.github.io": true, "*.herokuapp.com": true,
-}
-
 func TestBuiltinHostedPassValidation(t *testing.T) {
-	var fail []string
 	for _, r := range builtinHostedRules {
-		if !validHostedPattern(r.Pattern) {
-			fail = append(fail, r.Pattern)
-			if !pslPrivatePending[r.Pattern] {
-				t.Errorf("builtin %s fails validation: %s", r.Pattern, hostedPatternErr(r.Pattern))
-			}
-		} else if pslPrivatePending[r.Pattern] {
-			t.Errorf("builtin %s now passes; remove from pending", r.Pattern)
+		if msg := hostedPatternErr(r.Pattern); msg != "" {
+			t.Errorf("builtin %s fails validation: %s", r.Pattern, msg)
 		}
 	}
-	t.Logf("内置 %d 条，%d 条通过；私有后缀待定 %d 条：%v", len(builtinHostedRules), len(builtinHostedRules)-len(fail), len(fail), fail)
+	t.Logf("内置 %d 条全部通过校验（ICANN 段）", len(builtinHostedRules))
 }
