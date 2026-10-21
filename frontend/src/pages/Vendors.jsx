@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import {
   App, Button, Form, Input, Modal, Select, Space, Switch, Table, Tabs, Typography, Popconfirm,
 } from 'antd'
@@ -10,7 +10,7 @@ export default function Vendors() {
   const { message } = App.useApp()
   const [vendors, setVendors] = useState([])
   const [cur, setCur] = useState(null)
-  const [roots, setRoots] = useState([])
+  const [roots, setRoots] = useState(null)
   const [scopes, setScopes] = useState([])
   const [cands, setCands] = useState([])
   const [loading, setLoading] = useState(false)
@@ -31,7 +31,15 @@ export default function Vendors() {
       setLoading(false)
     }
   }
+  const detailSeq = useRef(0)
+  // 切换厂商先清空明细（roots=null 表示加载中，expand 按钮禁用）；迟到的旧厂商响应丢弃
   const loadDetail = async (v) => {
+    const seq = ++detailSeq.current
+    if (cur?.id !== v.id) {
+      setRoots(null)
+      setScopes([])
+      setCands([])
+    }
     setCur(v)
     try {
       const [r, s, c] = await Promise.all([
@@ -39,11 +47,12 @@ export default function Vendors() {
         get(`/api/vendors/${v.id}/scopes`),
         get(`/api/vendors/${v.id}/root-candidates?status=pending`),
       ])
+      if (seq !== detailSeq.current) return
       setRoots(r.items || [])
       setScopes(s.items || [])
       setCands(c.items || [])
     } catch (e) {
-      message.error(e.message)
+      if (seq === detailSeq.current) message.error(e.message)
     }
   }
   useEffect(() => { loadVendors() }, [])
@@ -114,13 +123,13 @@ export default function Vendors() {
           items={[
             {
               key: 'roots',
-              label: <Hint text={HELP.root}>{`根域（${roots.length}）`}</Hint>,
+              label: <Hint text={HELP.root}>{`根域（${(roots || []).length}）`}</Hint>,
               children: (
                 <>
                   <Button type="dashed" onClick={() => { rForm.resetFields(); setROpen(true) }} style={{ marginBottom: 12 }}>添加根域</Button>
                   <Table
                     rowKey="id"
-                    dataSource={roots}
+                    dataSource={roots || []}
                     pagination={false}
                     locale={{ emptyText: <Guide title="该厂商还没有根域" steps={['点「添加根域」填 example.com 这样的顶级域名', '添加后到「扫描任务」触发 passive 开始收集子域']} /> }}
                     columns={[

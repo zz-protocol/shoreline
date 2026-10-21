@@ -1084,23 +1084,23 @@ func (a *api) eventValues(w http.ResponseWriter, r *http.Request) {
 
 // ---- 扫描 ----
 
-// expandLockKey：pg_advisory_lock 的第一个键（第二个键为厂商 id），串行化同一厂商的 expand 触发。
+// expandLockKey：pg_advisory_xact_lock 的第一个键（第二个键为厂商 id），串行化同一厂商的 expand 触发。
 const expandLockKey = 23
 
 // triggerExpand：同一厂商已有 pending/running/retrying 的 expand（任意根域）时返回 409。
-// 在同一连接上持有厂商级 advisory lock 完成「检查 + 建任务」，避免并发触发竞态。
+// 「加锁 + 检查 + 建任务」在同一事务里完成（事务级锁，commit/rollback 自动释放），持锁期间不再从池里取连接；
+// commit 之后才投递，投递失败由 deliverScan 用不可取消的 ctx 标 failed。
 func (a *api) triggerExpand(ctx context.Context, vendorID, rootID int64) (int64, error) {
-	conn, err := a.db.Acquire(ctx)
+	tx, err := a.db.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
-	defer conn.Release()
-	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1, $2::int)`, expandLockKey, vendorID); err != nil {
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2::int)`, expandLockKey, vendorID); err != nil {
 		return 0, err
 	}
-	defer conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1, $2::int)`, expandLockKey, vendorID)
 	var running int64
-	err = conn.QueryRow(ctx, `SELECT id FROM scan_tasks WHERE vendor_id = $1 AND kind = 'expand'
+	err = tx.QueryRow(ctx, `SELECT id FROM scan_tasks WHERE vendor_id = $1 AND kind = 'expand'
 		AND status IN ('pending', 'running', 'retrying') ORDER BY id LIMIT 1`, vendorID).Scan(&running)
 	if err == nil {
 		return 0, errf(409, "expand already in progress for this vendor (scan %d)", running)
@@ -1108,7 +1108,14 @@ func (a *api) triggerExpand(ctx context.Context, vendorID, rootID int64) (int64,
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return 0, err
 	}
-	return TriggerScan(ctx, a.db, a.client, rootID, "expand", a.cfg.MaxRetry)
+	id, err := insertScan(ctx, tx, rootID, "expand", 0)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return id, deliverScan(ctx, a.db, a.client, id, "expand", nil, a.cfg.MaxRetry)
 }
 
 // manualKinds 是可手动触发的扫描类型（dns/http 是链路内部步骤，不对外）。

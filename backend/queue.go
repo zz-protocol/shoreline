@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/hibiken/asynq"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/time/rate"
 )
@@ -89,31 +91,49 @@ func TriggerScan(ctx context.Context, d *pgxpool.Pool, client *asynq.Client, roo
 	return enqueueScan(ctx, d, client, rootID, kind, nil, 0, maxRetry)
 }
 
-// enqueueScan 写入 scan_tasks 并投递；parentID 为 0 表示链路起点（root_scan_id 指向自身）。
-func enqueueScan(ctx context.Context, d *pgxpool.Pool, client *asynq.Client, rootID int64, kind string, hosts []string, parentID int64, maxRetry int) (int64, error) {
+// dbq：pool 与 tx 共有的最小接口，使「建任务」可放进调用方的事务。
+type dbq interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// insertScan 只写 scan_tasks（不投递）；parentID 为 0 表示链路起点（root_scan_id 指向自身）。
+func insertScan(ctx context.Context, q dbq, rootID int64, kind string, parentID int64) (int64, error) {
 	if !validKind(kind) {
 		return 0, fmt.Errorf("unknown scan kind %q", kind)
 	}
 	var id int64
-	err := d.QueryRow(ctx, `INSERT INTO scan_tasks (vendor_id, root_id, kind, parent_id, root_scan_id)
+	err := q.QueryRow(ctx, `INSERT INTO scan_tasks (vendor_id, root_id, kind, parent_id, root_scan_id)
 		SELECT r.vendor_id, r.id, $2, p.id, p.root_scan_id
 		FROM root_domains r LEFT JOIN scan_tasks p ON p.id = $3
 		WHERE r.id = $1 RETURNING id`, rootID, kind, parentID).Scan(&id)
-	if err != nil {
-		return 0, err
+	if err != nil || parentID != 0 {
+		return id, err
 	}
-	if parentID == 0 {
-		if _, err := d.Exec(ctx, `UPDATE scan_tasks SET root_scan_id = id WHERE id = $1`, id); err != nil {
-			return 0, err
-		}
-	}
+	_, err = q.Exec(ctx, `UPDATE scan_tasks SET root_scan_id = id WHERE id = $1`, id)
+	return id, err
+}
+
+// deliverScan 投递已写入的任务；失败时用不随请求取消的 ctx 把该行标 failed，避免留下永不入队的 pending 孤儿行。
+func deliverScan(ctx context.Context, d *pgxpool.Pool, client *asynq.Client, id int64, kind string, hosts []string, maxRetry int) error {
 	payload, _ := json.Marshal(scanPayload{ScanID: id, Hosts: hosts})
 	task := asynq.NewTask("scan:"+kind, payload)
 	if _, err := client.EnqueueContext(ctx, task, asynq.Queue(kind), asynq.MaxRetry(maxRetry)); err != nil {
-		d.Exec(ctx, `UPDATE scan_tasks SET status = 'failed', error = $2, finished_at = now() WHERE id = $1`, id, err.Error())
+		mctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		d.Exec(mctx, `UPDATE scan_tasks SET status = 'failed', error = $2, finished_at = now() WHERE id = $1`, id, err.Error())
+		return err
+	}
+	return nil
+}
+
+// enqueueScan 写入 scan_tasks 并投递。
+func enqueueScan(ctx context.Context, d *pgxpool.Pool, client *asynq.Client, rootID int64, kind string, hosts []string, parentID int64, maxRetry int) (int64, error) {
+	id, err := insertScan(ctx, d, rootID, kind, parentID)
+	if err != nil {
 		return 0, err
 	}
-	return id, nil
+	return id, deliverScan(ctx, d, client, id, kind, hosts, maxRetry)
 }
 
 func validKind(kind string) bool {

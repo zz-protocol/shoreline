@@ -22,19 +22,26 @@ export default function ExpandPanel({ vendor, roots, onDone, interval = 3000 }) 
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const prev = useRef(null)
+  const vid = useRef(vendor.id) // 当前厂商：迟到的旧厂商响应据此丢弃
+  const seq = useRef(0) // 最新一次 load 的序号：较早发出但较晚返回的响应丢弃
+  const inflight = useRef(false) // 同步守卫：连点只发一个 POST
 
   const load = async () => {
+    const id = vendor.id
+    const n = ++seq.current
     try {
-      const d = await get(`/api/scans?vendor=${vendor.id}&kind=expand&limit=1`)
+      const d = await get(`/api/scans?vendor=${id}&kind=expand&limit=1`)
+      if (vid.current !== id || seq.current !== n) return
       const s = d.items?.[0] || null
       if (prev.current && active(prev.current.status) && s && !active(s.status)) onDone?.()
       prev.current = s
       setLast(s)
     } catch (e) {
-      setErr(e.message)
+      if (vid.current === id && seq.current === n) setErr(e.message)
     }
   }
   useEffect(() => {
+    vid.current = vendor.id
     prev.current = null
     setLast(null)
     setErr('')
@@ -46,28 +53,39 @@ export default function ExpandPanel({ vendor, roots, onDone, interval = 3000 }) 
     return () => clearInterval(t)
   }, [last?.id, last?.status])
 
+  const rootsReady = Array.isArray(roots)
+  const root = rootsReady ? roots.find((r) => r.vendor_id == null || r.vendor_id === vendor.id) : null
+
   const run = async () => {
+    if (inflight.current) return
+    if (!root || (root.vendor_id != null && root.vendor_id !== vendor.id)) {
+      setErr('根域尚未加载或不属于当前厂商，请稍后重试')
+      return
+    }
+    inflight.current = true
+    const id = vendor.id
     setBusy(true)
     setErr('')
     try {
-      await post('/api/scans', { root_id: roots[0].id, kind: 'expand' })
-      await load()
+      await post('/api/scans', { root_id: root.id, kind: 'expand' })
     } catch (e) {
-      setErr(e.message)
+      if (vid.current === id) setErr(e.status === 409 ? '该厂商已有 expand 在进行' : e.message)
     } finally {
+      inflight.current = false
       setBusy(false)
     }
+    if (vid.current === id) await load() // 成功或 409 都拉取最近（正在跑的）任务显示状态
   }
 
   const st = last && (EXPAND_STATUS[last.status] || { label: last.status })
   const r = last?.result || {}
-  const noRoot = roots.length === 0
+  const noRoot = rootsReady && !root
   return (
     <Card size="small" data-testid="expand-panel">
       <Space direction="vertical" style={{ width: '100%' }}>
         <Space wrap>
           <Button type="primary" size="large" icon={<ThunderboltOutlined />} loading={busy}
-            disabled={noRoot || active(last?.status)} onClick={run} data-testid="expand-btn">
+            disabled={!rootsReady || noRoot || busy || active(last?.status)} onClick={run} data-testid="expand-btn">
             一键发现新根域（expand）
           </Button>
           <Typography.Text type="secondary">
