@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { App, Select, Space, Table, Tag, Typography } from 'antd'
 import dayjs from 'dayjs'
 import { get } from '../api'
+import { advanceSince, initialSince, mergeEvents } from '../eventsSince'
 
 export default function Events() {
   const { message } = App.useApp()
@@ -9,19 +10,20 @@ export default function Events() {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(false)
   const sinceRef = useRef(null)
+  const itemsRef = useRef([])
 
   const load = async (quiet) => {
     if (!quiet) setLoading(true)
     try {
+      if (!sinceRef.current) sinceRef.current = initialSince()
       const params = new URLSearchParams({ limit: '50', level, type: 'new' })
-      if (sinceRef.current) params.set('since', sinceRef.current)
+      params.set('since', sinceRef.current)
       const d = await get(`/api/events?${params}`)
       const list = d.items || []
-      setItems(list)
-      if (list.length && !sinceRef.current) {
-        // 首屏：下次轮询从当前最新往前一点点，避免漏
-        sinceRef.current = dayjs().subtract(1, 'day').toISOString()
-      }
+      sinceRef.current = advanceSince(sinceRef.current, list)
+      const merged = quiet ? mergeEvents(itemsRef.current, list) : mergeEvents([], list)
+      itemsRef.current = merged
+      setItems(merged)
     } catch (e) {
       if (!quiet) message.error(e.message)
     } finally {
@@ -30,7 +32,9 @@ export default function Events() {
   }
 
   useEffect(() => {
-    sinceRef.current = dayjs().subtract(1, 'day').toISOString()
+    sinceRef.current = null
+    itemsRef.current = []
+    setItems([])
     load()
     const t = setInterval(() => load(true), 30000)
     return () => clearInterval(t)
@@ -51,7 +55,9 @@ export default function Events() {
           onChange={setLevel}
         />
       </Space>
-      <Typography.Text type="secondary">每 30 秒轮询 GET /api/events?since=（不做 SSE）</Typography.Text>
+      <Typography.Text type="secondary">
+        每 30 秒轮询；since 首次为现在−1天（或 localStorage），之后按本轮最新事件时间推进，本地按 id 去重兜底。
+      </Typography.Text>
       <Table
         rowKey="id"
         loading={loading}
