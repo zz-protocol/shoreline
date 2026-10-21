@@ -160,6 +160,10 @@ paths:
       parameters: [{$ref: "#/components/parameters/id"}]
       requestBody: {content: {application/json: {schema: {$ref: "#/components/schemas/VendorInput"}}}}
       responses: {"200": {description: Vendor}, "404": {$ref: "#/components/responses/Error"}}
+    delete:
+      summary: 删除厂商（级联下属根域/资产/URL/事件/候选/扫描/范围/子公司等）；有 pending/running 扫描时 409
+      parameters: [{$ref: "#/components/parameters/id"}]
+      responses: {"204": {description: 已删除}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/vendors/{id}/roots:
     get:
       summary: 厂商根域列表
@@ -170,6 +174,13 @@ paths:
       parameters: [{$ref: "#/components/parameters/id"}]
       requestBody: {content: {application/json: {schema: {type: object, properties: {domain: {type: string}}}}}}
       responses: {"201": {description: Root}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/vendors/{id}/roots/{root_id}:
+    delete:
+      summary: 删除根域（级联下属资产/URL/事件/扫描）；有 pending/running 扫描时 409；root 不属于该厂商返回 404
+      parameters:
+        - {$ref: "#/components/parameters/id"}
+        - {name: root_id, in: path, required: true, schema: {type: integer}}
+      responses: {"204": {description: 已删除}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/vendors/{id}/scopes:
     get:
       summary: 范围规则列表
@@ -268,6 +279,17 @@ paths:
         - {$ref: "#/components/parameters/cursor"}
       responses: {"200": {description: "{items: Event[], next_cursor}"}, "400": {$ref: "#/components/responses/Error"}}
   /api/scans:
+    get:
+      summary: 扫描任务列表（vendor/root/status/kind/degraded 过滤；limit/cursor 与资产列表一致；含 degraded/degraded_reason）
+      parameters:
+        - {name: vendor, in: query, schema: {type: integer}}
+        - {name: root, in: query, schema: {type: integer}}
+        - {name: status, in: query, schema: {type: string, enum: [pending, running, retrying, done, failed]}}
+        - {name: kind, in: query, schema: {type: string, enum: [passive, active, dns, http, expand]}}
+        - {name: degraded, in: query, schema: {type: boolean}}
+        - {$ref: "#/components/parameters/limit"}
+        - {$ref: "#/components/parameters/cursor"}
+      responses: {"200": {description: "{items: Scan[], next_cursor}"}, "400": {$ref: "#/components/responses/Error"}}
     post:
       summary: 手动触发扫描（kind 只允许 passive/active/expand，dns/http 为链路内部步骤；kind=active 需厂商 active_enabled，否则 409）
       requestBody: {content: {application/json: {schema: {type: object, properties: {root_id: {type: integer}, kind: {type: string, enum: [passive, active, expand]}}}}}}

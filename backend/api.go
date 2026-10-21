@@ -62,8 +62,10 @@ func (a *api) routes() map[string]http.HandlerFunc {
 		"GET /api/vendors":                          a.listVendors,
 		"POST /api/vendors":                         a.createVendor,
 		"PATCH /api/vendors/{id}":                   a.updateVendor,
+		"DELETE /api/vendors/{id}":                  a.deleteVendor,
 		"GET /api/vendors/{id}/roots":               a.listRoots,
 		"POST /api/vendors/{id}/roots":              a.createRoot,
+		"DELETE /api/vendors/{id}/roots/{root_id}":  a.deleteRoot,
 		"GET /api/vendors/{id}/scopes":              a.listScopes,
 		"POST /api/vendors/{id}/scopes":             a.createScope,
 		"DELETE /api/vendors/{id}/scopes/{rule_id}": a.deleteScope,
@@ -77,6 +79,7 @@ func (a *api) routes() map[string]http.HandlerFunc {
 		"GET /api/check-scope":                      a.checkScopeHTTP,
 		"GET /api/assets/{id}":                      a.getAsset,
 		"GET /api/events":                           a.listEvents,
+		"GET /api/scans":                            a.listScans,
 		"POST /api/scans":                           a.createScan,
 		"GET /api/scans/{id}":                       a.getScan,
 		"GET /api/tokens":                           a.listTokens,
@@ -294,6 +297,29 @@ func (a *api) updateVendor(w http.ResponseWriter, r *http.Request) {
 		RETURNING id, name, company_name, active_enabled, created_at`, id, b.Name, b.CompanyName, b.ActiveEnabled)
 }
 
+// deleteVendor：级联删下属根域/资产/URL/事件/候选/扫描任务/范围规则/子公司/in_scope 任务；
+// 有 pending/running 扫描时返回 409。
+func (a *api) deleteVendor(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	if err := a.checkNoActiveScans(r.Context(), &id, nil); err != nil {
+		writeAnyErr(w, err)
+		return
+	}
+	tag, err := a.db.Exec(r.Context(), `DELETE FROM vendors WHERE id = $1`, id)
+	if err != nil {
+		dbErr(w, err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeErr(w, 404, "not found")
+		return
+	}
+	w.WriteHeader(204)
+}
+
 // ---- 根域 ----
 
 var labelRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -344,6 +370,45 @@ func (a *api) createRoot(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---- 范围规则（改动后异步重算 in_scope，返回 202 + task id）----
+
+// deleteRoot：级联删该根域下资产/URL/事件/扫描任务；有 pending/running 扫描时 409。
+func (a *api) deleteRoot(w http.ResponseWriter, r *http.Request) {
+	vendorID, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	rootID, ok := pathID(w, r, "root_id")
+	if !ok {
+		return
+	}
+	var owner int64
+	err := a.db.QueryRow(r.Context(), `SELECT vendor_id FROM root_domains WHERE id = $1`, rootID).Scan(&owner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeErr(w, 404, "not found")
+		return
+	} else if err != nil {
+		dbErr(w, err)
+		return
+	}
+	if owner != vendorID {
+		writeErr(w, 404, "not found")
+		return
+	}
+	if err := a.checkNoActiveScans(r.Context(), nil, &rootID); err != nil {
+		writeAnyErr(w, err)
+		return
+	}
+	tag, err := a.db.Exec(r.Context(), `DELETE FROM root_domains WHERE id = $1`, rootID)
+	if err != nil {
+		dbErr(w, err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeErr(w, 404, "not found")
+		return
+	}
+	w.WriteHeader(204)
+}
 
 func (a *api) listScopes(w http.ResponseWriter, r *http.Request) {
 	if id, ok := pathID(w, r, "id"); ok {
@@ -891,6 +956,72 @@ func (a *api) createScan(w http.ResponseWriter, r *http.Request) {
 }
 
 const scanSelect = `SELECT id, vendor_id, root_id, kind, status, error, result, COALESCE((result->>'degraded')::boolean, false) AS degraded, result->>'degraded_reason' AS degraded_reason, parent_id, root_scan_id, created_at, started_at, finished_at FROM scan_tasks`
+
+var scanStatuses = []string{"pending", "running", "retrying", "done", "failed"}
+
+// checkNoActiveScans：有 pending/running 扫描时返回 409（删除厂商/根域前调用）。
+func (a *api) checkNoActiveScans(ctx context.Context, vendorID, rootID *int64) error {
+	var n int
+	err := a.db.QueryRow(ctx, `SELECT count(*) FROM scan_tasks
+		WHERE status IN ('pending', 'running')
+		  AND ($1::bigint IS NULL OR vendor_id = $1)
+		  AND ($2::bigint IS NULL OR root_id = $2)`, vendorID, rootID).Scan(&n)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return errf(409, "vendor/root has pending or running scans")
+	}
+	return nil
+}
+
+// listScans：按 vendor/root/status/kind/degraded 过滤，limit/cursor 校验复用 checkPage。
+func (a *api) listScans(w http.ResponseWriter, r *http.Request) {
+	limit, cursor, ok := page(w, r)
+	if !ok {
+		return
+	}
+	vendor, ok1 := int64Param(w, r, "vendor")
+	root, ok2 := int64Param(w, r, "root")
+	degraded, ok3 := boolParam(w, r, "degraded")
+	if !ok1 || !ok2 || !ok3 {
+		return
+	}
+	if err := checkVendor(vendor); err != nil {
+		writeAnyErr(w, err)
+		return
+	}
+	if err := checkPage(limit, cursor); err != nil {
+		writeAnyErr(w, err)
+		return
+	}
+	status, kind := r.URL.Query().Get("status"), r.URL.Query().Get("kind")
+	if status != "" && !slices.Contains(scanStatuses, status) {
+		writeErr(w, 400, "status must be one of "+strings.Join(scanStatuses, "|"))
+		return
+	}
+	if kind != "" && !slices.Contains(scanKinds, kind) {
+		writeErr(w, 400, "kind must be one of "+strings.Join(scanKinds, "|"))
+		return
+	}
+	var deg *bool
+	if degraded != nil {
+		deg = degraded
+	}
+	list, err := rowsJSON(a.db.Query(r.Context(), scanSelect+`
+		WHERE ($1::bigint = 0 OR id < $1)
+		  AND ($2::bigint IS NULL OR vendor_id = $2)
+		  AND ($3::bigint IS NULL OR root_id = $3)
+		  AND ($4::text = '' OR status = $4)
+		  AND ($5::text = '' OR kind = $5)
+		  AND ($6::bool IS NULL OR COALESCE((result->>'degraded')::boolean, false) = $6)
+		ORDER BY id DESC LIMIT $7`, cursor, vendor, root, status, kind, deg, limit))
+	if err != nil {
+		dbErr(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": list, "next_cursor": nextCursor(list, limit)})
+}
 
 func (a *api) getScan(w http.ResponseWriter, r *http.Request) {
 	if id, ok := pathID(w, r, "id"); ok {
