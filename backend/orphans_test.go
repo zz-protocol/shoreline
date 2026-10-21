@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"testing"
 	"time"
 
@@ -70,5 +73,52 @@ func TestFailOrphanScans(t *testing.T) {
 	}
 	if s, _ := st(newID); s != "pending" {
 		t.Fatalf("queued expand touched: %s", s)
+	}
+}
+
+// TestMainCallsFailOrphanScans：用 AST 断言 main() 在启动 worker（srv.Run）之前调用 failOrphanScans。
+// 交付复现：删掉 main.go 里 failOrphanScans(...) 后本测试必须失败（直接调 failOrphanScans 的行为测试抓不住挂接缺口）。
+func TestMainCallsFailOrphanScans(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "main.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mainFn *ast.FuncDecl
+	for _, d := range f.Decls {
+		if fn, ok := d.(*ast.FuncDecl); ok && fn.Name.Name == "main" && fn.Recv == nil {
+			mainFn = fn
+			break
+		}
+	}
+	if mainFn == nil {
+		t.Fatal("main() not found in main.go")
+	}
+	var orphanPos, runPos token.Pos
+	ast.Inspect(mainFn.Body, func(n ast.Node) bool {
+		c, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch fn := c.Fun.(type) {
+		case *ast.Ident:
+			if fn.Name == "failOrphanScans" && orphanPos == 0 {
+				orphanPos = c.Pos()
+			}
+		case *ast.SelectorExpr:
+			if fn.Sel.Name == "Run" && runPos == 0 { // srv.Run(wmux)
+				runPos = c.Pos()
+			}
+		}
+		return true
+	})
+	if orphanPos == 0 {
+		t.Fatal("main() must call failOrphanScans at startup; deleting the call must fail this test")
+	}
+	if runPos == 0 {
+		t.Fatal("main() must call srv.Run (worker); cannot verify order")
+	}
+	if orphanPos > runPos {
+		t.Fatalf("failOrphanScans must run before srv.Run (orphan=%s run=%s)", fset.Position(orphanPos), fset.Position(runPos))
 	}
 }

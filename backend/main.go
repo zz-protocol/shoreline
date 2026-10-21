@@ -62,8 +62,15 @@ func main() {
 		"active":  activeHandler(pool, newActiveScanner(acfg, dcfg)),
 		"expand":  expandHandler(pool, icp, dbSubsidiaries{pool}),
 	}
+	// 孤儿清理必须在 worker/scheduler 启动前：否则 scheduled 任务可能在枚举 asynq 时已变 pending 被误标。
 	startedAt := time.Now()
-	srv, wmux := newWorker(asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")}, pool, cfg, handlers)
+	redisOpt := asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")}
+	if n, err := failOrphanScans(context.Background(), pool, redisOpt, startedAt); err != nil {
+		log.Printf("orphan scans check: %v", err)
+	} else if n > 0 {
+		log.Printf("marked %d orphan pending scans failed", n)
+	}
+	srv, wmux := newWorker(redisOpt, pool, cfg, handlers)
 	go func() { log.Fatal(srv.Run(wmux)) }()
 	if cs.URL != "" { // 未配置 CERTSTREAM_URL 则不启动
 		client := asynq.NewClient(asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")})
@@ -106,11 +113,6 @@ func main() {
 		log.Fatalf("resume scope tasks: %v", err)
 	} else if n > 0 {
 		log.Printf("resumed %d unfinished scope tasks", n)
-	}
-	if n, err := failOrphanScans(context.Background(), pool, asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")}, startedAt); err != nil {
-		log.Printf("orphan scans check: %v", err)
-	} else if n > 0 {
-		log.Printf("marked %d orphan pending scans failed", n)
 	}
 	if err := a.initHosted(context.Background()); err != nil {
 		log.Fatalf("customer_hosted init: %v", err)
