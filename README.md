@@ -218,6 +218,10 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 - 若该根域已有同 kind 的 `pending`/`running` 任务则跳过，避免堆积。
 - 间隔可读环境变量；运行中改配置需重启进程，或测试里 `SetConfig` 热更新（会打断当前等待，新间隔立即生效）。
 
+### 压测（T16）
+- 10 万条模拟子域：`TEST_BENCH=1 TEST_DATABASE_URL=... go test -count=1 -run TestBenchListAssets -timeout 30m ./backend`（默认跳过）。
+- 验收：`GET /api/assets` 列表（limit≤50）单次 < 1s；报告见 `docs/bench.md`。
+
 ## Web 端（T14）
 - React + Vite + Ant Design 5（MIT，深色算法主题，不做浅色切换）+ swagger-ui-dist（Apache-2.0）做 `/docs`。
 - 首屏输入 API token，存 `localStorage`；侧栏：新增播报 / 资产 / 厂商·根域 / 扫描任务 / API Key / API 文档。

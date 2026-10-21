@@ -56,7 +56,7 @@ export default function Events() {
         />
       </Space>
       <Typography.Text type="secondary">
-        每 30 秒轮询；since 首次为现在−1天（或 localStorage），之后按本轮最新事件时间推进，本地按 id 去重兜底。
+        每 30 秒轮询；since 首次为现在−1天（或 localStorage），之后按本轮最新事件时间推进；切换 level 会清 since 并重拉近一天；本地按 id 去重兜底。
       </Typography.Text>
       <Table
         rowKey="id"
