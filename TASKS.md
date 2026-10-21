@@ -16,7 +16,7 @@
 | T11 | ICP/子公司扩展：发现的新根域进"待确认"列表 | 不自动加入扫描；确认后才加入 | 完成（复验 498ce29） |
 | T12 | REST API + OpenAPI + token 认证 | 接口与 SPEC 接口草图一致；文档可访问 | 完成（复验 6edc406） |
 | T13 | MCP server：list_new_assets、search_assets、check_scope、trigger_scan | MCP 客户端能调通四个工具 | 完成（c2549b4：校验一致；nginx /mcp 实测通，响应为 JSON 非流式） |
-| T14 | Web 端：厂商/根域/范围管理、资产检索、新增播报流、扫描状态、API key 配置；深色主题 | 页面全部可用，交互走真实 API | 待做 |
+| T14 | Web 端：厂商/根域/范围管理、资产检索、新增播报流、扫描状态、API key 配置；深色主题 | 页面全部可用，交互走真实 API | 待验收 |
 | T15 | 定时调度（被动 6h、主动 1d，可配） | 配置修改生效有测试 | 待做 |
 | T16 | 压测：10 万条模拟子域 | 列表接口 < 1s，报告写入 docs/bench.md | 待做 |
 | T17 | ICP 适配器预设 icp_yanzhenma（见 SPEC「ICP 数据源」）：读该仓库 API 定义写客户端，配置 ICP_PROVIDER/ICP_API_URL | mock 服务下按根域/企业名查询能解析入"待确认"；服务不可达时降级不报错；未配置时自动关闭 | 待验收 |

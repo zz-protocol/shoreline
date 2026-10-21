@@ -155,3 +155,10 @@
 
 ## 参考（未引入代码）
 - zz-protocol/icp_yanzhenma（MIT License, Copyright (c) 2026 zz-protocol）：仅按其 HTTP 接口（GET /query?domain=）编写客户端，未复制、未打包其代码。读取版本 83ca858。
+
+## 前端依赖（T14）
+- ant-design/ant-design（MIT）via npm antd@5
+- swagger-api/swagger-ui（Apache-2.0）via npm swagger-ui-dist@5；仅用于 /docs 页读 /api/openapi.yaml
+- remix-run/react-router（MIT）via npm react-router-dom@6
+- iamkun/dayjs（MIT）
+- vitest / @testing-library/react / jsdom（MIT，开发依赖）
