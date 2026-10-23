@@ -34,6 +34,6 @@
 | T25 | T20/T21 尾巴（含 stats 按 type 分开计数；事件类型标签中文化；修复恢复资产按资产维度复制 URL 为空）：①复制在非安全上下文（HTTP 内网地址）回退到 textarea+execCommand，失败时弹出文本框供手动复制；②总数正好是页大小整数倍时不返回 next_cursor；③轮询单次新增超 500 时显示「有更多新事件，点此刷新」；④清理守卫：递归扫描 backend 全部非测试 .go/.sql，正则识别任意空白/换行、schema 前缀、引号表名、TRUNCATE，白名单精确到 008 文件+语句；⑤事件类型标签中文：new「新增」、recovered「恢复」、changed「变更」；⑥恢复的资产按资产维度复制 URL 列返回该资产当前 URL；⑦events/stats/values 不带 type 默认 new,recovered（count=所选各 type 之和）；手动复制框截断时标题注明 | 七项各有测试或实测 | 完成（9836363+95428b2 复验：守卫全变体 FAIL、默认 type 排除 changed、恢复 URL 复制、截断标题、回归、go test -count=2 均过；changed 蓝标签仅源码+vitest 佐证） |
 | T26 | 播报关键字搜索（子域名/URL 包含匹配，可叠加其他筛选；计数和复制按搜索后的结果；REST 参数 q，MCP 同步） | 搜索后表格、计数、复制三者一致；和其他筛选叠加正确；MCP 可用 | 待做 |
 | T27 | 资产按最后存活时间筛选（今天/7天/30天/自定义；alive_since/alive_until） | 按区间筛选结果正确，能和状态筛选叠加，边界有单测 | 待做 |
-| T28 | 去掉 IP：不展示也不保存，迁移删除 IP 字段；资产 changed 只看 CNAME | 库、API、MCP、openapi、页面里都没有 IP；泛解析和存活判断回归通过；迁移可以在旧库上执行 | 打回（001f690/8360ea0：①–④⑥⑦⑧过；⑤空 changes 未过滤—GET /api/events?type=changed 仍返回 changes={} 行且 stats/values 计入；SPEC 要求默认与显式均不返回） |
+| T28 | 去掉 IP：不展示也不保存，迁移删除 IP 字段；资产 changed 只看 CNAME | 库、API、MCP、openapi、页面里都没有 IP；泛解析和存活判断回归通过；迁移可以在旧库上执行 | 待验收 |
 | T29 | 资产页子域名和 URL 列一键复制（复制全部筛选结果，去重，HTTP 下可回退） | 跨页全量复制，去重；在 HTTP 下可用 | 待做 |
 | T30 | 网页设置页管理 FOFA/Quake/Hunter key（存数据库，页面掩码显示，网页填写优先、回退到环境变量，不用重启，测试连通只读） | 增删改后不重启就生效；API 不返回明文；测试连通不消耗额度；不填时环境变量照常可用 | 待做 |

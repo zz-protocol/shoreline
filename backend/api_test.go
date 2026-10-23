@@ -288,7 +288,7 @@ func TestAPIAssetsEventsScans(t *testing.T) {
 	api1 := add("api", false, "")
 	add("out", false, "")
 	add("wc-fake", true, "")
-	e.pool.Exec(ctx, `INSERT INTO events (type, asset_id, detail) VALUES ('changed', $1, '{"field":"cnames"}')`, api1)
+	e.pool.Exec(ctx, `INSERT INTO events (type, asset_id, detail) VALUES ('changed', $1, '{"changes":{"cnames":{"old":[],"new":["x.cdn.test"]}}}')`, api1)
 	// 一条旧 new 事件，用于 new_since
 	old := add("old", false, "")
 	e.pool.Exec(ctx, `UPDATE events SET created_at = now() - interval '10 days' WHERE asset_id = $1`, old)

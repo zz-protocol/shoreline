@@ -905,6 +905,7 @@ func checkEventFilter(f *eventFilter) error {
 }
 
 // eventWhere：事件筛选条件，参数 $1..$10 依次为 cursor/level/type/since/asset_id/vendor/include_wildcard/until/after_id/include_customer_hosted。
+// T28：type=changed 且 changes 为空（或去掉非实质键 ips 后为空）的行一律不返回、不计入（历史「只改过 IP」的残留；显式 type=changed 也不返回）。
 const eventWhere = `FROM events e JOIN assets a ON a.id = e.asset_id JOIN root_domains r ON r.id = a.root_id JOIN vendors v ON v.id = r.vendor_id LEFT JOIN urls u ON u.id = e.url_id
 		WHERE ($1::bigint = 0 OR e.id < $1)
 		  AND ($2::text = 'all' OR ($2 = 'asset') = (e.url_id IS NULL))
@@ -915,7 +916,8 @@ const eventWhere = `FROM events e JOIN assets a ON a.id = e.asset_id JOIN root_d
 		  AND ($7::bool OR NOT a.wildcard)
 		  AND ($8::timestamptz IS NULL OR e.created_at < $8)
 		  AND ($9::bigint = 0 OR e.id > $9)
-		  AND ($10::bool OR NOT a.customer_hosted)`
+		  AND ($10::bool OR NOT a.customer_hosted)
+		  AND NOT (e.type = 'changed' AND COALESCE(e.detail->'changes', '{}'::jsonb) - 'ips' = '{}'::jsonb)`
 
 func (f eventFilter) args() []any {
 	return []any{f.Cursor, f.Level, f.Type, f.Since, f.AssetID, f.Vendor, f.IncludeWildcard, f.Until, f.AfterID, f.IncludeHosted}

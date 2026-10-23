@@ -270,7 +270,11 @@ func TestEventsDefaultTypes(t *testing.T) {
 		if err := e.pool.QueryRow(ctx, `INSERT INTO assets (root_id, subdomain) VALUES ($1, $2) RETURNING id`, e.rootID, fmt.Sprintf("d%d.%s", i, root)).Scan(&aid); err != nil {
 			t.Fatal(err)
 		}
-		e.pool.Exec(ctx, `INSERT INTO events (type, asset_id, detail) VALUES ($1, $2, '{}')`, typ, aid)
+		detail := "{}"
+		if typ == "changed" { // 有实质变更键才可见；空 changes 由 TestHideEmptyChanged 覆盖
+			detail = `{"changes":{"cnames":{"old":[],"new":["x.cdn.test"]}}}`
+		}
+		e.pool.Exec(ctx, `INSERT INTO events (type, asset_id, detail) VALUES ($1, $2, $3::jsonb)`, typ, aid, detail)
 	}
 	cnt := func(q string) (int, float64) {
 		ev := len(items(c.want(200, "GET", fmt.Sprintf("/api/events?limit=500&vendor=%d%s", vid, q), nil)))
@@ -306,4 +310,81 @@ func TestEventsDefaultTypes(t *testing.T) {
 	if ev, tot := cnt("&type=changed"); ev != 3 || tot != 3 {
 		t.Fatalf("changed only %d %v", ev, tot)
 	}
+}
+
+// T28 补丁：空 changes（或仅剩非实质键 ips）的 changed 行保留在库，但列表/stats/values/MCP 共用路径一律不返回、不计入。
+func TestHideEmptyChanged(t *testing.T) {
+	e, c, a := newAPITest(t, 100)
+	ctx := context.Background()
+	v := e.vendorID()
+	var root string
+	e.pool.QueryRow(ctx, `SELECT domain FROM root_domains WHERE id = $1`, e.rootID).Scan(&root)
+	ins := func(host, detail string) int64 {
+		t.Helper()
+		var id, eid int64
+		if err := e.pool.QueryRow(ctx, `INSERT INTO assets (root_id, subdomain, resolved) VALUES ($1, $2, true) RETURNING id`, e.rootID, host).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.pool.QueryRow(ctx, `INSERT INTO events (type, asset_id, detail) VALUES ('changed', $1, $2::jsonb) RETURNING id`, id, detail).Scan(&eid); err != nil {
+			t.Fatal(err)
+		}
+		return eid
+	}
+	emptyID := ins("empty."+root, `{"subdomain":"x","changes":{}}`)
+	ipsOnly := ins("ips."+root, `{"subdomain":"x","changes":{"ips":{"old":["192.0.2.1"],"new":["192.0.2.2"]}}}`)
+	nullCh := ins("nullch."+root, `{"subdomain":"x"}`) // 无 changes 键
+	keepHost := "keep." + root
+	keepID := ins(keepHost, `{"subdomain":"x","changes":{"cnames":{"old":[],"new":["cdn.example.test"]}}}`)
+	var newAID int64
+	e.pool.QueryRow(ctx, `INSERT INTO assets (root_id, subdomain, resolved) VALUES ($1, $2, true) RETURNING id`, e.rootID, "new."+root).Scan(&newAID)
+	e.pool.Exec(ctx, `INSERT INTO events (type, asset_id, detail) VALUES ('new', $1, '{}')`, newAID)
+
+	// 库里 4 条 changed 都在
+	var nDB int
+	e.pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE type = 'changed' AND asset_id IN (
+		SELECT id FROM assets WHERE subdomain LIKE ANY(ARRAY['empty.%','ips.%','nullch.%','keep.%']) AND root_id = $1)`, e.rootID).Scan(&nDB)
+	if nDB != 4 {
+		t.Fatalf("db changed rows %d want 4", nDB)
+	}
+
+	base := fmt.Sprintf("vendor=%d&type=changed&level=asset", v)
+	list := items(c.want(200, "GET", "/api/events?limit=500&"+base, nil))
+	if len(list) != 1 || list[0]["id"].(float64) != float64(keepID) {
+		t.Fatalf("list got %#v want only keep id=%d", list, keepID)
+	}
+	st := c.want(200, "GET", "/api/events/stats?"+base, nil)
+	if int64(st["total"].(float64)) != 1 || int64(st["totals"].(map[string]any)["changed"].(float64)) != 1 {
+		t.Fatalf("stats %#v", st)
+	}
+	vals := c.want(200, "GET", "/api/events/values?field=subdomain&"+base, nil)
+	got := vals["items"].([]any)
+	if len(got) != 1 || got[0].(string) != keepHost {
+		t.Fatalf("values %#v want [%s]", vals, keepHost)
+	}
+
+	// 共用 queryEvents（MCP list_new_assets 同源）：显式 type=changed 也看不到空行
+	qlist, err := a.queryEvents(ctx, eventFilter{Level: "asset", Type: "changed", Vendor: &v, Limit: 500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(qlist) != 1 || qlist[0]["id"].(int64) != keepID {
+		t.Fatalf("queryEvents %#v", qlist)
+	}
+	// MCP list_new_assets 只含 new，不含空 changed
+	s, err := mcpSession(t, c.srv.URL, testBootstrap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	out, isErr := callTool(t, s, "list_new_assets", map[string]any{"vendor": v, "limit": 500})
+	if isErr {
+		t.Fatalf("mcp %v", out)
+	}
+	for _, it := range items(out) {
+		id := int64(it["id"].(float64))
+		if id == emptyID || id == ipsOnly || id == nullCh || id == keepID {
+			t.Fatalf("list_new_assets leaked changed id=%d", id)
+		}
+	}
+	t.Logf("empty/ips-only/null-changes hidden; cnames changed id=%d visible; db kept %d changed rows", keepID, nDB)
 }
