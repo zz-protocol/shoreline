@@ -462,6 +462,17 @@ func TestAssetValuesCopy(t *testing.T) {
 	if int(urls["count"].(float64)) != 3 { // a, a2, b
 		t.Fatalf("urls %#v", urls)
 	}
+	full := items(c.want(200, "GET", "/api/assets?"+base, nil))
+	var sawURL bool
+	for _, it := range full {
+		if u, _ := it["url"].(string); strings.Contains(u, "https://") {
+			sawURL = true
+			break
+		}
+	}
+	if !sawURL {
+		t.Fatalf("list missing url text: %#v", full)
+	}
 	// 叠加 alive=dead → 空
 	empty := c.want(200, "GET", "/api/assets/values?field=subdomain&"+base+"&alive=dead", nil)
 	if int(empty["count"].(float64)) != 0 {

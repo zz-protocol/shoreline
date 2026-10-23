@@ -137,6 +137,9 @@ func (a *api) mcpServer() *mcp.Server {
 				return toolErr[pageOut](err)
 			}
 			list, next := cutPage(list, limit)
+			if err := attachAssetURLText(ctx, a.db, list); err != nil {
+				return toolErr[pageOut](err)
+			}
 			return nil, pageOut{list, next}, nil
 		})
 	mcp.AddTool(s, &mcp.Tool{Name: "check_scope", Description: "Check whether a host is in scope: owning vendor/root (longest match), in_scope, matched rules, asset id if known."},

@@ -35,5 +35,5 @@
 | T26 | 播报关键字搜索（子域名/URL 包含匹配，可叠加其他筛选；计数和复制按搜索后的结果；REST 参数 q，MCP 同步） | 搜索后表格、计数、复制三者一致；和其他筛选叠加正确；MCP 可用 | 完成（a0b8177 复验：q 大小写、URL、type/vendor/时间窗叠加；list/stats/values/MCP/复制三者一致；q=%00→400；突变删 q 条件 FAIL；页面截图 t26-*.png） |
 | T27 | 资产按最后存活时间筛选（今天/7天/30天/自定义；alive_since/alive_until） | 按区间筛选结果正确，能和状态筛选叠加，边界有单测 | 完成（70415f3 复验：半开 [since,until) 边界、alive 叠加、NULL 不进窗、until<=since→400；MCP 一致；页面今日/7d/30d/自定义；突变 FAIL） |
 | T28 | 去掉 IP：不展示也不保存，迁移删除 IP 字段；资产 changed 只看 CNAME | 库、API、MCP、openapi、页面里都没有 IP；泛解析和存活判断回归通过；迁移可以在旧库上执行 | 完成（d10c2ac 复验：空 changes/仅 ips/无 changes 键的 changed 在 list/stats/values 均隐藏且不计；有 cnames 可见；库保留；突变删过滤条件 FAIL；无 IP 回归过） |
-| T29 | 资产页子域名和 URL 列一键复制（复制全部筛选结果，去重，HTTP 下可回退） | 跨页全量复制，去重；在 HTTP 下可用 | 完成（79ac04d 复验：values 与 list 筛选一致、跨页全量去重、超限 truncated、HTTP 回退同播报、突变 FAIL；页面复制 toast 与 API 一致。备注：URL 列单元格不展示文本仅复制按钮，待架构定） |
+| T29 | 资产页子域名和 URL 列一键复制（复制全部筛选结果，去重，HTTP 下可回退） | 跨页全量复制，去重；在 HTTP 下可用 | 待验收（补丁：列表/MCP 挂 url 文本，单元格展示；列头复制保留；承接 79ac04d/a463418） |
 | T30 | 网页设置页管理 FOFA/Quake/Hunter key（存数据库，页面掩码显示，网页填写优先、回退到环境变量，不用重启，测试连通只读） | 增删改后不重启就生效；API 不返回明文；测试连通不消耗额度；不填时环境变量照常可用 | 待做 |

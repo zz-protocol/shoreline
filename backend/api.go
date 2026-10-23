@@ -853,6 +853,56 @@ func (a *api) queryAssets(ctx context.Context, f assetFilter) ([]map[string]any,
 	return rowsJSON(a.db.Query(ctx, `SELECT `+assetCols+` `+assetWhere+` ORDER BY a.id DESC LIMIT $11`, append(f.args(), f.Limit+1)...))
 }
 
+
+// attachAssetURLText：列表/MCP 挂上 url 文本（scheme://host:port，多条换行），与播报页 URL 列同形（T29 补丁）。
+func attachAssetURLText(ctx context.Context, db *pgxpool.Pool, list []map[string]any) error {
+	if len(list) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(list))
+	idx := map[int64]int{}
+	for i, m := range list {
+		id, ok := m["id"].(int64)
+		if !ok {
+			switch v := m["id"].(type) {
+			case float64:
+				id = int64(v)
+			case int:
+				id = int64(v)
+			default:
+				continue
+			}
+		}
+		ids = append(ids, id)
+		idx[id] = i
+		m["url"] = "" // 无 URL 时也给空串，前端可直接 dataIndex
+	}
+	rows, err := db.Query(ctx, `SELECT asset_id, scheme || '://' || host || ':' || port::text
+		FROM urls WHERE asset_id = ANY($1) ORDER BY asset_id, id`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	bufs := map[int64][]string{}
+	for rows.Next() {
+		var aid int64
+		var u string
+		if err := rows.Scan(&aid, &u); err != nil {
+			return err
+		}
+		bufs[aid] = append(bufs[aid], u)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for aid, us := range bufs {
+		if i, ok := idx[aid]; ok {
+			list[i]["url"] = strings.Join(us, "\n")
+		}
+	}
+	return nil
+}
+
 func (a *api) listAssets(w http.ResponseWriter, r *http.Request) {
 	limit, cursor, ok := page(w, r)
 	if !ok {
@@ -869,6 +919,10 @@ func (a *api) listAssets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	list, next := cutPage(list, limit)
+	if err := attachAssetURLText(r.Context(), a.db, list); err != nil {
+		dbErr(w, err)
+		return
+	}
 	writeJSON(w, 200, map[string]any{"items": list, "next_cursor": next})
 }
 

@@ -90,7 +90,8 @@ components:
         last_seen: {type: string, format: date-time}
         alive: {type: string, enum: [alive, dead, unknown], description: "探活：DNS 能解析且 HTTP 任一协议有响应为 alive（确认后不再改回）；DNS 失败或无响应为 dead；未探测或复核为泛解析为 unknown"}
         last_alive_at: {type: string, format: date-time, nullable: true, description: "判定为 alive 的时间"}
-        urls: {type: array, items: {type: object}, description: "仅 GET /api/assets/{id} 返回"}
+        url: {type: string, description: "列表/MCP：该资产全部 URL（scheme://host:port），多条换行；无则为空串"}
+        urls: {type: array, items: {type: object}, description: "仅 GET /api/assets/{id} 返回完整 URL 对象"}
     Event:
       type: object
       properties:

@@ -163,7 +163,7 @@ export default function Assets() {
         columns={[
           { title: 'ID', dataIndex: 'id', width: 80 },
           { title: colTitle('子域', 'subdomain'), dataIndex: 'subdomain' },
-          { title: colTitle('URL', 'url'), key: 'url', render: () => '' },
+          { title: colTitle('URL', 'url'), dataIndex: 'url', render: (v) => <span data-testid="asset-url" style={{ whiteSpace: 'pre-wrap' }}>{v || ''}</span> },
           { title: <Hint text={HELP.alive}>探活</Hint>, dataIndex: 'alive', width: 90, render: (v, r) => <AliveTag value={v} at={r.last_alive_at} /> },
           { title: '最后存活', dataIndex: 'last_alive_at', width: 170, render: (v) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : '') },
           { title: <Hint text={HELP.scope}>范围内</Hint>, dataIndex: 'in_scope', render: (v) => (v ? '是' : '否') },
