@@ -130,14 +130,39 @@ OpenAPI：`GET /api/openapi.yaml`；页面试调：`/docs`。
 
 ## 9. 备份与升级
 
-```bash
-# 备份库
-docker compose exec -T postgres pg_dump -U sam sam > shoreline-$(date +%F).sql
+### 升级
 
-# 升级
+> ⚠️ 部分迁移不可逆（如 016_drop_ips：删除 IP 列并抹掉历史播报里的 IP）。**不可逆，先备份**，回退只能靠备份恢复。
+
+① 升级前备份（自定义格式 `-Fc`，可用 `pg_restore` 恢复），并记下当前版本：
+
+```bash
+git rev-parse HEAD > shoreline-prev-version.txt
+docker compose exec -T postgres pg_dump -Fc -U sam -d sam > shoreline-$(date +%F).dump
+ls -l shoreline-*.dump   # 确认文件非空
+```
+
+② 升级：拉代码、重建并启动。backend 启动时自动按编号执行未执行过的迁移（记录在 `schema_migrations`），无需手动跑 SQL：
+
+```bash
 git pull
 docker compose up --build -d
+docker compose logs --tail=50 backend   # 迁移失败会以 migrate: ... 退出
 ```
+
+③ 出问题时回退：先回到旧版本镜像，再用备份恢复库（新版迁移已改过表结构，旧版本不能直接用升级后的库）：
+
+```bash
+docker compose stop backend
+git checkout "$(cat shoreline-prev-version.txt)"
+docker compose build backend
+docker compose exec -T postgres dropdb -U sam sam
+docker compose exec -T postgres createdb -U sam -O sam sam
+docker compose exec -T postgres pg_restore -U sam -d sam --no-owner --exit-on-error < shoreline-YYYY-MM-DD.dump
+docker compose up -d
+```
+
+恢复后旧版本按备份里的 `schema_migrations` 启动，不会再执行新迁移。
 
 数据卷名：`pgdata`。改调度等环境变量后需重启 backend（`docker compose up -d backend`）。
 

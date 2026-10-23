@@ -334,10 +334,9 @@ func TestDNSHandlerWildcardNoFakeAssets(t *testing.T) {
 		t.Fatalf("wildcard=%d live=%d unresolved=%d, want 20/3/1", wild, live, unresolved)
 	}
 	var cdn string
-	var ips []string
-	e.pool.QueryRow(ctx, `SELECT cdn, ips FROM assets WHERE subdomain = 'cdn.example.test'`).Scan(&cdn, &ips)
-	if cdn != "aliyun" || !reflect.DeepEqual(ips, []string{"192.0.2.3"}) {
-		t.Fatalf("cdn asset: %s %v", cdn, ips)
+	e.pool.QueryRow(ctx, `SELECT cdn FROM assets WHERE subdomain = 'cdn.example.test'`).Scan(&cdn)
+	if cdn != "aliyun" {
+		t.Fatalf("cdn asset: %s", cdn)
 	}
 	t.Logf("live(non-wildcard) assets: %d of %d candidates; %d wildcard marked", live, 24, wild)
 }

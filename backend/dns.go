@@ -328,10 +328,7 @@ func dnsHandler(d *pgxpool.Pool, r *resolver) ScanHandler {
 			if hd.CDN != "" {
 				cdn = &hd.CDN
 			}
-			ips, cnames := hd.Result.IPs, hd.Result.CNAMEs
-			if ips == nil {
-				ips = []string{}
-			}
+			cnames := hd.Result.CNAMEs // IP 只在内存里用于泛解析/CDN 判断，不入库（T28）
 			if cnames == nil {
 				cnames = []string{}
 			}
@@ -339,7 +336,7 @@ func dnsHandler(d *pgxpool.Pool, r *resolver) ScanHandler {
 			var forward bool
 			err := pgx.BeginFunc(ctx, d, func(tx pgx.Tx) error {
 				var err error
-				forward, err = r.storeDNS(ctx, tx, host, hd, ips, cnames, cdn)
+				forward, err = r.storeDNS(ctx, tx, host, hd, cnames, cdn)
 				return err
 			})
 			if err != nil {
@@ -354,21 +351,22 @@ func dnsHandler(d *pgxpool.Pool, r *resolver) ScanHandler {
 }
 
 // storeDNS 在事务里锁定资产行，比较新旧值后更新并生成事件；返回是否交给 http。
-func (r *resolver) storeDNS(ctx context.Context, tx pgx.Tx, host string, hd hostDNS, ips, cnames []string, cdn *string) (bool, error) {
+// T28：不保存 IP；资产 changed 只看 CNAME 集合变化。
+func (r *resolver) storeDNS(ctx context.Context, tx pgx.Tx, host string, hd hostDNS, cnames []string, cdn *string) (bool, error) {
 	var assetID int64
-	var oldIPs, oldCNAMEs []string
+	var oldCNAMEs []string
 	var oldResolved *bool
 	var oldWild, verified bool
-	err := tx.QueryRow(ctx, `SELECT id, ips, cnames, resolved, wildcard,
+	err := tx.QueryRow(ctx, `SELECT id, cnames, resolved, wildcard,
 			verified_real_at IS NOT NULL AND verified_real_at > now() - make_interval(secs => $2)
 		FROM assets WHERE subdomain = $1 FOR UPDATE`, host, r.cfg.VerifiedTTL.Seconds()).
-		Scan(&assetID, &oldIPs, &oldCNAMEs, &oldResolved, &oldWild, &verified)
+		Scan(&assetID, &oldCNAMEs, &oldResolved, &oldWild, &verified)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	} else if err != nil {
 		return false, err
 	}
-	if !hd.Resolved { // 失联：保留最后一次成功的 IP/CNAME，只记 resolved=false；探活 DNS 失败直接 dead（已 alive 不改回）
+	if !hd.Resolved { // 失联：保留最后一次成功的 CNAME，只记 resolved=false；探活 DNS 失败直接 dead（已 alive 不改回）
 		_, err := tx.Exec(ctx, `UPDATE assets SET resolved = false, resolved_at = now(),
 			alive = CASE WHEN alive = 'alive' THEN alive ELSE 'dead' END WHERE id = $1`, assetID)
 		return false, err
@@ -376,18 +374,18 @@ func (r *resolver) storeDNS(ctx context.Context, tx pgx.Tx, host string, hd host
 	wild, parentWild := hd.Wildcard, hd.ParentWild
 	quiet := false
 	if verified { // 有效期内已复核为真实：DNS 不重标 wildcard，也不再复核
-		quiet = wild // IP 全部回落到泛解析 IP：v1 不报
+		quiet = wild // 解析结果回落到泛解析：v1 不报
 		wild, parentWild = false, false
 	}
-	if _, err := tx.Exec(ctx, `UPDATE assets SET ips = $2, cnames = $3, resolved = true, wildcard = $4, cdn = $5,
-			parent_wildcard = $6, resolved_at = now() WHERE id = $1`, assetID, ips, cnames, wild, cdn, parentWild); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE assets SET cnames = $2, resolved = true, wildcard = $3, cdn = $4,
+			parent_wildcard = $5, resolved_at = now() WHERE id = $1`, assetID, cnames, wild, cdn, parentWild); err != nil {
 		return false, err
 	}
 	// wildcard=true 不生成事件；父域有泛解析的等 HTTP 页面复核为真实后再生成
 	if wild || parentWild || quiet {
 		return true, nil
 	}
-	if err := emitNew(ctx, tx, assetID, nil, map[string]any{"subdomain": host, "ips": ips}); err != nil {
+	if err := emitNew(ctx, tx, assetID, nil, map[string]any{"subdomain": host}); err != nil {
 		return false, err
 	}
 	if oldResolved == nil || oldWild && !verified {
@@ -396,15 +394,9 @@ func (r *resolver) storeDNS(ctx context.Context, tx pgx.Tx, host string, hd host
 	if !*oldResolved {
 		return true, nil // 失联后再解析：DNS 层不报；recovered 只在 HTTP 阶段 dead→alive 时产生（T21）
 	}
-	changes := map[string]change{}
-	if !sameSet(oldIPs, ips) {
-		changes["ips"] = change{oldIPs, ips}
-	}
-	if !sameSet(oldCNAMEs, cnames) {
-		changes["cnames"] = change{oldCNAMEs, cnames}
-	}
-	if len(changes) == 0 {
+	if sameSet(oldCNAMEs, cnames) {
 		return true, nil
 	}
+	changes := map[string]change{"cnames": {oldCNAMEs, cnames}}
 	return true, emitEvent(ctx, tx, "changed", assetID, nil, map[string]any{"subdomain": host, "changes": changes})
 }

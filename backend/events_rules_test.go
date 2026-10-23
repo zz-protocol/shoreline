@@ -3,17 +3,18 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 )
 
-// eventLog 返回资产的事件摘要（类型 + changes 键 / recovered 前后 IP）。
+// eventLog 返回资产的事件摘要（类型 + changes 键）。
 func eventLog(t *testing.T, e *testEnv, assetID int64) []string {
 	t.Helper()
-	rows, err := e.pool.Query(context.Background(), `SELECT type, COALESCE(detail->'changes', '{}')::text,
-		COALESCE(detail->'last_ips', 'null')::text, COALESCE(detail->'ips', 'null')::text
+	rows, err := e.pool.Query(context.Background(), `SELECT type, COALESCE(detail->'changes', '{}')::text
 		FROM events WHERE asset_id = $1 AND url_id IS NULL ORDER BY id`, assetID)
 	if err != nil {
 		t.Fatal(err)
@@ -21,14 +22,11 @@ func eventLog(t *testing.T, e *testEnv, assetID int64) []string {
 	defer rows.Close()
 	var out []string
 	for rows.Next() {
-		var typ, ch, last, ips string
-		rows.Scan(&typ, &ch, &last, &ips)
-		switch typ {
-		case "changed":
+		var typ, ch string
+		rows.Scan(&typ, &ch)
+		if typ == "changed" {
 			out = append(out, "changed "+ch)
-		case "recovered":
-			out = append(out, "recovered "+last+"->"+ips)
-		default:
+		} else {
 			out = append(out, typ)
 		}
 	}
@@ -50,15 +48,12 @@ func newRulesAsset(t *testing.T, e *testEnv, host string) int64 {
 func dnsRound(t *testing.T, e *testEnv, r *resolver, host string, hd hostDNS) {
 	t.Helper()
 	hd.Host = host
-	ips, cn := hd.Result.IPs, hd.Result.CNAMEs
-	if ips == nil {
-		ips = []string{}
-	}
+	cn := hd.Result.CNAMEs
 	if cn == nil {
 		cn = []string{}
 	}
 	if err := pgx.BeginFunc(context.Background(), e.pool, func(tx pgx.Tx) error {
-		_, err := r.storeDNS(context.Background(), tx, host, hd, ips, cn, nil)
+		_, err := r.storeDNS(context.Background(), tx, host, hd, cn, nil)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -67,7 +62,7 @@ func dnsRound(t *testing.T, e *testEnv, r *resolver, host string, hd hostDNS) {
 
 func ok(ips ...string) hostDNS { return hostDNS{Resolved: true, Result: dnsResult{IPs: ips}} }
 
-// 规则：新增 IPv6、恢复原值、CNAME 变化 = changed；失联保留最后 IP，失联与再解析成功 DNS 层都不报（T21：recovered 只在 HTTP 阶段 dead→alive 产生）。
+// 规则（T28）：只看 CNAME 集合——IP 变化（新增 IPv6、换 IP）不报；CNAME 新增、恢复原值 = changed；失联保留最后 CNAME，失联与再解析成功 DNS 层都不报（T21：recovered 只在 HTTP 阶段 dead→alive 产生）。
 func TestAssetEventRules(t *testing.T) {
 	e := newTestEnv(t)
 	r := testResolver("127.0.0.1:1")
@@ -78,44 +73,45 @@ func TestAssetEventRules(t *testing.T) {
 		ok("192.0.2.10"),
 		ok("192.0.2.10"),                // 不变
 		ok("192.0.2.10", "2001:db8::1"), // 新增 IPv6
-		ok("192.0.2.10"),                // 恢复原值
+		ok("192.0.2.10"),                // 去掉 IPv6
 		{Resolved: true, Result: dnsResult{IPs: []string{"192.0.2.10"}, CNAMEs: []string{"x.cdn.test"}}}, // CNAME 变化
-		{},               // 失联：保留最后 IP，不报
-		ok("192.0.2.20"), // 失联后换 IP 再现
+		{Resolved: true, Result: dnsResult{IPs: []string{"192.0.2.99"}, CNAMEs: []string{"x.cdn.test"}}}, // CNAME 不变、只换 IP：不报
+		{}, // 失联：保留最后 CNAME，不报
+		{Resolved: true, Result: dnsResult{IPs: []string{"192.0.2.20"}, CNAMEs: []string{"x.cdn.test"}}}, // 失联后同 CNAME 再现：不报
+		ok("192.0.2.20"), // CNAME 恢复原值（空）
 	}
 	for _, s := range steps {
 		dnsRound(t, e, r, h, s)
 	}
-	var ips []string
-	e.pool.QueryRow(context.Background(), `SELECT ips FROM assets WHERE id = $1`, id).Scan(&ips)
 	got := fmt.Sprint(eventLog(t, e, id))
 	want := fmt.Sprint([]string{"new",
-		`changed {"ips": {"new": ["192.0.2.10", "2001:db8::1"], "old": ["192.0.2.10"]}}`,
-		`changed {"ips": {"new": ["192.0.2.10"], "old": ["192.0.2.10", "2001:db8::1"]}}`,
 		`changed {"cnames": {"new": ["x.cdn.test"], "old": []}}`,
+		`changed {"cnames": {"new": [], "old": ["x.cdn.test"]}}`,
 	})
 	if got != want {
 		t.Fatalf("events\n got %s\nwant %s", got, want)
 	}
-	t.Logf("events: %s; final ips %v", got, ips)
+	t.Logf("events: %s", got)
 
-	// 失联时保留最后成功 IP
+	// 失联时保留最后成功 CNAME
+	dnsRound(t, e, r, h, hostDNS{Resolved: true, Result: dnsResult{IPs: []string{"192.0.2.20"}, CNAMEs: []string{"y.cdn.test"}}})
 	dnsRound(t, e, r, h, hostDNS{})
 	var resolved bool
-	e.pool.QueryRow(context.Background(), `SELECT ips, resolved FROM assets WHERE id = $1`, id).Scan(&ips, &resolved)
-	if resolved || fmt.Sprint(ips) != "[192.0.2.20]" {
-		t.Fatalf("after NXDOMAIN ips=%v resolved=%v", ips, resolved)
+	var cn []string
+	e.pool.QueryRow(context.Background(), `SELECT cnames, resolved FROM assets WHERE id = $1`, id).Scan(&cn, &resolved)
+	if resolved || fmt.Sprint(cn) != "[y.cdn.test]" {
+		t.Fatalf("after NXDOMAIN cnames=%v resolved=%v", cn, resolved)
 	}
 }
 
-// 已复核为真实：有效期内 DNS 不重标 wildcard；IP 回落到泛解析 IP 不报；其他 IP 变化照常 changed；过期后重新按 DNS 判定。
+// 已复核为真实：有效期内 DNS 不重标 wildcard；回落到泛解析不报；CNAME 变化照常 changed（只换 IP 不报）；过期后重新按 DNS 判定。
 func TestVerifiedRealHost(t *testing.T) {
 	e := newTestEnv(t)
 	r := testResolver("127.0.0.1:1")
 	h := "lb.verified.events.test"
 	id := newRulesAsset(t, e, h)
 	ctx := context.Background()
-	e.pool.Exec(ctx, `UPDATE assets SET ips = '{10.9.0.1}', resolved = true, wildcard = false, verified_real_at = now() WHERE id = $1`, id)
+	e.pool.Exec(ctx, `UPDATE assets SET resolved = true, wildcard = false, verified_real_at = now() WHERE id = $1`, id)
 	e.pool.Exec(ctx, `INSERT INTO events (type, asset_id) VALUES ('new', $1)`, id)
 	wild := hostDNS{Resolved: true, Wildcard: true, ParentWild: true, Result: dnsResult{IPs: []string{"10.9.0.9"}}}
 	dnsRound(t, e, r, h, wild) // IP 回落到泛解析 IP：不报、不重标
@@ -124,9 +120,10 @@ func TestVerifiedRealHost(t *testing.T) {
 	if w || pw {
 		t.Fatalf("verified host re-marked: wildcard=%v parent_wildcard=%v", w, pw)
 	}
-	dnsRound(t, e, r, h, hostDNS{Resolved: true, ParentWild: true, Result: dnsResult{IPs: []string{"10.9.0.2"}}}) // 真 IP 变化
+	dnsRound(t, e, r, h, hostDNS{Resolved: true, ParentWild: true, Result: dnsResult{IPs: []string{"10.9.0.2"}}})                                  // 只换 IP：不报
+	dnsRound(t, e, r, h, hostDNS{Resolved: true, ParentWild: true, Result: dnsResult{IPs: []string{"10.9.0.2"}, CNAMEs: []string{"lb.cdn.test"}}}) // CNAME 变化
 	got := fmt.Sprint(eventLog(t, e, id))
-	want := fmt.Sprint([]string{"new", `changed {"ips": {"new": ["10.9.0.2"], "old": ["10.9.0.9"]}}`})
+	want := fmt.Sprint([]string{"new", `changed {"cnames": {"new": ["lb.cdn.test"], "old": []}}`})
 	if got != want {
 		t.Fatalf("events\n got %s\nwant %s", got, want)
 	}
@@ -153,6 +150,7 @@ func TestConcurrentChangedOnce(t *testing.T) {
 	}
 	r := testResolver("127.0.0.1:1")
 	dnsRound(t, e, r, h, ok("192.0.2.1"))
+	cnameChg := hostDNS{Resolved: true, Result: dnsResult{IPs: []string{"192.0.2.2"}, CNAMEs: []string{"c.cdn.test"}}}
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {
 		wg.Add(2)
@@ -164,7 +162,7 @@ func TestConcurrentChangedOnce(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			dnsRound(t, e, r, h, ok("192.0.2.2"))
+			dnsRound(t, e, r, h, cnameChg)
 		}()
 	}
 	wg.Wait()
@@ -220,4 +218,29 @@ func TestEventDedupMigration(t *testing.T) {
 		t.Fatalf("new=%d changed=%d indexes=%d", nNew, nChanged, idx)
 	}
 	t.Logf("3 条重复 new → %d，changed 保留 %d，索引 %d 个", nNew, nChanged, idx)
+}
+
+// T28：库里没有 IP 列，事件 detail 不带 IP，openapi 不暴露 ips。
+func TestNoIPStored(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	var cols []string
+	e.pool.QueryRow(ctx, `SELECT COALESCE(array_agg(table_name || '.' || column_name), '{}') FROM information_schema.columns
+		WHERE table_schema = 'public' AND (column_name ~ '(^|_)ips?($|_)')`).Scan(&cols)
+	if len(cols) != 0 {
+		t.Fatalf("IP columns still exist: %v", cols)
+	}
+	r := testResolver("127.0.0.1:1")
+	h := "noip.events.test"
+	id := newRulesAsset(t, e, h)
+	dnsRound(t, e, r, h, ok("192.0.2.7"))
+	var n int
+	e.pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE asset_id = $1 AND detail::text ~ '192\.0\.2\.7|"ips"'`, id).Scan(&n)
+	if n != 0 {
+		t.Fatalf("%d events still carry IP", n)
+	}
+	spec, _ := os.ReadFile("openapi.yaml")
+	if strings.Contains(string(spec), "ips:") {
+		t.Fatal("openapi still exposes ips")
+	}
 }

@@ -79,7 +79,6 @@ components:
         root_id: {type: integer}
         root_domain: {type: string}
         vendor_id: {type: integer}
-        ips: {type: array, items: {type: string}}
         cnames: {type: array, items: {type: string}}
         cdn: {type: string, nullable: true}
         resolved: {type: boolean, nullable: true}

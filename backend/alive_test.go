@@ -133,11 +133,11 @@ func TestAliveHTTPStage(t *testing.T) {
 	e.pool.QueryRow(ctx, `INSERT INTO root_domains (vendor_id, domain) VALUES ($1, 'wild.test') RETURNING id`, vendorID).Scan(&wildRoot)
 	e.pool.QueryRow(ctx, `INSERT INTO root_domains (vendor_id, domain) VALUES ($1, 'plain.test') RETURNING id`, vendorID).Scan(&plainRoot)
 	for _, h := range []string{"lb.wild.test", "fakea.wild.test", "fakeb.wild.test"} {
-		e.pool.Exec(ctx, `INSERT INTO assets (root_id, subdomain, ips, resolved, wildcard) VALUES ($1, $2, '{192.0.2.66}', true, true)`, wildRoot, h)
+		e.pool.Exec(ctx, `INSERT INTO assets (root_id, subdomain, resolved, wildcard) VALUES ($1, $2, true, true)`, wildRoot, h)
 	}
 	e.pool.Exec(ctx, `UPDATE assets SET alive = 'dead' WHERE subdomain = 'fakeb.wild.test'`)
 	for _, h := range []string{"www.plain.test", "down.plain.test"} {
-		e.pool.Exec(ctx, `INSERT INTO assets (root_id, subdomain, ips, resolved) VALUES ($1, $2, '{192.0.2.1}', true)`, plainRoot, h)
+		e.pool.Exec(ctx, `INSERT INTO assets (root_id, subdomain, resolved) VALUES ($1, $2, true)`, plainRoot, h)
 	}
 	var hits atomic.Int64
 	cfg := localProbeServers(t, &hits)

@@ -97,7 +97,7 @@ func TestEventsTwoRounds(t *testing.T) {
 	}
 	t.Logf("round 1: %d events %v", len(got1), got1)
 
-	// 第 2 轮：mv 换 IP；a 的标题变化；新增 v6（AAAA）；new2 落在泛解析
+	// 第 2 轮：mv 换 IP（T28：只换 IP 不报 changed）；a 的标题变化；新增 v6（AAAA）；new2 落在泛解析
 	round.Store(2)
 	mvIP.Store("192.0.2.11")
 	if _, err := TriggerScan(ctx, e.pool, e.client, rootID, "passive", 3); err != nil {
@@ -106,7 +106,6 @@ func TestEventsTwoRounds(t *testing.T) {
 	e.waitStatus(t, "http", "done", 2)
 	got2 := events()
 	want2 := append(append([]string{}, want1...),
-		"changed asset mv.example.test[ips]",
 		"changed url a.example.test[fingerprint_hash title]",
 		"new asset v6.example.test[]", "new url v6.example.test[]")
 	sort.Strings(want2)

@@ -5,6 +5,8 @@
 - 部署一步步说明：**[docs/DEPLOY.md](docs/DEPLOY.md)**
 - 规格：`SPEC.md` · 任务进度：`TASKS.md` · 压测：`docs/bench.md`
 
+> ⚠️ **升级注意（T28，迁移 016_drop_ips）：删除 `assets.ips` 列并抹掉历史播报里的 IP，「不可逆，先备份」。** 升级前按 [docs/DEPLOY.md「9. 备份与升级」](docs/DEPLOY.md#9-备份与升级) 用 `pg_dump -Fc` 备份；回退只能靠旧镜像 + `pg_restore`。
+
 ## 一分钟本地起
 
 ```bash
@@ -86,7 +88,7 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 共用泛解析 IP 的真实主机由 T8 页面相似度进一步区分。CDN 先按 CNAME 后缀识别（阿里、腾讯、字节、网宿、Cloudflare、Akamai、CloudFront、Fastly），未命中再用 cdncheck（MIT）内置 IP 段匹配 CDN/WAF（本地匹配，不发 DNS/HTTP 请求；数据随依赖版本更新）。注意：cdncheck 包初始化时会对 [2001:4860:4860::8888]:53 做一次 UDP connect 以探测本机 IPv6（UDP connect 不发包）。
 
 泛解析命中的子域不删除，标记 `wildcard=true`；API/列表默认过滤、不产生新增事件（T9/T12 实现），可用参数查看。
-结果写入 assets 的 ips / cnames / resolved / wildcard / cdn / resolved_at。
+结果写入 assets 的 cnames / resolved / wildcard / cdn / resolved_at。解析出的 IP 只在内存里用于泛解析、CDN 与存活判断，不入库、不出现在 API/MCP/页面（T28）。
 
 ## Certstream
 
@@ -120,10 +122,10 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 | WILDCARD_VERIFIED_TTL | 168h | HTTP 页面复核为真实主机（assets.verified_real_at）的有效期；期内 DNS 不重标 wildcard，过期后重新复核 |
 
 - 资产新增 `new`：子域首次解析成功且非泛解析时生成一次；解析失败照样入库但不发。wildcard=true 的不生成；父域有泛解析的主机等 HTTP 复核为真实后才生成。
-- 资产变更 `changed`：上次与本次都解析成功且非泛解析，IP 或 CNAME 集合变化（含新增 IPv6、恢复到原值），detail.changes.ips / cnames 记新旧值；CDN 不单独算。
+- 资产变更 `changed`：上次与本次都解析成功且非泛解析，只看 CNAME 集合变化（含恢复到原值），detail.changes.cnames 记新旧值；IP 变化不报（T28）；CDN 不单独算。
 - 资产探活（T21）：`alive` = alive / dead / unknown，`last_alive_at`。HTTP 阶段判定：DNS 能解析且任一协议有响应（任何状态码）为 alive，一旦 alive 不再改回、不再复查；DNS 失败或无响应为 dead；未探测或 HTTP 复核确认为泛解析为 unknown。dead 资产由 `SCHEDULE_ALIVE` 定时复查。
-- 资产恢复 `recovered`：仅在 dead→alive 时产生一条（同一事务锁行，并发只发一次）。DNS 解析失败时仍保留最后一次成功的 IP/CNAME，只记 resolved=false，DNS 层不再发 recovered。`GET /api/assets?alive=` 可筛选。
-- 已复核为真实的主机在有效期内 IP 全部回落到泛解析 IP 时不报（v1）。
+- 资产恢复 `recovered`：仅在 dead→alive 时产生一条（同一事务锁行，并发只发一次）。DNS 解析失败时仍保留最后一次成功的 CNAME，只记 resolved=false，DNS 层不再发 recovered。`GET /api/assets?alive=` 可筛选。
+- 已复核为真实的主机在有效期内解析结果回落到泛解析时不报（v1）。
 - URL 新增 `new`：scheme+host+port 首次入库时生成一次（url_id 非空）。资产 new 与 URL new 都存，默认按资产聚合留给 T12/T13。
 - URL 变更 `changed`：状态码、标题或指纹 hash 变化，detail.changes 记各字段新旧值；只改正文不算。
 - 新旧值比较在 `SELECT ... FOR UPDATE` 事务里做，并发同结果同一字段只记一条 changed；`new` 另由唯一部分索引（迁移 008，建索引前先去重存量重复）保证只生成一次。

@@ -138,11 +138,10 @@ func TestHTTPHandlerWildcardRealHostKept(t *testing.T) {
 	var wildRoot, plainRoot int64
 	e.pool.QueryRow(ctx, `INSERT INTO root_domains (vendor_id, domain) VALUES ($1, 'wild.test') RETURNING id`, vendorID).Scan(&wildRoot)
 	e.pool.QueryRow(ctx, `INSERT INTO root_domains (vendor_id, domain) VALUES ($1, 'plain.test') RETURNING id`, vendorID).Scan(&plainRoot)
-	sharedIP := []string{"192.0.2.66"} // 泛解析 IP，lb 与 fake 共用
 	for _, h := range []string{"lb.wild.test", "fakea.wild.test", "fakeb.wild.test"} {
-		e.pool.Exec(ctx, `INSERT INTO assets (root_id, subdomain, ips, resolved, wildcard) VALUES ($1, $2, $3, true, true)`, wildRoot, h, sharedIP)
+		e.pool.Exec(ctx, `INSERT INTO assets (root_id, subdomain, resolved, wildcard) VALUES ($1, $2, true, true)`, wildRoot, h)
 	}
-	e.pool.Exec(ctx, `INSERT INTO assets (root_id, subdomain, ips, resolved, wildcard) VALUES ($1, 'www.plain.test', '{192.0.2.1}', true, false)`, plainRoot)
+	e.pool.Exec(ctx, `INSERT INTO assets (root_id, subdomain, resolved, wildcard) VALUES ($1, 'www.plain.test', true, false)`, plainRoot)
 
 	var hits atomic.Int64
 	h := httpHandler(e.pool, newProber(localProbeServers(t, &hits)))

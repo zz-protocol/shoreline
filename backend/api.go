@@ -717,7 +717,7 @@ func int64Param(w http.ResponseWriter, r *http.Request, name string) (*int64, bo
 	return &n, true
 }
 
-const assetCols = `a.id, a.subdomain, a.root_id, r.domain AS root_domain, r.vendor_id, a.ips, a.cnames, a.cdn, a.resolved,
+const assetCols = `a.id, a.subdomain, a.root_id, r.domain AS root_domain, r.vendor_id, a.cnames, a.cdn, a.resolved,
 	a.wildcard, a.customer_hosted, a.in_scope, a.sources, a.first_seen, a.last_seen, a.alive, a.last_alive_at`
 
 // listAssets：vendor / in_scope / q（子域名或 URL 标题子串）/ new_since（资产 new 事件时间）/ include_wildcard（默认过滤）。

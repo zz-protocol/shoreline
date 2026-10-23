@@ -34,10 +34,9 @@ func TestBenchListAssets(t *testing.T) {
 			end = n
 		}
 		_, err := e.pool.Exec(ctx, `
-			INSERT INTO assets (root_id, subdomain, ips, in_scope, sources, wildcard)
+			INSERT INTO assets (root_id, subdomain, in_scope, sources, wildcard)
 			SELECT $1,
 				$2 || i::text || '.bench.example.test',
-				ARRAY['10.0.0.' || ((i % 250)+1)::text],
 				(i % 2 = 0),
 				ARRAY['bench'],
 				(i % 17 = 0)
