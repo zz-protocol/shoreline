@@ -30,7 +30,7 @@ docker compose up --build -d
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| FOFA_KEY / QUAKE_KEY / HUNTER_KEY | 空 | 测绘 API key；为空则跳过该源 |
+| FOFA_KEY / QUAKE_KEY / HUNTER_KEY | 空 | 测绘 API key；为空则跳过该源。网页「测绘 Key」设置优先，未配置时回退到此处；改网页配置后下次扫描生效、无需重启 |
 | PASSIVE_PAGES | 1 | 测绘源每次查询最多翻页数 |
 | PASSIVE_PAGE_SIZE | 100 | 每页条数 |
 | SUBFINDER_MAX_TIME | 5m | subfinder 单次枚举最长时间（Go duration，整秒，>= 1s） |
@@ -247,7 +247,8 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 
 ## Web 端（T14）
 - React + Vite + Ant Design 5（MIT，深色算法主题，不做浅色切换）+ swagger-ui-dist（Apache-2.0）做 `/docs`。
-- 首屏输入 API token，存 `localStorage`；侧栏：新增播报 / 资产 / 厂商·根域 / 扫描任务 / API Key / API 文档。
+- 首屏输入 API token，存 `localStorage`；侧栏：新增播报 / 资产 / 厂商·根域 / 客户托管规则 / 扫描任务 / 测绘 Key / API Key / API 文档。
+- 测绘 Key（T30）：FOFA/Quake/Hunter 可在网页增删改，库内保存；API/页面只返掩码（后 4 位）；「测试连通」只调账户信息接口（mock 测），不耗查询额度。
 - 厂商 `active_enabled` 开关走 `PATCH`；删厂商/根域二次确认；资产 `include_wildcard`；事件 `level` + 每 30s 轮询 `since`。
 - 扫描列表展示 `degraded`/`degraded_reason`；`passive`/`active`/`expand` 可重跑（再 `POST /api/scans`）；`dns`/`http` 无重跑钮，提示从 passive 重跑。
 - 本地：`cd frontend && npm install && npm test && npm run build`；`npm run dev` 反代到 `127.0.0.1:8080`。

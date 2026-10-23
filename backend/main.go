@@ -56,7 +56,7 @@ func main() {
 		log.Fatal(err)
 	}
 	handlers := map[string]ScanHandler{
-		"passive": passiveHandler(pool, passiveSources(pcfg)),
+		"passive": passiveHandlerFromConfig(pool, pcfg),
 		"dns":     dnsHandler(pool, newResolver(dcfg)),
 		"http":    httpHandler(pool, newProber(hcfg)),
 		"active":  activeHandler(pool, newActiveScanner(acfg, dcfg)),

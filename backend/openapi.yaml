@@ -14,6 +14,7 @@ components:
       scheme: bearer
   parameters:
     id: {name: id, in: path, required: true, schema: {type: integer}}
+    provider: {name: provider, in: path, required: true, schema: {type: string, enum: [fofa, quake, hunter]}}
     limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500, default: 50}}
     cursor: {name: cursor, in: query, schema: {type: string}, description: "上一页的 next_cursor"}
   schemas:
@@ -392,6 +393,26 @@ paths:
       summary: "吊销 token"
       parameters: [{$ref: "#/components/parameters/id"}]
       responses: {"204": {description: "已删除"}, "404": {$ref: "#/components/responses/Error"}}
+
+  /api/probe-keys:
+    get:
+      summary: "测绘 key 列表（FOFA/Quake/Hunter；只返回掩码后 4 位，不返回明文；source=db|env|none）"
+      responses: {"200": {description: "{items: [{provider, configured, source, mask}]}"}}
+  /api/probe-keys/{provider}:
+    put:
+      summary: "设置/更新网页测绘 key（明文只在请求体；响应仅掩码；优先于环境变量；下次扫描生效无需重启）"
+      parameters: [{$ref: "#/components/parameters/provider"}]
+      requestBody: {content: {application/json: {schema: {type: object, required: [key], properties: {key: {type: string}}}}}}
+      responses: {"200": {description: "{provider, configured, source, mask}"}, "400": {$ref: "#/components/responses/Error"}}
+    delete:
+      summary: "删除网页测绘 key（回退到环境变量）"
+      parameters: [{$ref: "#/components/parameters/provider"}]
+      responses: {"204": {description: "已删除"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/probe-keys/{provider}/test:
+    post:
+      summary: "测试连通：只调账户信息接口（只读、不耗查询额度）；用 mock 测；响应不含明文 key"
+      parameters: [{$ref: "#/components/parameters/provider"}]
+      responses: {"200": {description: "{ok, source, error?}"}, "400": {$ref: "#/components/responses/Error"}}
   /mcp:
     post:
       summary: "MCP server（Streamable HTTP，无状态，JSON 响应；JSON-RPC 2.0）"

@@ -54,6 +54,9 @@ type api struct {
 	client *asynq.Client
 	cfg    apiConfig
 	bg     context.Context // 异步任务用（不随请求取消）
+	// T30 测试连通可注入（生产为 nil → 默认 Base URL + 15s client）
+	probeHTTP  *http.Client
+	probeBases map[string]string // provider → base URL
 }
 
 // apiRoutes 是全部受保护路由；openapi.yaml 必须与之一致（测试校验）。
@@ -93,6 +96,10 @@ func (a *api) routes() map[string]http.HandlerFunc {
 		"GET /api/tokens":                           a.listTokens,
 		"POST /api/tokens":                          a.createToken,
 		"DELETE /api/tokens/{id}":                   a.deleteToken,
+		"GET /api/probe-keys":                       a.listProbeKeys,
+		"PUT /api/probe-keys/{provider}":            a.putProbeKey,
+		"DELETE /api/probe-keys/{provider}":         a.deleteProbeKey,
+		"POST /api/probe-keys/{provider}/test":      a.testProbeKey,
 	}
 }
 

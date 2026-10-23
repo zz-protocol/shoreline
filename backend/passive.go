@@ -87,7 +87,8 @@ func passiveSources(c passiveConfig) []Source {
 func (c passiveConfig) getJSON(ctx context.Context, req *http.Request, out any) error {
 	resp, err := c.HTTP.Do(req.WithContext(ctx))
 	if err != nil {
-		return err
+		// 不把含 key 的完整 URL 打进日志/错误（T30）
+		return fmt.Errorf("%s: request failed", req.URL.Host)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

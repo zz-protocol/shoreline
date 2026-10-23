@@ -10,6 +10,7 @@ const items = [
   { key: '/vendors', label: '厂商 / 根域' },
   { key: '/hosted-rules', label: '客户托管规则' },
   { key: '/scans', label: '扫描任务' },
+  { key: '/probe-keys', label: '测绘 Key' },
   { key: '/tokens', label: 'API Key' },
   { key: '/docs', label: 'API 文档' },
 ]

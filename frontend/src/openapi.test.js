@@ -7,11 +7,11 @@ import yaml from 'js-yaml'
 const spec = readFileSync(resolve(__dirname, '../../backend/openapi.yaml'), 'utf8')
 
 describe('openapi.yaml (js-yaml, same parser as swagger-ui)', () => {
-  it('parses with openapi version and 36 operations', () => {
+  it('parses with openapi version and 40 operations', () => {
     const doc = yaml.load(spec)
     expect(doc.openapi).toBe('3.0.3')
     const ops = Object.values(doc.paths).flatMap((p) => Object.keys(p).filter((m) => ['get', 'post', 'patch', 'delete', 'put'].includes(m)))
-    expect(ops.length).toBe(36)
+    expect(ops.length).toBe(40)
     expect(doc.components.schemas.ScopeAccepted.properties.task_id.description).toBe('GET /api/scope-tasks/{id} 查询 in_scope 重算进度')
   })
 
