@@ -422,3 +422,52 @@ func pendingHosts(t *testing.T, e *testEnv, scanID int64) []string {
 	t.Fatalf("scan %d not queued", scanID)
 	return nil
 }
+
+// T29：/api/assets/values 按当前筛选整列复制，跨页全量、去重；与 list 筛选一致。
+func TestAssetValuesCopy(t *testing.T) {
+	e, c, _ := newAPITest(t, 100)
+	ctx := context.Background()
+	v := e.vendorID()
+	var root string
+	e.pool.QueryRow(ctx, `SELECT domain FROM root_domains WHERE id = $1`, e.rootID).Scan(&root)
+	ins := func(host string, urls []string) {
+		t.Helper()
+		var aid int64
+		if err := e.pool.QueryRow(ctx, `INSERT INTO assets (root_id, subdomain, resolved, alive) VALUES ($1, $2, true, 'alive') RETURNING id`, e.rootID, host).Scan(&aid); err != nil {
+			t.Fatal(err)
+		}
+		for i, h := range urls {
+			e.pool.Exec(ctx, `INSERT INTO urls (asset_id, scheme, host, port) VALUES ($1, 'https', $2, $3)`, aid, h, 443+i)
+		}
+	}
+	ins("a.t29."+root, []string{"a.t29." + root, "a2.t29." + root})
+	ins("b.t29."+root, []string{"b.t29." + root})
+	ins("c.other."+root, []string{"c.other." + root}) // q 不命中
+	// 同子域再插不会重复：values DISTINCT
+	base := fmt.Sprintf("vendor=%d&q=t29.", v)
+	sub := c.want(200, "GET", "/api/assets/values?field=subdomain&"+base, nil)
+	got := sub["items"].([]any)
+	if int(sub["count"].(float64)) != 2 || len(got) != 2 {
+		t.Fatalf("subdomain %#v", sub)
+	}
+	// 列表同筛选 2 条（验证跨页口径：values 不受 limit）
+	list := items(c.want(200, "GET", "/api/assets?limit=1&"+base, nil))
+	if len(list) != 1 || c.want(200, "GET", "/api/assets?limit=1&"+base, nil)["next_cursor"] == nil {
+		t.Fatalf("list page %#v", list)
+	}
+	if int(sub["count"].(float64)) != 2 {
+		t.Fatal("values must be full set, not one page")
+	}
+	urls := c.want(200, "GET", "/api/assets/values?field=url&"+base, nil)
+	if int(urls["count"].(float64)) != 3 { // a, a2, b
+		t.Fatalf("urls %#v", urls)
+	}
+	// 叠加 alive=dead → 空
+	empty := c.want(200, "GET", "/api/assets/values?field=subdomain&"+base+"&alive=dead", nil)
+	if int(empty["count"].(float64)) != 0 {
+		t.Fatalf("alive stack %#v", empty)
+	}
+	c.want(400, "GET", "/api/assets/values?field=ip&"+base, nil)
+	c.want(400, "GET", "/api/assets/values?"+base, nil)
+	t.Logf("subdomain=%v count=%v; url count=%v；与 list 筛选一致且不受分页截断", got, sub["count"], urls["count"])
+}

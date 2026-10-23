@@ -81,6 +81,7 @@ func (a *api) routes() map[string]http.HandlerFunc {
 		"DELETE /api/customer-hosted-rules/{id}":    a.deleteHostedRule,
 		"GET /api/customer-hosted-tasks/{id}":       a.getHostedTask,
 		"GET /api/assets":                           a.listAssets,
+		"GET /api/assets/values":                    a.assetValues,
 		"GET /api/check-scope":                      a.checkScopeHTTP,
 		"GET /api/assets/{id}":                      a.getAsset,
 		"GET /api/events":                           a.listEvents,
@@ -786,25 +787,8 @@ func cutPage(list []map[string]any, limit int) ([]map[string]any, any) {
 	return list, nil
 }
 
-// queryAssets：vendor / in_scope / q / new_since / include_wildcard / alive / alive_since / alive_until（T27：last_alive_at ∈ [since, until)）。
-func (a *api) queryAssets(ctx context.Context, f assetFilter) ([]map[string]any, error) {
-	if err := checkVendor(f.Vendor); err != nil {
-		return nil, err
-	}
-	if err := checkPage(f.Limit, f.Cursor); err != nil {
-		return nil, err
-	}
-	if strings.ContainsRune(f.Q, 0) {
-		return nil, errf(400, "NUL character not allowed")
-	}
-	if f.Alive != "" && f.Alive != "alive" && f.Alive != "dead" && f.Alive != "unknown" {
-		return nil, errf(400, "alive must be alive|dead|unknown")
-	}
-	if f.AliveSince != nil && f.AliveUntil != nil && !f.AliveUntil.After(*f.AliveSince) {
-		return nil, errf(400, "alive_until must be after alive_since")
-	}
-	q := strings.ToLower(strings.TrimSpace(f.Q))
-	return rowsJSON(a.db.Query(ctx, `SELECT `+assetCols+` FROM assets a JOIN root_domains r ON r.id = a.root_id
+// assetWhere：资产筛选条件，参数 $1..$10 为 cursor/vendor/in_scope/wild/q/new_since/alive/hosted/alive_since/alive_until（列表 LIMIT 用 $11；values 上限用 $11）。
+const assetWhere = `FROM assets a JOIN root_domains r ON r.id = a.root_id
 		WHERE ($1::bigint = 0 OR a.id < $1)
 		  AND ($2::bigint IS NULL OR r.vendor_id = $2)
 		  AND ($3::bool IS NULL OR a.in_scope IS NOT DISTINCT FROM $3)
@@ -813,11 +797,60 @@ func (a *api) queryAssets(ctx context.Context, f assetFilter) ([]map[string]any,
 		       OR EXISTS (SELECT 1 FROM urls u WHERE u.asset_id = a.id AND strpos(lower(u.title), $5) > 0))
 		  AND ($6::timestamptz IS NULL OR EXISTS (SELECT 1 FROM events e WHERE e.asset_id = a.id AND e.url_id IS NULL
 		       AND e.type = 'new' AND e.created_at >= $6))
-		  AND ($8::text = '' OR a.alive = $8)
-		  AND ($9::bool OR NOT a.customer_hosted)
-		  AND ($10::timestamptz IS NULL OR a.last_alive_at >= $10)
-		  AND ($11::timestamptz IS NULL OR a.last_alive_at < $11)
-		ORDER BY a.id DESC LIMIT $7`, f.Cursor, f.Vendor, f.InScope, f.IncludeWildcard, q, f.NewSince, f.Limit+1, f.Alive, f.IncludeHosted, f.AliveSince, f.AliveUntil))
+		  AND ($7::text = '' OR a.alive = $7)
+		  AND ($8::bool OR NOT a.customer_hosted)
+		  AND ($9::timestamptz IS NULL OR a.last_alive_at >= $9)
+		  AND ($10::timestamptz IS NULL OR a.last_alive_at < $10)`
+
+func (f assetFilter) args() []any {
+	q := strings.ToLower(strings.TrimSpace(f.Q))
+	return []any{f.Cursor, f.Vendor, f.InScope, f.IncludeWildcard, q, f.NewSince, f.Alive, f.IncludeHosted, f.AliveSince, f.AliveUntil}
+}
+
+func checkAssetFilter(f *assetFilter) error {
+	if err := checkVendor(f.Vendor); err != nil {
+		return err
+	}
+	if strings.ContainsRune(f.Q, 0) {
+		return errf(400, "NUL character not allowed")
+	}
+	if f.Alive != "" && f.Alive != "alive" && f.Alive != "dead" && f.Alive != "unknown" {
+		return errf(400, "alive must be alive|dead|unknown")
+	}
+	if f.AliveSince != nil && f.AliveUntil != nil && !f.AliveUntil.After(*f.AliveSince) {
+		return errf(400, "alive_until must be after alive_since")
+	}
+	return nil
+}
+
+// assetFilterFromQuery：列表与整列复制共用的查询参数（不含分页）。
+func assetFilterFromQuery(w http.ResponseWriter, r *http.Request) (assetFilter, bool) {
+	vendor, ok1 := int64Param(w, r, "vendor")
+	inScope, ok2 := boolParam(w, r, "in_scope")
+	wild, ok3 := boolParam(w, r, "include_wildcard")
+	newSince, ok4 := timeParam(w, r, "new_since")
+	hosted, ok5 := boolParam(w, r, "include_customer_hosted")
+	aliveSince, ok6 := timeParam(w, r, "alive_since")
+	aliveUntil, ok7 := timeParam(w, r, "alive_until")
+	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !ok6 || !ok7 {
+		return assetFilter{}, false
+	}
+	return assetFilter{
+		Vendor: vendor, InScope: inScope, IncludeWildcard: wild != nil && *wild, Q: r.URL.Query().Get("q"),
+		NewSince: newSince, Alive: r.URL.Query().Get("alive"),
+		IncludeHosted: hosted != nil && *hosted, AliveSince: aliveSince, AliveUntil: aliveUntil,
+	}, true
+}
+
+// queryAssets：vendor / in_scope / q / new_since / include_wildcard / alive / alive_since / alive_until（T27：last_alive_at ∈ [since, until)）。
+func (a *api) queryAssets(ctx context.Context, f assetFilter) ([]map[string]any, error) {
+	if err := checkAssetFilter(&f); err != nil {
+		return nil, err
+	}
+	if err := checkPage(f.Limit, f.Cursor); err != nil {
+		return nil, err
+	}
+	return rowsJSON(a.db.Query(ctx, `SELECT `+assetCols+` `+assetWhere+` ORDER BY a.id DESC LIMIT $11`, append(f.args(), f.Limit+1)...))
 }
 
 func (a *api) listAssets(w http.ResponseWriter, r *http.Request) {
@@ -825,30 +858,70 @@ func (a *api) listAssets(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	vendor, ok1 := int64Param(w, r, "vendor")
-	inScope, ok2 := boolParam(w, r, "in_scope")
-	if !ok1 || !ok2 {
+	f, ok := assetFilterFromQuery(w, r)
+	if !ok {
 		return
 	}
-	wild, ok3 := boolParam(w, r, "include_wildcard")
-	newSince, ok4 := timeParam(w, r, "new_since")
-	hosted, ok5 := boolParam(w, r, "include_customer_hosted")
-	aliveSince, ok6 := timeParam(w, r, "alive_since")
-	aliveUntil, ok7 := timeParam(w, r, "alive_until")
-	if !ok3 || !ok4 || !ok5 || !ok6 || !ok7 {
-		return
-	}
-	list, err := a.queryAssets(r.Context(), assetFilter{
-		Vendor: vendor, InScope: inScope, IncludeWildcard: wild != nil && *wild, Q: r.URL.Query().Get("q"),
-		NewSince: newSince, Limit: limit, Cursor: cursor, Alive: r.URL.Query().Get("alive"),
-		IncludeHosted: hosted != nil && *hosted, AliveSince: aliveSince, AliveUntil: aliveUntil,
-	})
+	f.Limit, f.Cursor = limit, cursor
+	list, err := a.queryAssets(r.Context(), f)
 	if err != nil {
 		writeAnyErr(w, err)
 		return
 	}
 	list, next := cutPage(list, limit)
 	writeJSON(w, 200, map[string]any{"items": list, "next_cursor": next})
+}
+
+// assetValuesMax：整列复制上限（与播报 values 一致）。
+const assetValuesMax = 100000
+
+// assetValues：整列复制（field=subdomain|url），当前筛选条件下全部匹配资产，去重排序（T29；与播报页同一套路）。
+func (a *api) assetValues(w http.ResponseWriter, r *http.Request) {
+	f, ok := assetFilterFromQuery(w, r)
+	if !ok {
+		return
+	}
+	if err := checkAssetFilter(&f); err != nil {
+		writeAnyErr(w, err)
+		return
+	}
+	field := r.URL.Query().Get("field")
+	var q string
+	switch field {
+	case "subdomain":
+		q = `SELECT DISTINCT a.subdomain AS v ` + assetWhere + ` ORDER BY 1 LIMIT $11`
+	case "url":
+		q = `SELECT DISTINCT u.scheme || '://' || u.host || ':' || u.port AS v
+			FROM urls u WHERE u.asset_id IN (SELECT a.id ` + assetWhere + `)
+			ORDER BY 1 LIMIT $11`
+	default:
+		writeErr(w, 400, "field must be subdomain|url")
+		return
+	}
+	rows, err := a.db.Query(r.Context(), q, append(f.args(), assetValuesMax+1)...)
+	if err != nil {
+		dbErr(w, err)
+		return
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			dbErr(w, err)
+			return
+		}
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		dbErr(w, err)
+		return
+	}
+	truncated := len(out) > assetValuesMax
+	if truncated {
+		out = out[:assetValuesMax]
+	}
+	writeJSON(w, 200, map[string]any{"field": field, "items": out, "count": len(out), "truncated": truncated})
 }
 
 func (a *api) getAsset(w http.ResponseWriter, r *http.Request) {

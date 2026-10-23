@@ -271,6 +271,21 @@ paths:
         - {$ref: "#/components/parameters/limit"}
         - {$ref: "#/components/parameters/cursor"}
       responses: {"200": {description: "{items: Asset[], next_cursor}"}, "400": {$ref: "#/components/responses/Error"}}
+  /api/assets/values:
+    get:
+      summary: "整列复制：当前筛选条件下全部匹配资产的子域或 URL，去重排序（上限 100000，超出 truncated=true）；筛选参数同 /api/assets（T29）"
+      parameters:
+        - {name: field, in: query, required: true, schema: {type: string, enum: [subdomain, url]}}
+        - {name: vendor, in: query, schema: {type: integer}}
+        - {name: in_scope, in: query, schema: {type: boolean}}
+        - {name: alive, in: query, schema: {type: string, enum: [alive, dead, unknown]}, description: "按探活状态筛选"}
+        - {name: alive_since, in: query, schema: {type: string, format: date-time}, description: "最后存活时间 >=（RFC3339）"}
+        - {name: alive_until, in: query, schema: {type: string, format: date-time}, description: "最后存活时间 <（RFC3339）"}
+        - {name: q, in: query, schema: {type: string}, description: "子域名或 URL 标题子串（不区分大小写）"}
+        - {name: new_since, in: query, schema: {type: string, format: date-time}}
+        - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
+        - {name: include_customer_hosted, in: query, schema: {type: boolean, default: false}}
+      responses: {"200": {description: "{field, items: string[], count, truncated}"}, "400": {$ref: "#/components/responses/Error"}}
   /api/check-scope:
     get:
       summary: "范围检查（与 MCP check_scope 同一实现、输出一致）"
