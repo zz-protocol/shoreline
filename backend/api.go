@@ -872,6 +872,7 @@ type eventFilter struct {
 	Until           *time.Time // created_at < until（T20 时间窗）
 	AfterID         int64      // id > after_id（T20 轮询只取新增）
 	IncludeHosted   bool       // include_customer_hosted：默认隐藏客户托管资产的事件（T24）
+	Q               string     // 子域名或 URL 包含匹配，不区分大小写（T26）
 }
 
 // checkEventFilter：level/type/vendor/时间窗校验（列表、统计、整列复制共用）。
@@ -901,11 +902,16 @@ func checkEventFilter(f *eventFilter) error {
 	if f.AfterID < 0 {
 		return errf(400, "invalid after_id")
 	}
+	if strings.ContainsRune(f.Q, 0) {
+		return errf(400, "NUL character not allowed")
+	}
+	f.Q = strings.ToLower(strings.TrimSpace(f.Q))
 	return nil
 }
 
-// eventWhere：事件筛选条件，参数 $1..$10 依次为 cursor/level/type/since/asset_id/vendor/include_wildcard/until/after_id/include_customer_hosted。
+// eventWhere：事件筛选条件，参数 $1..$11 依次为 cursor/level/type/since/asset_id/vendor/include_wildcard/until/after_id/include_customer_hosted/q。
 // T28：type=changed 且 changes 为空（或去掉非实质键 ips 后为空）的行一律不返回、不计入（历史「只改过 IP」的残留；显式 type=changed 也不返回）。
+// T26：q 对子域名与 URL（scheme://host:port）做包含匹配（不区分大小写）；资产级事件还匹配该资产当前任一 URL。
 const eventWhere = `FROM events e JOIN assets a ON a.id = e.asset_id JOIN root_domains r ON r.id = a.root_id JOIN vendors v ON v.id = r.vendor_id LEFT JOIN urls u ON u.id = e.url_id
 		WHERE ($1::bigint = 0 OR e.id < $1)
 		  AND ($2::text = 'all' OR ($2 = 'asset') = (e.url_id IS NULL))
@@ -917,10 +923,14 @@ const eventWhere = `FROM events e JOIN assets a ON a.id = e.asset_id JOIN root_d
 		  AND ($8::timestamptz IS NULL OR e.created_at < $8)
 		  AND ($9::bigint = 0 OR e.id > $9)
 		  AND ($10::bool OR NOT a.customer_hosted)
-		  AND NOT (e.type = 'changed' AND COALESCE(e.detail->'changes', '{}'::jsonb) - 'ips' = '{}'::jsonb)`
+		  AND NOT (e.type = 'changed' AND COALESCE(e.detail->'changes', '{}'::jsonb) - 'ips' = '{}'::jsonb)
+		  AND ($11::text = '' OR strpos(a.subdomain, $11) > 0
+		       OR strpos(lower(COALESCE(u.scheme || '://' || u.host || ':' || u.port::text, '')), $11) > 0
+		       OR EXISTS (SELECT 1 FROM urls uu WHERE uu.asset_id = e.asset_id
+		            AND strpos(lower(uu.scheme || '://' || uu.host || ':' || uu.port::text), $11) > 0))`
 
 func (f eventFilter) args() []any {
-	return []any{f.Cursor, f.Level, f.Type, f.Since, f.AssetID, f.Vendor, f.IncludeWildcard, f.Until, f.AfterID, f.IncludeHosted}
+	return []any{f.Cursor, f.Level, f.Type, f.Since, f.AssetID, f.Vendor, f.IncludeWildcard, f.Until, f.AfterID, f.IncludeHosted, f.Q}
 }
 
 // queryEvents：level=asset（默认，资产级）|url|all；type 不传默认 new,recovered（显式传 changed 才含 changed）；资产级 new 事件嵌套 url_events。
@@ -934,7 +944,7 @@ func (a *api) queryEvents(ctx context.Context, f eventFilter) ([]map[string]any,
 	}
 	list, err := rowsJSON(a.db.Query(ctx, `SELECT e.id, e.type, CASE WHEN e.url_id IS NULL THEN 'asset' ELSE 'url' END AS level,
 		e.asset_id, a.subdomain, a.customer_hosted, r.vendor_id, e.url_id, u.scheme || '://' || u.host || ':' || u.port AS url, e.detail, e.created_at
-		`+eventWhere+` ORDER BY e.id DESC LIMIT $11`, append(f.args(), f.Limit+1)...))
+		`+eventWhere+` ORDER BY e.id DESC LIMIT $12`, append(f.args(), f.Limit+1)...))
 	if err == nil {
 		err = a.nestURLEvents(ctx, list)
 	}
@@ -978,7 +988,7 @@ func eventFilterFromQuery(w http.ResponseWriter, r *http.Request) (eventFilter, 
 		after = n
 	}
 	return eventFilter{Level: qs.Get("level"), Type: qs.Get("type"), Since: since, Until: until, AssetID: assetID,
-		Vendor: vendor, IncludeWildcard: wild != nil && *wild, AfterID: after, IncludeHosted: hosted != nil && *hosted}, true
+		Vendor: vendor, IncludeWildcard: wild != nil && *wild, AfterID: after, IncludeHosted: hosted != nil && *hosted, Q: qs.Get("q")}, true
 }
 
 func (a *api) listEvents(w http.ResponseWriter, r *http.Request) {
@@ -1049,14 +1059,14 @@ func (a *api) eventValues(w http.ResponseWriter, r *http.Request) {
 	var q string
 	switch {
 	case field == "subdomain":
-		q = `SELECT DISTINCT a.subdomain AS v ` + eventWhere + ` ORDER BY 1 LIMIT $11`
+		q = `SELECT DISTINCT a.subdomain AS v ` + eventWhere + ` ORDER BY 1 LIMIT $12`
 	case field == "url" && f.Level == "asset":
 		// 资产维度：取窗口内事件对应资产的当前 URL（恢复的资产窗口内没有 URL 级事件，不能按 URL 事件取）
 		q = `SELECT DISTINCT uu.scheme || '://' || uu.host || ':' || uu.port AS v
 			FROM urls uu WHERE uu.asset_id IN (SELECT e.asset_id ` + eventWhere + `)
-			ORDER BY 1 LIMIT $11`
+			ORDER BY 1 LIMIT $12`
 	case field == "url":
-		q = `SELECT DISTINCT u.scheme || '://' || u.host || ':' || u.port AS v ` + eventWhere + ` AND u.id IS NOT NULL ORDER BY 1 LIMIT $11`
+		q = `SELECT DISTINCT u.scheme || '://' || u.host || ':' || u.port AS v ` + eventWhere + ` AND u.id IS NOT NULL ORDER BY 1 LIMIT $12`
 	default:
 		writeErr(w, 400, "field must be subdomain|url")
 		return

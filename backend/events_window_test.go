@@ -388,3 +388,68 @@ func TestHideEmptyChanged(t *testing.T) {
 	}
 	t.Logf("empty/ips-only/null-changes hidden; cnames changed id=%d visible; db kept %d changed rows", keepID, nDB)
 }
+
+// T26：q 对子域名/URL 包含匹配（不区分大小写）；列表、stats、values、MCP 一致；可与 vendor/type 叠加。
+func TestEventsSearchQ(t *testing.T) {
+	e, c, _ := newAPITest(t, 100)
+	ctx := context.Background()
+	v := e.vendorID()
+	var root string
+	e.pool.QueryRow(ctx, `SELECT domain FROM root_domains WHERE id = $1`, e.rootID).Scan(&root)
+	mk := func(host string, withURL bool) {
+		t.Helper()
+		var aid int64
+		if err := e.pool.QueryRow(ctx, `INSERT INTO assets (root_id, subdomain, resolved) VALUES ($1, $2, true) RETURNING id`, e.rootID, host).Scan(&aid); err != nil {
+			t.Fatal(err)
+		}
+		e.pool.Exec(ctx, `INSERT INTO events (type, asset_id, detail) VALUES ('new', $1, '{}')`, aid)
+		if withURL {
+			var uid int64
+			e.pool.QueryRow(ctx, `INSERT INTO urls (asset_id, scheme, host, port) VALUES ($1, 'https', $2, 443) RETURNING id`, aid, host).Scan(&uid)
+			e.pool.Exec(ctx, `INSERT INTO events (type, asset_id, url_id, detail) VALUES ('new', $1, $2, '{}')`, aid, uid)
+		}
+	}
+	mk("api."+root, true)
+	mk("www."+root, true)
+	mk("mail."+root, false)
+	base := fmt.Sprintf("vendor=%d&type=new&level=asset", v)
+
+	list := items(c.want(200, "GET", "/api/events?limit=500&"+base+"&q=API.", nil))
+	if len(list) != 1 || !strings.HasPrefix(list[0]["subdomain"].(string), "api.") {
+		t.Fatalf("subdomain q %#v", list)
+	}
+	st := c.want(200, "GET", "/api/events/stats?"+base+"&q=API.", nil)
+	if int64(st["total"].(float64)) != 1 {
+		t.Fatalf("stats %#v", st)
+	}
+	vals := c.want(200, "GET", "/api/events/values?field=subdomain&"+base+"&q=API.", nil)
+	if int(vals["count"].(float64)) != 1 || !strings.HasPrefix(vals["items"].([]any)[0].(string), "api.") {
+		t.Fatalf("values %#v", vals)
+	}
+	// URL 匹配（资产级：经 EXISTS 当前 URL）
+	byURL := items(c.want(200, "GET", fmt.Sprintf("/api/events?limit=500&%s&q=%s", base, url.QueryEscape("https://www."+root+":443")), nil))
+	if len(byURL) != 1 || !strings.HasPrefix(byURL[0]["subdomain"].(string), "www.") {
+		t.Fatalf("url q %#v", byURL)
+	}
+	// 与 type 叠加：只搜 changed 时搜不到 new
+	onlyCh := items(c.want(200, "GET", fmt.Sprintf("/api/events?limit=500&vendor=%d&type=changed&level=asset&q=api.", v), nil))
+	if len(onlyCh) != 0 {
+		t.Fatalf("type+q %#v", onlyCh)
+	}
+	c.want(400, "GET", "/api/events?q=%00", nil)
+
+	s, err := mcpSession(t, c.srv.URL, testBootstrap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	out, isErr := callTool(t, s, "list_new_assets", map[string]any{"vendor": v, "q": "API.", "limit": 500})
+	if isErr {
+		t.Fatalf("mcp %v", out)
+	}
+	got := items(out)
+	if len(got) != 1 || !strings.HasPrefix(got[0]["subdomain"].(string), "api.") {
+		t.Fatalf("mcp %#v", got)
+	}
+	t.Logf("q=API. → list/stats/values/mcp 均为 1 条 api.*；URL 搜索命中 www；type=changed 叠加为空")
+}

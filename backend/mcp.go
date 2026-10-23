@@ -13,6 +13,7 @@ import (
 // MCP server（T13）：Streamable HTTP 挂在 /mcp，复用 API 的 Bearer token 认证；四个工具复用 T12 的查询逻辑。
 
 type listNewAssetsIn struct {
+	Q               string `json:"q,omitempty" jsonschema:"substring of subdomain or URL (case-insensitive)"`
 	Vendor          *int64 `json:"vendor,omitempty" jsonschema:"only this vendor id (>= 1)"`
 	Since           string `json:"since,omitempty" jsonschema:"RFC3339; only new events at or after this time"`
 	IncludeWildcard bool   `json:"include_wildcard,omitempty" jsonschema:"include wildcard assets (default false)"`
@@ -100,7 +101,7 @@ func (a *api) mcpServer() *mcp.Server {
 			if err != nil {
 				return toolErr[pageOut](err)
 			}
-			list, err := a.queryEvents(ctx, eventFilter{Level: "asset", Type: "new", Since: since, Vendor: in.Vendor, IncludeWildcard: in.IncludeWildcard, IncludeHosted: in.IncludeHosted, Limit: limit, Cursor: cursor})
+			list, err := a.queryEvents(ctx, eventFilter{Level: "asset", Type: "new", Since: since, Vendor: in.Vendor, IncludeWildcard: in.IncludeWildcard, IncludeHosted: in.IncludeHosted, Q: in.Q, Limit: limit, Cursor: cursor})
 			if err != nil {
 				return toolErr[pageOut](err)
 			}

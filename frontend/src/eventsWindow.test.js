@@ -25,6 +25,11 @@ describe('eventsWindow', () => {
     expect(p.toString()).toBe('level=asset&type=new%2Crecovered&vendor=3&since=S&until=U')
     expect(filterParams({ level: 'url' }).toString()).toBe('level=url&type=new%2Crecovered')
   })
+  it('filterParams 带 q（trim，空不传）', () => {
+    expect(filterParams({ level: 'asset', q: '  Api. ' }).get('q')).toBe('Api.')
+    expect(filterParams({ level: 'asset', q: '   ' }).has('q')).toBe(false)
+    expect(filterParams({ level: 'asset' }).has('q')).toBe(false)
+  })
   it('轮询：新事件置顶、不替换旧列表、按 id 去重', () => {
     const old = [{ id: 5 }, { id: 4 }, { id: 3 }]
     expect(maxId(old)).toBe(5)

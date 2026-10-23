@@ -15,6 +15,7 @@ export default function Events() {
   const [vendor, setVendor] = useState(null)
   const [hosted, setHosted] = useState(false)
   const [types, setTypes] = useState(['new', 'recovered'])
+  const [q, setQ] = useState('')
   const [win, setWin] = useState('7d')
   const [custom, setCustom] = useState(null)
   const [vendors, setVendors] = useState([])
@@ -27,7 +28,7 @@ export default function Events() {
   const itemsRef = useRef([])
   const rangeRef = useRef(null)
 
-  const params = () => filterParams({ level, vendor, hosted, types, ...rangeRef.current })
+  const params = () => filterParams({ level, vendor, hosted, types, q, ...rangeRef.current })
   const set = (list) => {
     itemsRef.current = list
     setItems(list)
@@ -138,6 +139,15 @@ export default function Events() {
       <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
         <Typography.Title level={3} style={{ margin: 0 }}>新增播报</Typography.Title>
         <Space wrap>
+          <Input.Search
+            allowClear
+            placeholder="子域 / URL"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onSearch={() => reload()}
+            style={{ width: 220 }}
+            data-testid="events-q"
+          />
           <Segmented
             value={win}
             onChange={setWin}
@@ -196,7 +206,7 @@ export default function Events() {
         />
       )}
       <Typography.Text type="secondary">
-        默认近 7 天，事件永久保留；每 30 秒只把新事件加到顶部；统计与「复制本列」覆盖所选时间窗内全部记录（非仅当前已加载）。
+        默认近 7 天，事件永久保留；每 30 秒只把新事件加到顶部；统计与「复制本列」覆盖所选时间窗内全部记录（非仅当前已加载）；关键字搜索与筛选叠加，计数与复制同步按搜索结果。
       </Typography.Text>
       <Table
         rowKey="id"

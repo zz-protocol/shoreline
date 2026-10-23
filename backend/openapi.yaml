@@ -306,6 +306,7 @@ paths:
         - {name: vendor, in: query, schema: {type: integer}}
         - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
         - {name: include_customer_hosted, in: query, schema: {type: boolean, default: false}, description: "包含客户托管资产（默认隐藏）"}
+        - {name: q, in: query, schema: {type: string}, description: "子域名或 URL 子串（不区分大小写）；与其它筛选叠加；stats/values 同步生效"}
         - {name: after_id, in: query, schema: {type: integer, minimum: 0}, description: "只返回 id 大于该值的事件（轮询取新增用）"}
         - {$ref: "#/components/parameters/limit"}
         - {$ref: "#/components/parameters/cursor"}
@@ -322,6 +323,7 @@ paths:
         - {name: vendor, in: query, schema: {type: integer}}
         - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
         - {name: include_customer_hosted, in: query, schema: {type: boolean, default: false}, description: "包含客户托管资产（默认隐藏）"}
+        - {name: q, in: query, schema: {type: string}, description: "子域名或 URL 子串（不区分大小写）；与其它筛选叠加；stats/values 同步生效"}
       responses: {"200": {description: "{items: [{vendor_id, vendor, count, new, recovered, changed}], total, totals: {new, recovered, changed}}；new/recovered/changed 按 type 分别计数（总计与各厂商，未选中的 type 为 0），三者之和等于 count；count 为所选各 type 计数之和"}, "400": {$ref: "#/components/responses/Error"}}
   /api/events/values:
     get:
@@ -336,6 +338,7 @@ paths:
         - {name: vendor, in: query, schema: {type: integer}}
         - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
         - {name: include_customer_hosted, in: query, schema: {type: boolean, default: false}, description: "包含客户托管资产（默认隐藏）"}
+        - {name: q, in: query, schema: {type: string}, description: "子域名或 URL 子串（不区分大小写）；与其它筛选叠加；stats/values 同步生效"}
       responses: {"200": {description: "{field, items: string[], count, truncated}"}, "400": {$ref: "#/components/responses/Error"}}
   /api/scans:
     get:

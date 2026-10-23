@@ -13,13 +13,14 @@ export function windowRange(win, custom, now = new Date()) {
   return { since: new Date(now.getTime() - 7 * day).toISOString(), until: null }
 }
 
-/** 公共筛选参数（列表 / 统计 / 整列复制共用，保证同一时间窗）。 */
-export function filterParams({ level, vendor, since, until, hosted, types }) {
+/** 公共筛选参数（列表 / 统计 / 整列复制共用，保证同一时间窗与搜索词）。 */
+export function filterParams({ level, vendor, since, until, hosted, types, q }) {
   const p = new URLSearchParams({ level, type: (types?.length ? types : ['new', 'recovered']).join(',') })
   if (hosted) p.set('include_customer_hosted', 'true')
   if (vendor) p.set('vendor', String(vendor))
   if (since) p.set('since', since)
   if (until) p.set('until', until)
+  if (q?.trim()) p.set('q', q.trim())
   return p
 }
 
