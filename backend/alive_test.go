@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"github.com/hibiken/asynq"
 	"net"
+	"net/url"
 	"os"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -315,7 +318,89 @@ func TestAliveAPIFilter(t *testing.T) {
 		t.Fatalf("stats %v", st)
 	}
 	c.want(400, "GET", "/api/events?type=new,bogus", nil)
+
 	t.Log("alive=alive|dead|unknown 各 1 条；alive=yes REST 400 / MCP 同错；播报 type=new,recovered 含 recovered；type=new,bogus 400")
+}
+
+// T27：alive_since / alive_until 按 last_alive_at 半开区间 [since, until) 筛选；与 alive 叠加；边界与空值。
+func TestAssetsAliveTimeFilter(t *testing.T) {
+	e, c, a := newAPITest(t, 100)
+	ctx := context.Background()
+	v := e.vendorID()
+	base := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	ins := func(host, st string, at *time.Time) {
+		t.Helper()
+		id := newRulesAsset(t, e, host)
+		if at == nil {
+			e.pool.Exec(ctx, `UPDATE assets SET alive = $2, last_alive_at = NULL WHERE id = $1`, id, st)
+		} else {
+			e.pool.Exec(ctx, `UPDATE assets SET alive = $2, last_alive_at = $3 WHERE id = $1`, id, st, *at)
+		}
+	}
+	at := func(d time.Duration) *time.Time { t := base.Add(d); return &t }
+	ins("edge-lo.t27.alive.test", "alive", at(0))            // == since → 含
+	ins("edge-hi.t27.alive.test", "alive", at(24*time.Hour)) // == until → 不含
+	ins("mid.t27.alive.test", "alive", at(12*time.Hour))
+	ins("old.t27.alive.test", "alive", at(-24*time.Hour))
+	ins("dead-mid.t27.alive.test", "dead", at(12*time.Hour)) // 曾存活、现 dead
+	ins("never.t27.alive.test", "unknown", nil)              // 从未存活
+
+	since := url.QueryEscape(base.Format(time.RFC3339))
+	until := url.QueryEscape(base.Add(24 * time.Hour).Format(time.RFC3339))
+	q := fmt.Sprintf("vendor=%d&q=t27.alive.test&alive_since=%s&alive_until=%s", v, since, until)
+	names := func(path string) []string {
+		var out []string
+		for _, m := range items(c.want(200, "GET", path, nil)) {
+			out = append(out, strings.Split(m["subdomain"].(string), ".")[0])
+		}
+		sort.Strings(out)
+		return out
+	}
+	got := names("/api/assets?" + q)
+	want := []string{"dead-mid", "edge-lo", "mid"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("range %v want %v", got, want)
+	}
+	// 只 since：含 mid/edge-lo/edge-hi/dead-mid，不含 old/never
+	got = names(fmt.Sprintf("/api/assets?vendor=%d&q=t27.alive.test&alive_since=%s", v, since))
+	want = []string{"dead-mid", "edge-hi", "edge-lo", "mid"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("since-only %v want %v", got, want)
+	}
+	// 与 alive=alive 叠加：去掉 dead-mid
+	got = names("/api/assets?" + q + "&alive=alive")
+	want = []string{"edge-lo", "mid"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("stack alive %v want %v", got, want)
+	}
+	c.want(400, "GET", fmt.Sprintf("/api/assets?alive_since=%s&alive_until=%s", until, since), nil)
+	c.want(400, "GET", "/api/assets?alive_since=nope", nil)
+
+	as, _ := time.Parse(time.RFC3339, base.Format(time.RFC3339))
+	au := as.Add(24 * time.Hour)
+	list, err := a.queryAssets(ctx, assetFilter{Vendor: &v, Q: "t27.alive.test", Limit: 50, AliveSince: &as, AliveUntil: &au, Alive: "alive"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("queryAssets %d", len(list))
+	}
+	s, err := mcpSession(t, c.srv.URL, testBootstrap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	out, isErr := callTool(t, s, "search_assets", map[string]any{
+		"vendor": v, "q": "t27.alive.test", "alive": "alive",
+		"alive_since": base.Format(time.RFC3339), "alive_until": base.Add(24 * time.Hour).Format(time.RFC3339), "limit": 50,
+	})
+	if isErr {
+		t.Fatalf("mcp %v", out)
+	}
+	if len(items(out)) != 2 {
+		t.Fatalf("mcp items %#v", out)
+	}
+	t.Logf("半开 [since,until)：含 edge-lo/mid/dead-mid，不含 edge-hi/old/never；alive=alive 叠加 2 条；MCP 一致")
 }
 
 // pendingHosts 从队列（miniredis）读出该扫描任务的 hosts。

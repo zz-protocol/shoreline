@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react'
-import { App, Input, Select, Space, Switch, Table, Tag, Typography } from 'antd'
+import { App, DatePicker, Input, Segmented, Select, Space, Switch, Table, Tag, Typography } from 'antd'
 import dayjs from 'dayjs'
 import { get } from '../api'
 import { Guide, HELP, Hint } from '../help'
+import { windowRange } from '../eventsWindow'
 
 export const ALIVE = {
   alive: { label: '存活', color: 'green' },
@@ -27,6 +28,8 @@ export default function Assets() {
   const [wild, setWild] = useState(false)
   const [hosted, setHosted] = useState(false)
   const [alive, setAlive] = useState()
+  const [aliveWin, setAliveWin] = useState('') // ''=不限；today/7d/30d/custom（T27）
+  const [aliveCustom, setAliveCustom] = useState(null)
   const [items, setItems] = useState([])
   const [cursor, setCursor] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -42,6 +45,15 @@ export default function Assets() {
       if (vendor) params.set('vendor', vendor)
       if (q.trim()) params.set('q', q.trim())
       if (alive) params.set('alive', alive)
+      if (aliveWin && aliveWin !== 'custom') {
+        const { since, until } = windowRange(aliveWin, null)
+        if (since) params.set('alive_since', since)
+        if (until) params.set('alive_until', until)
+      } else if (aliveWin === 'custom' && aliveCustom?.[0] && aliveCustom?.[1]) {
+        const { since, until } = windowRange('custom', [aliveCustom[0].toISOString(), aliveCustom[1].toISOString()])
+        if (since) params.set('alive_since', since)
+        if (until) params.set('alive_until', until)
+      }
       if (next) params.set('cursor', next)
       const d = await get(`/api/assets?${params}`)
       setItems(next ? [...items, ...(d.items || [])] : (d.items || []))
@@ -52,7 +64,10 @@ export default function Assets() {
       setLoading(false)
     }
   }
-  useEffect(() => { load() }, [vendor, wild, hosted, alive])
+  useEffect(() => {
+    if (aliveWin === 'custom' && !(aliveCustom?.[0] && aliveCustom?.[1])) return
+    load()
+  }, [vendor, wild, hosted, alive, aliveWin, aliveCustom])
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="large">
@@ -74,6 +89,21 @@ export default function Assets() {
           onChange={setAlive}
           options={Object.entries(ALIVE).map(([value, a]) => ({ value, label: a.label }))}
         /></Hint>
+        <Segmented
+          value={aliveWin || 'all'}
+          onChange={(v) => setAliveWin(v === 'all' ? '' : v)}
+          options={[
+            { value: 'all', label: '存活时间不限' },
+            { value: 'today', label: '今日' },
+            { value: '7d', label: '近 7 天' },
+            { value: '30d', label: '近 30 天' },
+            { value: 'custom', label: '自定义' },
+          ]}
+          data-testid="alive-win"
+        />
+        {aliveWin === 'custom' && (
+          <DatePicker.RangePicker showTime value={aliveCustom} onChange={setAliveCustom} data-testid="alive-custom" />
+        )}
         <Input.Search placeholder="子域 / 标题" value={q} onChange={(e) => setQ(e.target.value)} onSearch={() => load()} style={{ width: 240 }} />
         <span>
           <Hint text={HELP.wildcard}>含泛解析</Hint> <Switch checked={wild} onChange={setWild} />

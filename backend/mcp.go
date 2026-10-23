@@ -30,6 +30,8 @@ type searchAssetsIn struct {
 	IncludeWildcard bool   `json:"include_wildcard,omitempty" jsonschema:"include wildcard assets (default false)"`
 	IncludeHosted   bool   `json:"include_customer_hosted,omitempty" jsonschema:"include customer-hosted cloud assets (default false)"`
 	Alive           string `json:"alive,omitempty" jsonschema:"filter by liveness: alive | dead | unknown"`
+	AliveSince      string `json:"alive_since,omitempty" jsonschema:"RFC3339; last_alive_at >= this time"`
+	AliveUntil      string `json:"alive_until,omitempty" jsonschema:"RFC3339; last_alive_at < this time (half-open)"`
 	Limit           *int   `json:"limit,omitempty" jsonschema:"1..500, default 50"`
 	Cursor          string `json:"cursor,omitempty" jsonschema:"next_cursor from the previous page"`
 }
@@ -118,7 +120,19 @@ func (a *api) mcpServer() *mcp.Server {
 			if err != nil {
 				return toolErr[pageOut](err)
 			}
-			list, err := a.queryAssets(ctx, assetFilter{in.Vendor, in.InScope, in.IncludeWildcard, in.Q, since, limit, cursor, in.Alive, in.IncludeHosted})
+			aliveSince, err := parseTime("alive_since", in.AliveSince)
+			if err != nil {
+				return toolErr[pageOut](err)
+			}
+			aliveUntil, err := parseTime("alive_until", in.AliveUntil)
+			if err != nil {
+				return toolErr[pageOut](err)
+			}
+			list, err := a.queryAssets(ctx, assetFilter{
+				Vendor: in.Vendor, InScope: in.InScope, IncludeWildcard: in.IncludeWildcard, Q: in.Q,
+				NewSince: since, Limit: limit, Cursor: cursor, Alive: in.Alive, IncludeHosted: in.IncludeHosted,
+				AliveSince: aliveSince, AliveUntil: aliveUntil,
+			})
 			if err != nil {
 				return toolErr[pageOut](err)
 			}

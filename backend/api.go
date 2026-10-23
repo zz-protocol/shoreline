@@ -752,8 +752,10 @@ type assetFilter struct {
 	NewSince        *time.Time
 	Limit           int
 	Cursor          int64
-	Alive           string // alive / dead / unknown；空=不筛
-	IncludeHosted   bool   // include_customer_hosted：默认隐藏客户托管资产（T24）
+	Alive           string     // alive / dead / unknown；空=不筛
+	IncludeHosted   bool       // include_customer_hosted：默认隐藏客户托管资产（T24）
+	AliveSince      *time.Time // last_alive_at >=（T27）
+	AliveUntil      *time.Time // last_alive_at <（T27，半开区间）
 }
 
 // checkVendor：传了 vendor 必须 >= 1（REST 与 MCP 共用）。
@@ -784,7 +786,7 @@ func cutPage(list []map[string]any, limit int) ([]map[string]any, any) {
 	return list, nil
 }
 
-// queryAssets：vendor / in_scope / q（子域名或 URL 标题子串）/ new_since（资产 new 事件时间）/ include_wildcard（默认过滤）。
+// queryAssets：vendor / in_scope / q / new_since / include_wildcard / alive / alive_since / alive_until（T27：last_alive_at ∈ [since, until)）。
 func (a *api) queryAssets(ctx context.Context, f assetFilter) ([]map[string]any, error) {
 	if err := checkVendor(f.Vendor); err != nil {
 		return nil, err
@@ -798,6 +800,9 @@ func (a *api) queryAssets(ctx context.Context, f assetFilter) ([]map[string]any,
 	if f.Alive != "" && f.Alive != "alive" && f.Alive != "dead" && f.Alive != "unknown" {
 		return nil, errf(400, "alive must be alive|dead|unknown")
 	}
+	if f.AliveSince != nil && f.AliveUntil != nil && !f.AliveUntil.After(*f.AliveSince) {
+		return nil, errf(400, "alive_until must be after alive_since")
+	}
 	q := strings.ToLower(strings.TrimSpace(f.Q))
 	return rowsJSON(a.db.Query(ctx, `SELECT `+assetCols+` FROM assets a JOIN root_domains r ON r.id = a.root_id
 		WHERE ($1::bigint = 0 OR a.id < $1)
@@ -810,7 +815,9 @@ func (a *api) queryAssets(ctx context.Context, f assetFilter) ([]map[string]any,
 		       AND e.type = 'new' AND e.created_at >= $6))
 		  AND ($8::text = '' OR a.alive = $8)
 		  AND ($9::bool OR NOT a.customer_hosted)
-		ORDER BY a.id DESC LIMIT $7`, f.Cursor, f.Vendor, f.InScope, f.IncludeWildcard, q, f.NewSince, f.Limit+1, f.Alive, f.IncludeHosted))
+		  AND ($10::timestamptz IS NULL OR a.last_alive_at >= $10)
+		  AND ($11::timestamptz IS NULL OR a.last_alive_at < $11)
+		ORDER BY a.id DESC LIMIT $7`, f.Cursor, f.Vendor, f.InScope, f.IncludeWildcard, q, f.NewSince, f.Limit+1, f.Alive, f.IncludeHosted, f.AliveSince, f.AliveUntil))
 }
 
 func (a *api) listAssets(w http.ResponseWriter, r *http.Request) {
@@ -826,10 +833,16 @@ func (a *api) listAssets(w http.ResponseWriter, r *http.Request) {
 	wild, ok3 := boolParam(w, r, "include_wildcard")
 	newSince, ok4 := timeParam(w, r, "new_since")
 	hosted, ok5 := boolParam(w, r, "include_customer_hosted")
-	if !ok3 || !ok4 || !ok5 {
+	aliveSince, ok6 := timeParam(w, r, "alive_since")
+	aliveUntil, ok7 := timeParam(w, r, "alive_until")
+	if !ok3 || !ok4 || !ok5 || !ok6 || !ok7 {
 		return
 	}
-	list, err := a.queryAssets(r.Context(), assetFilter{vendor, inScope, wild != nil && *wild, r.URL.Query().Get("q"), newSince, limit, cursor, r.URL.Query().Get("alive"), hosted != nil && *hosted})
+	list, err := a.queryAssets(r.Context(), assetFilter{
+		Vendor: vendor, InScope: inScope, IncludeWildcard: wild != nil && *wild, Q: r.URL.Query().Get("q"),
+		NewSince: newSince, Limit: limit, Cursor: cursor, Alive: r.URL.Query().Get("alive"),
+		IncludeHosted: hosted != nil && *hosted, AliveSince: aliveSince, AliveUntil: aliveUntil,
+	})
 	if err != nil {
 		writeAnyErr(w, err)
 		return

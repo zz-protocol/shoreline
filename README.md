@@ -201,7 +201,7 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 | SCOPE_BATCH_SIZE | 500 | 改范围规则后异步重算 in_scope 的每批行数（整数 >= 1，非法启动退出） |
 
 - 错误统一 `{"error":"..."}`；查询参数、路径或 JSON 字段含 NUL 一律 400；JSON body 只能有一个值（其后仅允许空白），否则 400；分页 `limit`（默认 50，最大 500）+ `cursor`（按 id 倒序，传上页 `next_cursor`）。
-- `GET /api/assets`：`vendor`、`in_scope`、`q`（子域名或 URL 标题子串）、`new_since`（资产 new 事件时间，RFC3339）、`include_wildcard`（默认过滤泛解析）。
+- `GET /api/assets`：`vendor`、`in_scope`、`alive`、`alive_since`/`alive_until`（最后存活时间半开区间 `[since,until)`，可与 `alive` 叠加；T27）、`q`（子域名或 URL 标题子串）、`new_since`（资产 new 事件时间，RFC3339）、`include_wildcard`（默认过滤泛解析）。
 - `GET /api/events`：默认资产级（`level=asset`），`level=url|all` 查 URL 事件；不传 `type` 默认 `new,recovered`（显式传 `changed` 才含）；`since`/`until`、`asset_id`、`vendor`、`include_wildcard`、`q`（子域名或 URL 子串，不区分大小写；`/stats` 与 `/values`、MCP `list_new_assets` 同步）。
 - 范围规则挂在厂商下（`/api/vendors/{id}/scopes`，pattern 为 `域名` 或 `*.域名`）；新增/删除返回 202 + `task_id`，`GET /api/scope-tasks/{id}` 查进度；按 id 分批更新、只改有变化的行，不长时间锁表。重算幂等：进程启动时自动重跑 pending/running 的任务（从头重算、计数清零）。
 - 根域格式校验，被任一厂商占用返回 409。`POST /api/scans` 手动触发（kind 只允许 passive/active/expand，dns/http 是链路内部步骤；kind=active 需厂商 `active_enabled`，否则 409）。

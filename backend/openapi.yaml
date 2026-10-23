@@ -262,6 +262,8 @@ paths:
         - {name: vendor, in: query, schema: {type: integer}}
         - {name: in_scope, in: query, schema: {type: boolean}}
         - {name: alive, in: query, schema: {type: string, enum: [alive, dead, unknown]}, description: "按探活状态筛选"}
+        - {name: alive_since, in: query, schema: {type: string, format: date-time}, description: "最后存活时间 >=（RFC3339）；可与 alive 叠加"}
+        - {name: alive_until, in: query, schema: {type: string, format: date-time}, description: "最后存活时间 <（RFC3339，半开区间）；须晚于 alive_since"}
         - {name: q, in: query, schema: {type: string}, description: "子域名或 URL 标题子串（不区分大小写）"}
         - {name: new_since, in: query, schema: {type: string, format: date-time}, description: "资产 new 事件时间 >= 该值（RFC3339）"}
         - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
