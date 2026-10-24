@@ -71,12 +71,28 @@ func TestHostedPatternSyntax(t *testing.T) {
 		{"*.a.com", "x.a.com", true}, {"*.a.com", "x.y.a.com", true}, {"*.a.com", "a.com", false},
 		{"*.oss-*.a.com", "b.oss-cn.a.com", true}, {"*.oss-*.a.com", "b.oss-cn.x.a.com", false}, // 标签内 * 不跨点
 		{"*.oss-*.a.com", "b.ossx.a.com", false}, {"*.*.b.com", "x.b.com", false}, {"*.*.b.com", "y.x.b.com", true},
+		// T31：不以 *. 开头 → 标签数一致、逐层匹配
+		{"*-vitesandbox.miaoda.cn", "app-8t89ep1cj4zl-vitesandbox.miaoda.cn", true},
+		{"*-vitesandbox.miaoda.cn", "app-63qix4si5yip-vitesandbox.miaoda.cn", true},
+		{"*-vitesandbox.miaoda.cn", "api.miaoda.cn", false},
+		{"*-vitesandbox.miaoda.cn", "miaoda.cn", false},
+		{"*-vitesandbox.miaoda.cn", "a.b-vitesandbox.miaoda.cn", false},
+		{"*-vitesandbox.miaoda.cn", "x.app-1-vitesandbox.miaoda.cn", false},
+		{"*-vitesandbox.miaoda.cn", "-vitesandbox.miaoda.cn", true}, // * 可匹配空串，与 oss-* 一致
+		{"app-*.sandbox.a.com", "app-1.sandbox.a.com", true}, {"app-*.sandbox.a.com", "app-1.x.sandbox.a.com", false},
+		{"x*.*.a.com", "xy.z.a.com", true}, {"x*.*.a.com", "xy.z.w.a.com", false}, {"x*.*.a.com", "y.z.a.com", false},
+		{"foo.a.com", "foo.a.com", false}, // 无 * 的规则不命中（也不合法）
 	} {
 		if matchHosted(c.p, c.h) != c.ok {
 			t.Errorf("match(%s,%s) want %v", c.p, c.h, c.ok)
 		}
 	}
-	for _, bad := range []string{"a.com", "*.com", "*.a.*", "*.a..com", "*.a/b.com", "*.A_B.com", "**.a.com", "",
+	for _, ok := range []string{"*-vitesandbox.miaoda.cn", "app-*.sandbox.a.com", "x*.*.a.com", "*-x.github.io"} {
+		if !validHostedPattern(ok) {
+			t.Errorf("should be valid: %q (%s)", ok, hostedPatternErr(ok))
+		}
+	}
+	for _, bad := range []string{"*", "a*", "a*.com", "*-x.com", "*-x.co.uk", "*-x.com.cn", "a.*", "a.b*", "*-x.*", "x-*.*.com", "a*.b*", "**.a.com", "ab**.a.com", "foo.a.com", "*.a.com.", "x*..a.com", "a.com", "*.com", "*.a.*", "*.a..com", "*.a/b.com", "*.A_B.com", "**.a.com", "",
 		"*.*.com", "*.*-*.com", "*.*.*", "*.x-*.com", "*.*.*.com", "*.oss-*.*.com", "*.co.uk", "*.*.co.uk", "*.com.cn", "*.x-*.com.cn"} {
 		if validHostedPattern(bad) {
 			t.Errorf("should be invalid: %q", bad)
@@ -274,4 +290,75 @@ func TestBuiltinHostedPassValidation(t *testing.T) {
 		}
 	}
 	t.Logf("内置 %d 条全部通过校验（ICANN 段）", len(builtinHostedRules))
+}
+
+// T31 真栈：精确层数规则加入后重算——沙箱域被标记，api.miaoda.cn 等不被标记；域名只作测试字符串，不解析、不扫描。
+func TestHostedExactLabelsRecalc(t *testing.T) {
+	e, c, _ := newAPITest(t, 2)
+	ctx := context.Background()
+	hit := []string{"app-8t89ep1cj4zl-vitesandbox.miaoda.cn", "app-63qix4si5yip-vitesandbox.miaoda.cn"}
+	miss := []string{"api.miaoda.cn", "miaoda.cn", "a.b-vitesandbox.miaoda.cn", "www." + "t31.example.test"}
+	all := append(append([]string{}, hit...), miss...)
+	e.pool.Exec(ctx, `DELETE FROM assets WHERE subdomain = ANY($1)`, all)
+	t.Cleanup(func() { e.pool.Exec(context.Background(), `DELETE FROM assets WHERE subdomain = ANY($1)`, all) })
+	for _, h := range all {
+		if _, err := e.pool.Exec(ctx, `INSERT INTO assets (root_id, subdomain) VALUES ($1, $2)`, e.rootID, h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	flags := func() map[string]bool {
+		m := map[string]bool{}
+		rows, err := e.pool.Query(ctx, `SELECT subdomain, customer_hosted FROM assets WHERE subdomain = ANY($1)`, all)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var s string
+			var b bool
+			rows.Scan(&s, &b)
+			m[s] = b
+		}
+		return m
+	}
+	for _, f := range flags() {
+		if f {
+			t.Fatalf("precondition: none hosted, got %v", flags())
+		}
+	}
+	// 非法：无 *、后缀是公共后缀、末尾是 *
+	for _, bad := range []string{"app-1-vitesandbox.miaoda.cn", "*-x.co.uk", "*-x.com", "a.b.*", "**.miaoda.cn"} {
+		c.want(400, "POST", "/api/customer-hosted-rules", map[string]any{"pattern": bad})
+	}
+	res := c.want(202, "POST", "/api/customer-hosted-rules", map[string]any{"pattern": "*-VITESANDBOX.miaoda.cn", "note": "T31 测试"})
+	rid := int64(res["rule_id"].(float64))
+	t.Cleanup(func() { e.pool.Exec(context.Background(), `DELETE FROM customer_hosted_rules WHERE id = $1`, rid) })
+	waitHosted(t, c, res)
+	got := flags()
+	for _, h := range hit {
+		if !got[h] {
+			t.Errorf("%s should be customer_hosted: %v", h, got)
+		}
+	}
+	for _, h := range miss {
+		if got[h] {
+			t.Errorf("%s must NOT be customer_hosted: %v", h, got)
+		}
+	}
+	// 列表默认隐藏沙箱域；api.miaoda.cn 仍可见
+	list := map[string]bool{}
+	for _, it := range items(c.want(200, "GET", "/api/assets?q=miaoda.cn&limit=500", nil)) {
+		list[it["subdomain"].(string)] = true
+	}
+	if list[hit[0]] || list[hit[1]] || !list["api.miaoda.cn"] {
+		t.Fatalf("default list %v", list)
+	}
+	// 停用 → 重算后不再标记
+	waitHosted(t, c, c.want(202, "PATCH", fmt.Sprintf("/api/customer-hosted-rules/%d", rid), map[string]any{"enabled": false}))
+	for h, f := range flags() {
+		if f {
+			t.Errorf("after disable %s still hosted", h)
+		}
+	}
+	t.Logf("精确层数规则：命中 %v；未命中 %v", hit, miss)
 }

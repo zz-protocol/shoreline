@@ -19,8 +19,8 @@ import (
 // 属于托管在云上的客户资产，不是厂商自身资产。命中的资产标 customer_hosted=true（不删），列表/播报默认隐藏。
 //
 // 匹配规则（只看资产子域名本身，不看 CNAME）：
-//   - pattern 必须以 `*.` 开头，`*.` 匹配 ≥1 层子域；
-//   - 其余标签里的 `*`（如 oss-*）只匹配本层字符，不跨点；不用正则；
+//   - pattern 两种写法：`*.` 开头匹配 ≥1 层子域；不以 `*.` 开头（T31）则标签数须与主机名一致、逐层匹配，至少一个标签含 `*`；
+//   - 标签里的 `*`（如 oss-*）只匹配本层字符，不跨点；不用正则；
 //   - 每条规则至少比服务端点多一层客户子域，服务端点本身不命中（TestBuiltinRulesSkipEndpoints 守住）。
 
 type hostedRule struct {
@@ -110,7 +110,7 @@ var builtinHostedRules = []hostedRule{
 
 var hostedLabelRe = regexp.MustCompile(`^[a-z0-9*-]+$`)
 
-// validHostedPattern：以 `*.` 开头，各标签只含 a-z0-9-*；最后一个含 * 的标签之后的固定后缀
+// validHostedPattern：`*.` 开头，或（T31）含 * 的精确层数写法；各标签只含 a-z0-9-*；最后一个含 * 的标签之后的固定后缀
 // 必须比 PSL 的 ICANN 段公共后缀至少多一层（eTLD+1 或更长，golang.org/x/net/publicsuffix，只看 ICANN 段、
 // 不看私有段），防止 `*.*.com`、`*.co.uk` 把整个公共后缀排除；github.io 这类私有段后缀允许。
 // 内置规则与用户新增走同一校验（seedHostedRules 也校验）。
@@ -131,11 +131,24 @@ func icannSuffix(d string) string {
 	return ps
 }
 
-// hostedPatternErr 返回中文错误说明，合法返回空串。
+// hostedPatternErr 返回中文错误说明，合法返回空串。两种写法（T31）：
+//   - `*.` 开头：匹配 ≥1 层子域（行为不变）；
+//   - 不以 `*.` 开头：标签数须与主机名完全一致，逐层匹配（至少一个标签含 *，标签内 * 只匹配本层）。
+//
+// 两种写法的固定后缀（最后一个含 * 的标签之后的部分）都须是 eTLD+1 或更长。
 func hostedPatternErr(p string) string {
-	rest, ok := strings.CutPrefix(p, "*.")
-	if !ok || len(p) > 253 {
-		return "规则须以 *. 开头"
+	if len(p) > 253 || p == "" {
+		return "规则不能为空且不超过 253 字符"
+	}
+	rest, wildcardPrefix := strings.CutPrefix(p, "*.")
+	if !wildcardPrefix {
+		rest = p
+		if !strings.Contains(p, "*") {
+			return "规则须以 *. 开头（匹配 ≥1 层），或在某个标签里含 *（精确层数，如 *-sandbox.example.com）"
+		}
+		if strings.Contains(p, "**") {
+			return "精确层数规则里 * 不能连续出现（**）"
+		}
 	}
 	labels := strings.Split(rest, ".")
 	last := -1
@@ -157,18 +170,23 @@ func hostedPatternErr(p string) string {
 	return ""
 }
 
-// matchHosted：host 是否命中 pattern（pattern 已校验）。`*.` 匹配 ≥1 层，其余标签逐层匹配，标签内 * 不跨点。
+// matchHosted：host 是否命中 pattern（pattern 已校验）。
+// `*.` 开头匹配 ≥1 层；否则标签数必须完全一致、逐层匹配；标签内 * 都不跨点。
 func matchHosted(pattern, host string) bool {
-	rest, ok := strings.CutPrefix(pattern, "*.")
-	if !ok {
-		return false
+	rest, wildcardPrefix := strings.CutPrefix(pattern, "*.")
+	if !wildcardPrefix && !strings.Contains(pattern, "*") {
+		return false // 无 * 的规则不合法（校验会拒绝），直接库里写入也不命中
 	}
 	pl := strings.Split(rest, ".")
 	hl := strings.Split(host, ".")
-	if len(hl) <= len(pl) {
+	if wildcardPrefix {
+		if len(hl) <= len(pl) {
+			return false
+		}
+		hl = hl[len(hl)-len(pl):]
+	} else if len(hl) != len(pl) {
 		return false
 	}
-	hl = hl[len(hl)-len(pl):]
 	for i := range pl {
 		// 标签只含 a-z0-9-*，path.Match 的 * 不跨 '/'，标签里没有 '/' 和 '.'，等价于本层通配
 		if m, _ := path.Match(pl[i], hl[i]); !m {

@@ -3,10 +3,14 @@ import { Alert, App, Button, Form, Input, Modal, Popconfirm, Space, Switch, Tabl
 import { del, get, patch, post } from '../api'
 import { HELP } from '../help'
 
-/** 前端只做格式初筛（*. 开头、标签字符）；是否为公共后缀由后端 publicsuffix 判断，400 时在弹窗内显示。 */
+/** 前端只做格式初筛；是否为公共后缀由后端 publicsuffix 判断，400 时在弹窗内显示。
+ *  两种写法（T31）：`*.` 开头（匹配 ≥1 层）；或不以 `*.` 开头但至少一个标签含 *（标签数须一致、逐层匹配，不能出现 **）。 */
 export function validHostedPattern(p) {
   const v = (p || '').trim().toLowerCase()
-  return v.startsWith('*.') && v.length <= 253 && v.slice(2).split('.').every((l) => /^[a-z0-9*-]+$/.test(l))
+  if (!v || v.length > 253) return false
+  const wildcardPrefix = v.startsWith('*.')
+  if (!wildcardPrefix && (!v.includes('*') || v.includes('**'))) return false
+  return (wildcardPrefix ? v.slice(2) : v).split('.').every((l) => /^[a-z0-9*-]+$/.test(l))
 }
 
 // T24 客户托管规则：内置 + 自定义；可增、删、停用；改动后后台异步重算
@@ -48,7 +52,7 @@ export default function HostedRules() {
         <Button type="primary" onClick={() => { form.resetFields(); setAddErr(''); setOpen(true) }}>添加规则</Button>
       </Space>
       <Typography.Text type="secondary">
-        {HELP.hosted} 只匹配资产子域名本身（不看 CNAME）；<code>*.</code> 匹配一层或多层子域，标签内的 <code>*</code>（如 <code>oss-*</code>）只匹配本层。内置规则可停用或删除，删除后升级不会加回。
+        {HELP.hosted} 只匹配资产子域名本身（不看 CNAME）。两种写法：① <code>*.</code> 开头匹配一层或多层子域；② 不以 <code>*.</code> 开头、但标签里含 <code>*</code> 的规则要求层数与主机名完全一致、逐层匹配（如 <code>*-vitesandbox.miaoda.cn</code> 命中 <code>app-x-vitesandbox.miaoda.cn</code>，不命中 <code>api.miaoda.cn</code>、<code>a.b-vitesandbox.miaoda.cn</code>）。标签内的 <code>*</code>（如 <code>oss-*</code>）只匹配本层。内置规则可停用或删除，删除后升级不会加回。
       </Typography.Text>
       <Table
         rowKey="id"
@@ -101,7 +105,7 @@ export default function HostedRules() {
       >
         {addErr && <Alert type="error" showIcon message={addErr} style={{ marginBottom: 12 }} data-testid="add-error" />}
         <Form form={form} layout="vertical" onValuesChange={() => setAddErr('')}>
-          <Form.Item name="pattern" label="规则" rules={[{ required: true, message: '请填写规则' }, { validator: (_, v) => (!v || validHostedPattern(v) ? Promise.resolve() : Promise.reject(new Error('须以 *. 开头，标签只能含 a-z0-9-*（如 *.oss-*.aliyuncs.com）'))) }]} extra="例：*.oss-*.aliyuncs.com">
+          <Form.Item name="pattern" label="规则" rules={[{ required: true, message: '请填写规则' }, { validator: (_, v) => (!v || validHostedPattern(v) ? Promise.resolve() : Promise.reject(new Error('须以 *. 开头（匹配 ≥1 层），或在某个标签里含 *（精确层数，如 *-sandbox.example.com）；标签只能含 a-z0-9-*'))) }]} extra="两种写法：*.oss-*.aliyuncs.com（匹配 ≥1 层）；*-vitesandbox.miaoda.cn（不以 *. 开头：层数必须一致，逐层匹配）">
             <Input placeholder="*.example-cloud.com" />
           </Form.Item>
           <Form.Item name="note" label="说明（云产品 / 文档）"><Input /></Form.Item>

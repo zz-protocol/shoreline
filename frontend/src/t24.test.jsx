@@ -17,7 +17,7 @@ import { App as AntApp } from 'antd'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { vi, beforeAll, afterEach } from 'vitest'
 import { cleanup } from '@testing-library/react'
-import HostedRules from './pages/HostedRules'
+import HostedRules, { validHostedPattern } from './pages/HostedRules'
 
 beforeAll(() => {
   window.matchMedia = window.matchMedia || ((q) => ({ matches: false, media: q, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent() {} }))
@@ -68,3 +68,23 @@ describe('客户托管规则页：添加失败', () => {
     expect(global.fetch.mock.calls.some(([, o]) => o?.method === 'POST')).toBe(false)
   }, 20000)
 })
+
+describe('T31 两种写法的前端初筛', () => {
+  it('合法：*. 开头，或不以 *. 开头但标签含 *', () => {
+    for (const p of ['*.oss-*.aliyuncs.com', '*.github.io', '*-vitesandbox.miaoda.cn', 'app-*.sandbox.example.com', 'x*.*.example.com'])
+      expect(validHostedPattern(p), p).toBe(true)
+  })
+  it('非法：无 *、** 、非法字符、空', () => {
+    for (const p of ['', 'api.miaoda.cn', '**.example.com', 'a_*.example.com', '*.a..com', 'a/*.example.com'])
+      expect(validHostedPattern(p), p).toBe(false)
+  })
+  it('规则页提示说明两种写法', () => {
+    setupEmpty()
+    render(<AntApp><HostedRules /></AntApp>)
+    expect(screen.getByText(/两种写法/)).toBeTruthy()
+    expect(document.body.textContent).toContain('*-vitesandbox.miaoda.cn')
+  })
+})
+function setupEmpty() {
+  global.fetch = vi.fn(async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ items: [] }) }))
+}

@@ -37,4 +37,4 @@
 | T28 | 去掉 IP：不展示也不保存，迁移删除 IP 字段；资产 changed 只看 CNAME | 库、API、MCP、openapi、页面里都没有 IP；泛解析和存活判断回归通过；迁移可以在旧库上执行 | 完成（d10c2ac 复验：空 changes/仅 ips/无 changes 键的 changed 在 list/stats/values 均隐藏且不计；有 cnames 可见；库保留；突变删过滤条件 FAIL；无 IP 回归过） |
 | T29 | 资产页子域名和 URL 列一键复制（复制全部筛选结果，去重，HTTP 下可回退） | 跨页全量复制，去重；在 HTTP 下可用 | 完成（79ac04d 复制；4fe49c2 URL 列文本展示窄验过：API/MCP 含 url、页面单元格可见、列头复制保留） |
 | T30 | 网页设置页管理 FOFA/Quake/Hunter key（存数据库，页面掩码显示，网页填写优先、回退到环境变量，不用重启，测试连通只读） | 增删改后不重启就生效；API 不返回明文；测试连通不消耗额度；不填时环境变量照常可用 | 完成（9d6aef3 复验：017 迁移、掩码无明文、env 回退、不重启现取、连通仅 mock、页面测绘 Key、突变 FAIL） |
-| T31 | 客户托管规则支持精确层数匹配（不以 *. 开头的规则：标签数一致，逐层匹配，标签内 * 只匹配本层）；校验与提示、openapi、README 同步 | *-vitesandbox.miaoda.cn 命中 app-8t89ep1cj4zl-vitesandbox.miaoda.cn 和 app-63qix4si5yip-vitesandbox.miaoda.cn，不命中 api.miaoda.cn、miaoda.cn、a.b-vitesandbox.miaoda.cn；无 * 的规则被拒绝；原有 64 条内置规则行为不变；加规则后重算生效 | 待做 |
+| T31 | 客户托管规则支持精确层数匹配（不以 *. 开头的规则：标签数一致，逐层匹配，标签内 * 只匹配本层）；校验与提示、openapi、README 同步 | *-vitesandbox.miaoda.cn 命中 app-8t89ep1cj4zl-vitesandbox.miaoda.cn 和 app-63qix4si5yip-vitesandbox.miaoda.cn，不命中 api.miaoda.cn、miaoda.cn、a.b-vitesandbox.miaoda.cn；无 * 的规则被拒绝；原有 64 条内置规则行为不变；加规则后重算生效 | 待验收 |
