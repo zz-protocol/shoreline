@@ -82,7 +82,7 @@ func TestWildcardRandomTokensEndToEnd(t *testing.T) {
 	dnsH := dnsHandler(e.pool, res)
 	missed := map[string]int{}
 	e.start(t, testConfig(fastRates), map[string]ScanHandler{
-		"passive": passiveHandler(e.pool, []Source{{"crtsh", func(_ context.Context, root string) ([]string, error) {
+		"passive": passiveHandler(e.pool, []Source{{Name: "crtsh", Enum: func(_ context.Context, root string) ([]string, error) {
 			hs := []string{"lb." + root}
 			for i := 0; i < 40; i++ {
 				hs = append(hs, fmt.Sprintf("fake%02d.%s", i, root))

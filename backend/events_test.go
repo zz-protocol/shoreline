@@ -48,7 +48,7 @@ func TestEventsTwoRounds(t *testing.T) {
 
 	fakes := []string{"fakea.wild.example.test", "fakeb.wild.example.test", "fakec.wild.example.test"}
 	e.start(t, testConfig(fastRates), map[string]ScanHandler{
-		"passive": passiveHandler(e.pool, []Source{{"crtsh", func(context.Context, string) ([]string, error) {
+		"passive": passiveHandler(e.pool, []Source{{Name: "crtsh", Enum: func(context.Context, string) ([]string, error) {
 			hs := append([]string{"a.example.test", "mv.example.test", "real.wild.example.test", "nx.example.test"}, fakes...)
 			if round.Load() == 2 {
 				hs = append(hs, "new2.wild.example.test", "v6.example.test")

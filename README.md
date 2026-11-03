@@ -39,6 +39,7 @@ docker compose up --build -d
 > ⚠️ 测绘 API（FOFA/Quake/Hunter）的请求与响应格式按公开文档实现，**尚未用真实 key 核对**，测试仅基于 mock。
 
 crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录全部来源。
+passive 任务把 `{sources_ok, sources_failed:[{source,error}], found}` 写入 `scan_tasks.result`；subfinder 各内部源错误会进入 `sources_failed`。`found==0` 且有来源失败时标 `degraded=true` 并写 `degraded_reason`（T39）。
 
 主机名（根域、子域、URL host）在入库层统一为小写并去掉末尾点（数据库触发器），大写录入的根域也能正确匹配。
 

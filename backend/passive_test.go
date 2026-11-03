@@ -161,10 +161,11 @@ func TestCollectPassiveMock(t *testing.T) {
 	c := mockConfig(srv.URL)
 	c.FofaKey, c.QuakeKey, c.HunterKey = "fk", "qk", "hk"
 	c.Pages = 3
-	srcs := append(passiveSources(c), Source{"subfinder", func(context.Context, string) ([]string, error) {
+	srcs := append(passiveSources(c), Source{Name: "subfinder", Enum: func(context.Context, string) ([]string, error) {
 		return []string{"s1.example.test", "a.example.test", "evil-example.test"}, nil
 	}})
-	found, err := collectPassive(context.Background(), "Example.Test", srcs)
+	found, st, err := collectPassive(context.Background(), "Example.Test", srcs)
+	_ = st
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,14 +197,15 @@ func TestCollectPassiveMock(t *testing.T) {
 }
 
 func TestCollectPassiveErrors(t *testing.T) {
-	ok := Source{"ok", func(context.Context, string) ([]string, error) { return []string{"x.example.test"}, nil }}
-	bad := Source{"bad", func(context.Context, string) ([]string, error) { return nil, errors.New("boom") }}
-	found, err := collectPassive(context.Background(), "example.test", []Source{bad, ok})
-	if err != nil || len(found) != 1 {
-		t.Fatalf("one failing source should not fail: %v %v", found, err)
+	ok := Source{Name: "ok", Enum: func(context.Context, string) ([]string, error) { return []string{"x.example.test"}, nil }}
+	bad := Source{Name: "bad", Enum: func(context.Context, string) ([]string, error) { return nil, errors.New("boom") }}
+	found, st, err := collectPassive(context.Background(), "example.test", []Source{bad, ok})
+	if err != nil || len(found) != 1 || st.SourcesOK != 1 || len(st.SourcesFailed) != 1 {
+		t.Fatalf("one failing source: found=%v st=%+v err=%v", found, st, err)
 	}
-	if _, err := collectPassive(context.Background(), "example.test", []Source{bad}); err == nil {
-		t.Fatal("all sources failing should error")
+	found, st, err = collectPassive(context.Background(), "example.test", []Source{bad})
+	if err != nil || st.Found != 0 || st.SourcesOK != 0 || len(st.SourcesFailed) != 1 || st.SourcesFailed[0].Source != "bad" {
+		t.Fatalf("all sources failing should still return stats (T39): found=%v st=%+v err=%v", found, st, err)
 	}
 	// HTTP 错误码与 API 错误
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -244,7 +246,7 @@ func TestPassiveHandlerStores(t *testing.T) {
 	e.pool.QueryRow(ctx, `INSERT INTO scan_tasks (vendor_id, root_id, kind) VALUES ($1, $2, 'passive') RETURNING id`,
 		vendorA, e.rootID).Scan(&scanID)
 	fake := func(name string, hosts ...string) Source {
-		return Source{name, func(context.Context, string) ([]string, error) { return hosts, nil }}
+		return Source{Name: name, Enum: func(context.Context, string) ([]string, error) { return hosts, nil }}
 	}
 	out, err := passiveHandler(e.pool, []Source{
 		fake("crtsh", "www."+root, "dev."+root, "x.sub."+root, "unrelated.test"),
@@ -322,7 +324,7 @@ func TestUppercaseRootMatches(t *testing.T) {
 	}
 	var scanID int64
 	e.pool.QueryRow(ctx, `INSERT INTO scan_tasks (vendor_id, root_id, kind) VALUES ($1, $2, 'passive') RETURNING id`, vendorID, rootID).Scan(&scanID)
-	src := Source{"crtsh", func(context.Context, string) ([]string, error) { return []string{"WWW.Upper.Test."}, nil }}
+	src := Source{Name: "crtsh", Enum: func(context.Context, string) ([]string, error) { return []string{"WWW.Upper.Test."}, nil }}
 	if _, err := passiveHandler(e.pool, []Source{src})(ctx, scanID, nil); err != nil {
 		t.Fatal(err)
 	}

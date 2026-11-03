@@ -302,7 +302,7 @@ func TestDNSHandlerWildcardNoFakeAssets(t *testing.T) {
 	var mu sync.Mutex
 	var httpIn []string
 	e.start(t, testConfig(fastRates), map[string]ScanHandler{
-		"passive": passiveHandler(e.pool, []Source{{"crtsh", func(context.Context, string) ([]string, error) {
+		"passive": passiveHandler(e.pool, []Source{{Name: "crtsh", Enum: func(context.Context, string) ([]string, error) {
 			return append([]string{"a.example.test", "real.wild.example.test", "cdn.example.test", "nx.example.test"}, fakes...), nil
 		}}}),
 		"dns": dnsHandler(e.pool, testResolver(addr)),

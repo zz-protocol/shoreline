@@ -22,9 +22,24 @@ import (
 )
 
 // Source 是一个被动子域来源。
+// Detailed 可选：用于 subfinder 等需暴露内部各源错误的实现；若设置则 collectPassive 走 Detailed，忽略 Enum。
 type Source struct {
-	Name string
-	Enum func(ctx context.Context, domain string) ([]string, error)
+	Name     string
+	Enum     func(ctx context.Context, domain string) ([]string, error)
+	Detailed func(ctx context.Context, domain string) (hosts []string, failed []sourceFailure, err error)
+}
+
+// sourceFailure 写入 scan_tasks.result.sources_failed（T39）。
+type sourceFailure struct {
+	Source string `json:"source"`
+	Error  string `json:"error"`
+}
+
+// passiveStats 被动收集统计（T39），写入 scan_tasks.result。
+type passiveStats struct {
+	SourcesOK     int             `json:"sources_ok"`
+	SourcesFailed []sourceFailure `json:"sources_failed"`
+	Found         int             `json:"found"`
 }
 
 // passiveConfig：key 为空的测绘源自动跳过；Base URL 仅为测试替换用。
@@ -68,18 +83,25 @@ func passiveConfigFromEnv() (passiveConfig, error) {
 
 // passiveSources 按配置返回启用的来源：crt.sh、subfinder 免 key 源始终启用，测绘源有 key 才启用。
 func passiveSources(c passiveConfig) []Source {
-	srcs := []Source{{"crtsh", c.crtsh}}
+	srcs := []Source{{Name: "crtsh", Enum: c.crtsh}}
 	if c.Subfinder {
-		srcs = append(srcs, Source{"subfinder", c.subfinderEnum})
+		srcs = append(srcs, Source{
+			Name: "subfinder",
+			Enum: func(ctx context.Context, domain string) ([]string, error) {
+				h, _, err := c.subfinderCollect(ctx, domain)
+				return h, err
+			},
+			Detailed: c.subfinderCollect,
+		})
 	}
 	if c.FofaKey != "" {
-		srcs = append(srcs, Source{"fofa", c.fofa})
+		srcs = append(srcs, Source{Name: "fofa", Enum: c.fofa})
 	}
 	if c.QuakeKey != "" {
-		srcs = append(srcs, Source{"quake", c.quake})
+		srcs = append(srcs, Source{Name: "quake", Enum: c.quake})
 	}
 	if c.HunterKey != "" {
-		srcs = append(srcs, Source{"hunter", c.hunter})
+		srcs = append(srcs, Source{Name: "hunter", Enum: c.hunter})
 	}
 	return srcs
 }
@@ -232,15 +254,48 @@ func subfinderFreeSources() []string {
 	return names
 }
 
-func (c passiveConfig) subfinderEnum(ctx context.Context, domain string) ([]string, error) {
+// subfinderCollect 跑免 key 源；把每个内部源的错误暴露到 failed（T39），不再静默吞掉。
+// 有子域或无任何错误时 err=nil；仅当一个子域都没有且至少一个源报错时返回 err（便于顶层统计）。
+func (c passiveConfig) subfinderCollect(ctx context.Context, domain string) ([]string, []sourceFailure, error) {
 	agent := passive.NewWithProviderConfig(subfinderFreeSources(), nil, false, false, nil)
 	var out []string
+	seenHost := map[string]bool{}
+	okSrc := map[string]bool{}
+	failSrc := map[string]string{}
 	for r := range agent.EnumerateSubdomainsWithCtx(ctx, domain, "", 0, int(c.SubfinderTimeout/time.Second), c.SubfinderMaxTime) {
-		if r.Type == subscraping.Subdomain {
-			out = append(out, r.Value)
+		switch r.Type {
+		case subscraping.Error:
+			src := r.Source
+			if src == "" {
+				src = "subfinder"
+			}
+			if r.Error != nil {
+				failSrc[src] = r.Error.Error()
+			} else {
+				failSrc[src] = "unknown error"
+			}
+		case subscraping.Subdomain:
+			if r.Source != "" {
+				okSrc[r.Source] = true
+			}
+			if r.Value != "" && !seenHost[r.Value] {
+				seenHost[r.Value] = true
+				out = append(out, r.Value)
+			}
 		}
 	}
-	return out, nil
+	var failed []sourceFailure
+	for src, msg := range failSrc {
+		if okSrc[src] {
+			continue // 同名源既有结果又有错：算成功，不记失败
+		}
+		failed = append(failed, sourceFailure{Source: src, Error: msg})
+	}
+	sort.Slice(failed, func(i, j int) bool { return failed[i].Source < failed[j].Source })
+	if len(out) == 0 && len(failed) > 0 {
+		return out, failed, fmt.Errorf("subfinder: %d source(s) failed", len(failed))
+	}
+	return out, failed, nil
 }
 
 // normalizeSubdomain 去掉 scheme、端口、通配前缀，转小写；不属于 domain 的返回空。
@@ -259,16 +314,35 @@ func normalizeSubdomain(s, domain string) string {
 	return ""
 }
 
-// collectPassive 运行所有来源，返回 子域 → 来源列表；单个源失败只记日志，全部失败才报错。
-func collectPassive(ctx context.Context, domain string, srcs []Source) (map[string][]string, error) {
+// collectPassive 运行所有来源，返回 子域 → 来源列表与统计（T39）。
+// 单个源失败只记日志并进入 sources_failed；全部顶层源都失败时仍返回 stats（不再当硬错误），
+// 由 passiveHandler 在 found==0 时标 degraded。仅当某源既无 Detailed 也无 Enum 时返回错误。
+func collectPassive(ctx context.Context, domain string, srcs []Source) (map[string][]string, passiveStats, error) {
 	domain = normalizeHost(domain)
 	found := map[string][]string{}
-	var errs []error
+	stats := passiveStats{SourcesFailed: []sourceFailure{}}
 	for _, src := range srcs {
-		hosts, err := src.Enum(ctx, domain)
+		var hosts []string
+		var subFails []sourceFailure
+		var err error
+		switch {
+		case src.Detailed != nil:
+			hosts, subFails, err = src.Detailed(ctx, domain)
+		case src.Enum != nil:
+			hosts, err = src.Enum(ctx, domain)
+		default:
+			return nil, stats, fmt.Errorf("passive source %q: no Enum", src.Name)
+		}
+		if len(subFails) > 0 {
+			stats.SourcesFailed = append(stats.SourcesFailed, subFails...)
+		}
 		if err != nil {
 			log.Printf("passive %s %s: %v", src.Name, domain, err)
-			errs = append(errs, fmt.Errorf("%s: %w", src.Name, err))
+			if len(subFails) == 0 {
+				stats.SourcesFailed = append(stats.SourcesFailed, sourceFailure{Source: src.Name, Error: err.Error()})
+			}
+		} else {
+			stats.SourcesOK++
 		}
 		seen := map[string]bool{}
 		for _, h := range hosts {
@@ -278,10 +352,16 @@ func collectPassive(ctx context.Context, domain string, srcs []Source) (map[stri
 			}
 		}
 	}
-	if len(errs) == len(srcs) && len(srcs) > 0 {
-		return nil, errors.Join(errs...)
+	stats.Found = len(found)
+	return found, stats, nil
+}
+
+func passiveDegradedReason(fails []sourceFailure) string {
+	parts := make([]string, 0, len(fails))
+	for _, f := range fails {
+		parts = append(parts, f.Source+": "+f.Error)
 	}
-	return found, nil
+	return strings.Join(parts, "; ")
 }
 
 // storeAssets upsert 资产：归属取最长匹配根域，in_scope 按该厂商范围规则判定，customer_hosted 按客户托管规则判定，sources 合并去重，更新 last_seen。
@@ -357,6 +437,7 @@ func storeAssets(ctx context.Context, d *pgxpool.Pool, found map[string][]string
 }
 
 // passiveHandler 是 passive 类扫描：收集、入库，返回子域交给 dns。
+// T39：result 写入 {sources_ok, sources_failed, found}；found==0 且有来源失败时 degraded。
 func passiveHandler(d *pgxpool.Pool, srcs []Source) ScanHandler {
 	return func(ctx context.Context, scanID int64, _ []string) ([]string, error) {
 		var domain string
@@ -364,11 +445,23 @@ func passiveHandler(d *pgxpool.Pool, srcs []Source) ScanHandler {
 			scanID).Scan(&domain); err != nil {
 			return nil, err
 		}
-		found, err := collectPassive(ctx, domain, srcs)
+		found, stats, err := collectPassive(ctx, domain, srcs)
 		if err != nil {
 			return nil, err
 		}
 		if _, err := storeAssets(ctx, d, found); err != nil {
+			return nil, err
+		}
+		res := map[string]any{
+			"sources_ok":     stats.SourcesOK,
+			"sources_failed": stats.SourcesFailed,
+			"found":          stats.Found,
+		}
+		if stats.Found == 0 && len(stats.SourcesFailed) > 0 {
+			res["degraded"] = true
+			res["degraded_reason"] = passiveDegradedReason(stats.SourcesFailed)
+		}
+		if _, err := d.Exec(ctx, `UPDATE scan_tasks SET result = $2 WHERE id = $1`, scanID, res); err != nil {
 			return nil, err
 		}
 		hosts := make([]string, 0, len(found))
