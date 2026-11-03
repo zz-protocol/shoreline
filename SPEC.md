@@ -174,3 +174,15 @@
   - Web：资产页可按挖掘状态筛选；展示最近挖掘时间/认领人；不提供「假装挖完」以外的手工编辑也可，但至少能看到状态。设置或文案里说明冷却与认领 TTL。
   - 非目标：不内置实际漏洞扫描；不存扫描原始流量；不做多租户权限隔离（仍是单实例 Bearer）。
   - 验收：两并发 claim 同一批候选，任意资产只被一方领到；heartbeat 能续期；TTL 过期后可被再领；complete 后在冷却期内 claim 不到；MCP 与 REST 行为一致；openapi/MCP 描述可读；迁移可在旧库执行。
+
+## 第五轮需求（11-03 用户）：bug 修复与易用性
+
+- **T33（高优 bug）非 UTF-8 标题导致 HTTP 扫描任务整体失败**。报告见 `docs/bugs/T33-utf8-title.md`。
+  - 方案A：响应体按 Content-Type/meta 用 `golang.org/x/net/html/charset` 解码，无法判定时回退 GB18030。
+  - 方案B：title、redirect、被动子域名入库前统一清洗为合法 UTF-8（`strings.ToValidUTF8`）。
+  - 方案C：单个 host 入库失败只记日志并计入 degraded，不让整个任务失败。
+  - 已失败的历史任务不自动重跑，由用户手动重新触发。
+  - 测试只用 httptest，不访问真实厂商。
+- **T34 厂商根域名就地添加**：每个厂商行/卡片内提供"添加根域名"按钮和输入框，厂商已预选；删除页面底部的添加表单；校验错误就地显示。
+- **T35 扫描任务记录删除**：`DELETE /api/scan-tasks/{id}`，只允许终态（done/failed/cancelled），成功返回 204；pending/running/retrying 返回 409，页面按钮置灰；单条删除需确认；不影响 assets/urls/events。openapi 同步。
+- **T36 Agent 使用说明**：新增 `docs/AGENT_GUIDE.md`，在 /docs 页面展示，并通过 MCP（`get_agent_guide` 工具或 resource）提供。内容：Bearer 认证；claim→heartbeat→complete 循环的 curl 与 MCP 示例；状态含义（claimed/done/deferred/abandoned）；`MINE_CLAIM_TTL_HOURS`=24、`MINE_COOLDOWN_DAYS`=30 默认值；错误码（409 等）；可直接粘贴的 system prompt 片段，要求 agent 挖完必须带状态调用 complete。
