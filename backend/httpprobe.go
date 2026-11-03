@@ -606,7 +606,8 @@ func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 					}
 					_, err := d.Exec(ctx, `UPDATE assets SET wildcard = $2, parent_wildcard = $2,
 						verified_real_at = CASE WHEN $2 THEN NULL ELSE now() END,
-						alive = CASE WHEN $2 AND alive = 'dead' THEN 'unknown' ELSE alive END WHERE id = $1`, it.assetID, allWild)
+						alive = CASE WHEN $2 AND alive = 'dead' THEN 'unknown' ELSE alive END,
+						dead_reason = CASE WHEN $2 AND alive = 'dead' THEN NULL ELSE dead_reason END WHERE id = $1`, it.assetID, allWild)
 					if err == nil && !allWild { // 页面复核为真实主机：此时才算新增资产
 						err = emitNew(ctx, d, it.assetID, nil, map[string]any{"subdomain": it.host, "verified_real": true})
 					}

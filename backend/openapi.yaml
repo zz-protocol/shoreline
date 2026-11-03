@@ -91,6 +91,7 @@ components:
         last_seen: {type: string, format: date-time}
         alive: {type: string, enum: [alive, dead, unknown], description: "探活：DNS 能解析且 HTTP 任一协议有响应为 alive（确认后不再改回）；DNS 失败或无响应为 dead；未探测或复核为泛解析为 unknown"}
         last_alive_at: {type: string, format: date-time, nullable: true, description: "判定为 alive 的时间"}
+        dead_reason: {type: string, enum: [nxdomain, no_http], nullable: true, description: "死亡原因（T38）：nxdomain=DNS 不解析；no_http=解析但 HTTP 不通；alive/unknown 为 null"}
         url: {type: string, description: "列表/MCP：该资产全部 URL（scheme://host:port），多条换行；无则为空串"}
         mine_status: {type: string, enum: [unset, claimed, done, deferred, abandoned], description: "挖掘状态（T32）"}
         mine_claimed_by: {type: string, nullable: true, description: "当前认领人（agent 名）"}
@@ -272,6 +273,7 @@ paths:
         - {name: vendor, in: query, schema: {type: integer}}
         - {name: in_scope, in: query, schema: {type: boolean}}
         - {name: alive, in: query, schema: {type: string, enum: [alive, dead, unknown]}, description: "按探活状态筛选"}
+        - {name: dead_reason, in: query, schema: {type: string, enum: [nxdomain, no_http]}, description: "死亡原因（T38）：nxdomain=DNS不解析；no_http=解析但HTTP不通；可与 alive 叠加"}
         - {name: alive_since, in: query, schema: {type: string, format: date-time}, description: "最后存活时间 >=（RFC3339）；可与 alive 叠加"}
         - {name: alive_until, in: query, schema: {type: string, format: date-time}, description: "最后存活时间 <（RFC3339，半开区间）；须晚于 alive_since"}
         - {name: q, in: query, schema: {type: string}, description: "子域名或 URL 标题子串（不区分大小写）"}
@@ -291,6 +293,7 @@ paths:
         - {name: vendor, in: query, schema: {type: integer}}
         - {name: in_scope, in: query, schema: {type: boolean}}
         - {name: alive, in: query, schema: {type: string, enum: [alive, dead, unknown]}, description: "按探活状态筛选"}
+        - {name: dead_reason, in: query, schema: {type: string, enum: [nxdomain, no_http]}, description: "死亡原因（T38）"}
         - {name: alive_since, in: query, schema: {type: string, format: date-time}, description: "最后存活时间 >=（RFC3339）"}
         - {name: alive_until, in: query, schema: {type: string, format: date-time}, description: "最后存活时间 <（RFC3339）"}
         - {name: q, in: query, schema: {type: string}, description: "子域名或 URL 标题子串（不区分大小写）"}

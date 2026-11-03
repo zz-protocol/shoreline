@@ -366,9 +366,10 @@ func (r *resolver) storeDNS(ctx context.Context, tx pgx.Tx, host string, hd host
 	} else if err != nil {
 		return false, err
 	}
-	if !hd.Resolved { // 失联：保留最后一次成功的 CNAME，只记 resolved=false；探活 DNS 失败直接 dead（已 alive 不改回）
+	if !hd.Resolved { // 失联：保留最后一次成功的 CNAME，只记 resolved=false；探活 DNS 失败直接 dead+nxdomain（已 alive 不改回；T38）
 		_, err := tx.Exec(ctx, `UPDATE assets SET resolved = false, resolved_at = now(),
-			alive = CASE WHEN alive = 'alive' THEN alive ELSE 'dead' END WHERE id = $1`, assetID)
+			alive = CASE WHEN alive = 'alive' THEN alive ELSE 'dead' END,
+			dead_reason = CASE WHEN alive = 'alive' THEN dead_reason ELSE 'nxdomain' END WHERE id = $1`, assetID)
 		return false, err
 	}
 	wild, parentWild := hd.Wildcard, hd.ParentWild

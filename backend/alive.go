@@ -8,7 +8,8 @@ import (
 )
 
 // markAlive 在 HTTP 阶段判定探活（T21）：responded=任一协议有响应。事务内锁行：
-// 已 alive 不再改；有响应 → alive（若原为 dead 则产生一条 recovered）；无响应 → dead。
+// 已 alive 不再改；有响应 → alive 并清空 dead_reason（若原为 dead 则产生一条 recovered）；
+// 无响应 → dead 且 dead_reason=no_http（T38）。
 func markAlive(ctx context.Context, d *pgxpool.Pool, assetID int64, host string, responded bool) error {
 	return pgx.BeginFunc(ctx, d, func(tx pgx.Tx) error {
 		var old string
@@ -19,10 +20,10 @@ func markAlive(ctx context.Context, d *pgxpool.Pool, assetID int64, host string,
 			return nil
 		}
 		if !responded {
-			_, err := tx.Exec(ctx, `UPDATE assets SET alive = 'dead' WHERE id = $1`, assetID)
+			_, err := tx.Exec(ctx, `UPDATE assets SET alive = 'dead', dead_reason = 'no_http' WHERE id = $1`, assetID)
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE assets SET alive = 'alive', last_alive_at = now() WHERE id = $1`, assetID); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE assets SET alive = 'alive', last_alive_at = now(), dead_reason = NULL WHERE id = $1`, assetID); err != nil {
 			return err
 		}
 		if old == "dead" {

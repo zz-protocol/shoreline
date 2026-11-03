@@ -31,6 +31,7 @@ type searchAssetsIn struct {
 	IncludeWildcard bool   `json:"include_wildcard,omitempty" jsonschema:"include wildcard assets (default false)"`
 	IncludeHosted   bool   `json:"include_customer_hosted,omitempty" jsonschema:"include customer-hosted cloud assets (default false)"`
 	Alive           string `json:"alive,omitempty" jsonschema:"filter by liveness: alive | dead | unknown"`
+	DeadReason      string `json:"dead_reason,omitempty" jsonschema:"filter by death reason: nxdomain | no_http (T38)"`
 	AliveSince      string `json:"alive_since,omitempty" jsonschema:"RFC3339; last_alive_at >= this time"`
 	AliveUntil      string `json:"alive_until,omitempty" jsonschema:"RFC3339; last_alive_at < this time (half-open)"`
 	MineStatus      string `json:"mine_status,omitempty" jsonschema:"filter by mine status: unset|claimed|done|deferred|abandoned"`
@@ -153,7 +154,7 @@ func (a *api) mcpServer() *mcp.Server {
 			}
 			list, err := a.queryAssets(ctx, assetFilter{
 				Vendor: in.Vendor, InScope: in.InScope, IncludeWildcard: in.IncludeWildcard, Q: in.Q,
-				NewSince: since, Limit: limit, Cursor: cursor, Alive: in.Alive, IncludeHosted: in.IncludeHosted,
+				NewSince: since, Limit: limit, Cursor: cursor, Alive: in.Alive, DeadReason: in.DeadReason, IncludeHosted: in.IncludeHosted,
 				AliveSince: aliveSince, AliveUntil: aliveUntil, MineStatus: in.MineStatus, InCooldown: in.InCooldown,
 			})
 			if err != nil {

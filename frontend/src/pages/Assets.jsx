@@ -13,8 +13,18 @@ export const ALIVE = {
   unknown: { label: '未知', color: 'default' },
 }
 
-export function AliveTag({ value, at }) {
-  const a = ALIVE[value] || ALIVE.unknown
+/** 存活筛选选项（T38：死亡拆成 DNS不解析 / 解析但HTTP不通）。value 为 UI 选项；params() 映射到 alive + dead_reason。 */
+export const ALIVE_FILTER = [
+  { value: 'alive', label: '存活', alive: 'alive' },
+  { value: 'nxdomain', label: 'DNS不解析', alive: 'dead', deadReason: 'nxdomain' },
+  { value: 'no_http', label: '解析但HTTP不通', alive: 'dead', deadReason: 'no_http' },
+  { value: 'unknown', label: '未知', alive: 'unknown' },
+]
+
+export function AliveTag({ value, at, deadReason }) {
+  let a = ALIVE[value] || ALIVE.unknown
+  if (value === 'dead' && deadReason === 'nxdomain') a = { label: 'DNS不解析', color: 'red' }
+  if (value === 'dead' && deadReason === 'no_http') a = { label: '解析但HTTP不通', color: 'orange' }
   return (
     <span title={at ? `最后存活 ${dayjs(at).format('YYYY-MM-DD HH:mm:ss')}` : undefined}>
       <Tag color={a.color}>{a.label}</Tag>
@@ -31,11 +41,12 @@ export const MINE_STATUS = {
 }
 
 /** 与列表/整列复制共用的筛选参数（不含分页；T29/T32）。 */
-export function assetFilterParams({ vendor, q, wild, hosted, alive, aliveWin, aliveCustom, mineStatus }) {
+export function assetFilterParams({ vendor, q, wild, hosted, alive, deadReason, aliveWin, aliveCustom, mineStatus }) {
   const p = new URLSearchParams({ include_wildcard: String(!!wild), include_customer_hosted: String(!!hosted) })
   if (vendor) p.set('vendor', String(vendor))
   if (q?.trim()) p.set('q', q.trim())
   if (alive) p.set('alive', alive)
+  if (deadReason) p.set('dead_reason', deadReason)
   if (mineStatus) p.set('mine_status', mineStatus)
   if (aliveWin && aliveWin !== 'custom') {
     const { since, until } = windowRange(aliveWin, null)
@@ -58,7 +69,7 @@ export default function Assets() {
   const [q, setQ] = useState('')
   const [wild, setWild] = useState(false)
   const [hosted, setHosted] = useState(false)
-  const [alive, setAlive] = useState()
+  const [aliveFilter, setAliveFilter] = useState() // alive|nxdomain|no_http|unknown（T38）
   const [aliveWin, setAliveWin] = useState('') // ''=不限；today/7d/30d/custom（T27）
   const [aliveCustom, setAliveCustom] = useState(null)
   const [mineStatus, setMineStatus] = useState()
@@ -71,7 +82,14 @@ export default function Assets() {
     get('/api/vendors').then((d) => setVendors(d.items || [])).catch((e) => message.error(e.message))
   }, [])
 
-  const filters = () => assetFilterParams({ vendor, q, wild, hosted, alive, aliveWin, aliveCustom, mineStatus })
+  const filters = () => {
+    const opt = ALIVE_FILTER.find((o) => o.value === aliveFilter)
+    return assetFilterParams({
+      vendor, q, wild, hosted,
+      alive: opt?.alive, deadReason: opt?.deadReason,
+      aliveWin, aliveCustom, mineStatus,
+    })
+  }
 
   const load = async (next) => {
     setLoading(true)
@@ -91,7 +109,7 @@ export default function Assets() {
   useEffect(() => {
     if (aliveWin === 'custom' && !(aliveCustom?.[0] && aliveCustom?.[1])) return
     load()
-  }, [vendor, wild, hosted, alive, aliveWin, aliveCustom, mineStatus])
+  }, [vendor, wild, hosted, aliveFilter, aliveWin, aliveCustom, mineStatus])
 
   const copyCol = async (field) => {
     try {
@@ -133,10 +151,11 @@ export default function Assets() {
         <Hint text={HELP.alive}><Select
           allowClear
           placeholder="探活状态"
-          style={{ width: 140 }}
-          value={alive}
-          onChange={setAlive}
-          options={Object.entries(ALIVE).map(([value, a]) => ({ value, label: a.label }))}
+          style={{ width: 180 }}
+          value={aliveFilter}
+          onChange={setAliveFilter}
+          options={ALIVE_FILTER.map((o) => ({ value: o.value, label: o.label }))}
+          data-testid="alive-filter"
         /></Hint>
         <Segmented
           value={aliveWin || 'all'}
@@ -184,10 +203,10 @@ export default function Assets() {
           { title: 'ID', dataIndex: 'id', width: 80 },
           { title: colTitle('子域', 'subdomain'), dataIndex: 'subdomain' },
           { title: colTitle('URL', 'url'), dataIndex: 'url', render: (v) => <span data-testid="asset-url" style={{ whiteSpace: 'pre-wrap' }}>{v || ''}</span> },
-          { title: <Hint text={HELP.alive}>探活</Hint>, dataIndex: 'alive', width: 90, render: (v, r) => <AliveTag value={v} at={r.last_alive_at} /> },
+          { title: <Hint text={HELP.alive}>探活</Hint>, dataIndex: 'alive', width: 90, render: (v, r) => <AliveTag value={v} at={r.last_alive_at} deadReason={r.dead_reason} /> },
           { title: '最后存活', dataIndex: 'last_alive_at', width: 170, render: (v) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : '') },
           { title: <Hint text={HELP.scope}>范围内</Hint>, dataIndex: 'in_scope', render: (v) => (v ? '是' : '否') },
-          { title: '泛解析', dataIndex: 'wildcard', render: (v) => (v ? '是' : '') },
+          { title: <Hint text={HELP.wildcard}>泛解析</Hint>, dataIndex: 'wildcard', width: 90, render: (v) => (v ? <Tag data-testid="wildcard-tag">泛解析</Tag> : '') },
           { title: <Hint text={HELP.hosted}>客户托管</Hint>, dataIndex: 'customer_hosted', render: (v) => (v ? <Tag>客户托管</Tag> : '') },
           { title: <Hint text={HELP.mine}>挖掘</Hint>, dataIndex: 'mine_status', width: 100, render: (v) => {
             const m = MINE_STATUS[v] || MINE_STATUS.unset

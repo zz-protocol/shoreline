@@ -744,7 +744,7 @@ func int64Param(w http.ResponseWriter, r *http.Request, name string) (*int64, bo
 }
 
 const assetCols = `a.id, a.subdomain, a.root_id, r.domain AS root_domain, r.vendor_id, a.cnames, a.cdn, a.resolved,
-	a.wildcard, a.customer_hosted, a.in_scope, a.sources, a.first_seen, a.last_seen, a.alive, a.last_alive_at,
+	a.wildcard, a.customer_hosted, a.in_scope, a.sources, a.first_seen, a.last_seen, a.alive, a.last_alive_at, a.dead_reason,
 	a.mine_status, a.mine_claimed_by, a.mine_claimed_at, a.mine_claim_expires_at,
 	a.mine_completed_at, a.mine_cooldown_until, a.mine_note, a.mine_report_url`
 
@@ -781,6 +781,7 @@ type assetFilter struct {
 	Limit           int
 	Cursor          int64
 	Alive           string     // alive / dead / unknown；空=不筛
+	DeadReason      string     // T38：nxdomain|no_http；空=不筛
 	IncludeHosted   bool       // include_customer_hosted：默认隐藏客户托管资产（T24）
 	AliveSince      *time.Time // last_alive_at >=（T27）
 	AliveUntil      *time.Time // last_alive_at <（T27，半开区间）
@@ -816,7 +817,7 @@ func cutPage(list []map[string]any, limit int) ([]map[string]any, any) {
 	return list, nil
 }
 
-// assetWhere：资产筛选条件，参数 $1..$12 为 cursor/vendor/in_scope/wild/q/new_since/alive/hosted/alive_since/alive_until/mine_status/in_cooldown（列表 LIMIT 用 $13；values 上限用 $13）。
+// assetWhere：资产筛选条件，参数 $1..$13 为 cursor/vendor/in_scope/wild/q/new_since/alive/hosted/alive_since/alive_until/mine_status/in_cooldown/dead_reason（列表 LIMIT 用 $14；values 上限用 $14）。
 const assetWhere = `FROM assets a JOIN root_domains r ON r.id = a.root_id
 		WHERE ($1::bigint = 0 OR a.id < $1)
 		  AND ($2::bigint IS NULL OR r.vendor_id = $2)
@@ -832,11 +833,12 @@ const assetWhere = `FROM assets a JOIN root_domains r ON r.id = a.root_id
 		  AND ($10::timestamptz IS NULL OR a.last_alive_at < $10)
 		  AND ($11::text = '' OR a.mine_status = $11)
 		  AND ($12::bool IS NULL OR ($12::bool = true AND a.mine_cooldown_until IS NOT NULL AND a.mine_cooldown_until > now())
-		       OR ($12::bool = false AND (a.mine_cooldown_until IS NULL OR a.mine_cooldown_until <= now())))`
+		       OR ($12::bool = false AND (a.mine_cooldown_until IS NULL OR a.mine_cooldown_until <= now())))
+		  AND ($13::text = '' OR a.dead_reason = $13)`
 
 func (f assetFilter) args() []any {
 	q := strings.ToLower(strings.TrimSpace(f.Q))
-	return []any{f.Cursor, f.Vendor, f.InScope, f.IncludeWildcard, q, f.NewSince, f.Alive, f.IncludeHosted, f.AliveSince, f.AliveUntil, f.MineStatus, f.InCooldown}
+	return []any{f.Cursor, f.Vendor, f.InScope, f.IncludeWildcard, q, f.NewSince, f.Alive, f.IncludeHosted, f.AliveSince, f.AliveUntil, f.MineStatus, f.InCooldown, f.DeadReason}
 }
 
 func checkAssetFilter(f *assetFilter) error {
@@ -848,6 +850,11 @@ func checkAssetFilter(f *assetFilter) error {
 	}
 	if f.Alive != "" && f.Alive != "alive" && f.Alive != "dead" && f.Alive != "unknown" {
 		return errf(400, "alive must be alive|dead|unknown")
+	}
+	switch f.DeadReason {
+	case "", "nxdomain", "no_http":
+	default:
+		return errf(400, "dead_reason must be nxdomain|no_http")
 	}
 	if f.AliveSince != nil && f.AliveUntil != nil && !f.AliveUntil.After(*f.AliveSince) {
 		return errf(400, "alive_until must be after alive_since")
@@ -875,7 +882,7 @@ func assetFilterFromQuery(w http.ResponseWriter, r *http.Request) (assetFilter, 
 	}
 	return assetFilter{
 		Vendor: vendor, InScope: inScope, IncludeWildcard: wild != nil && *wild, Q: r.URL.Query().Get("q"),
-		NewSince: newSince, Alive: r.URL.Query().Get("alive"),
+		NewSince: newSince, Alive: r.URL.Query().Get("alive"), DeadReason: r.URL.Query().Get("dead_reason"),
 		IncludeHosted: hosted != nil && *hosted, AliveSince: aliveSince, AliveUntil: aliveUntil,
 		MineStatus: r.URL.Query().Get("mine_status"), InCooldown: inCooldown,
 	}, true
@@ -889,7 +896,7 @@ func (a *api) queryAssets(ctx context.Context, f assetFilter) ([]map[string]any,
 	if err := checkPage(f.Limit, f.Cursor); err != nil {
 		return nil, err
 	}
-	return rowsJSON(a.db.Query(ctx, `SELECT `+assetCols+` `+assetWhere+` ORDER BY a.id DESC LIMIT $13`, append(f.args(), f.Limit+1)...))
+	return rowsJSON(a.db.Query(ctx, `SELECT `+assetCols+` `+assetWhere+` ORDER BY a.id DESC LIMIT $14`, append(f.args(), f.Limit+1)...))
 }
 
 // attachAssetURLText：列表/MCP 挂上 url 文本（scheme://host:port，多条换行），与播报页 URL 列同形（T29 补丁）。
@@ -981,11 +988,11 @@ func (a *api) assetValues(w http.ResponseWriter, r *http.Request) {
 	var q string
 	switch field {
 	case "subdomain":
-		q = `SELECT DISTINCT a.subdomain AS v ` + assetWhere + ` ORDER BY 1 LIMIT $13`
+		q = `SELECT DISTINCT a.subdomain AS v ` + assetWhere + ` ORDER BY 1 LIMIT $14`
 	case "url":
 		q = `SELECT DISTINCT u.scheme || '://' || u.host || ':' || u.port AS v
 			FROM urls u WHERE u.asset_id IN (SELECT a.id ` + assetWhere + `)
-			ORDER BY 1 LIMIT $13`
+			ORDER BY 1 LIMIT $14`
 	default:
 		writeErr(w, 400, "field must be subdomain|url")
 		return

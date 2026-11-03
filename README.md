@@ -123,7 +123,7 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 
 - 资产新增 `new`：子域首次解析成功且非泛解析时生成一次；解析失败照样入库但不发。wildcard=true 的不生成；父域有泛解析的主机等 HTTP 复核为真实后才生成。
 - 资产变更 `changed`：上次与本次都解析成功且非泛解析，只看第一跳 CNAME 变化（含恢复到原值；T37：第一跳不变、仅后续跳变化不报，与 cdn 字段无关，新值照常保存），detail.changes.cnames 记新旧值；IP 变化不报（T28）；CDN 不单独算。历史上「只改过 IP」的 changed（`changes` 为空或仅剩 ips）保留在库，但列表 / stats / values / MCP 一律不返回、不计入。
-- 资产探活（T21）：`alive` = alive / dead / unknown，`last_alive_at`。HTTP 阶段判定：DNS 能解析且任一协议有响应（任何状态码）为 alive，一旦 alive 不再改回、不再复查；DNS 失败或无响应为 dead；未探测或 HTTP 复核确认为泛解析为 unknown。dead 资产由 `SCHEDULE_ALIVE` 定时复查。
+- 资产探活（T21/T38）：`alive` = alive / dead / unknown，`last_alive_at`，`dead_reason` = nxdomain / no_http / null。HTTP 阶段判定：DNS 能解析且任一协议有响应（任何状态码）为 alive，一旦 alive 不再改回、不再复查，并清空 dead_reason；DNS 失败为 dead+nxdomain；HTTP 无响应为 dead+no_http；未探测或 HTTP 复核确认为泛解析为 unknown。dead 资产由 `SCHEDULE_ALIVE` 定时复查。
 - 资产恢复 `recovered`：仅在 dead→alive 时产生一条（同一事务锁行，并发只发一次）。DNS 解析失败时仍保留最后一次成功的 CNAME，只记 resolved=false，DNS 层不再发 recovered。`GET /api/assets?alive=` 可筛选。
 - 已复核为真实的主机在有效期内解析结果回落到泛解析时不报（v1）。
 - URL 新增 `new`：scheme+host+port 首次入库时生成一次（url_id 非空）。资产 new 与 URL new 都存，默认按资产聚合留给 T12/T13。
@@ -207,7 +207,7 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 | MINE_CLAIM_TTL_HOURS | 24 | 挖掘认领锁小时数；超时未 complete/heartbeat 可被再领（整数 >= 1，非法启动退出） |
 
 - 错误统一 `{"error":"..."}`；查询参数、路径或 JSON 字段含 NUL 一律 400；JSON body 只能有一个值（其后仅允许空白），否则 400；分页 `limit`（默认 50，最大 500）+ `cursor`（按 id 倒序，传上页 `next_cursor`）。
-- `GET /api/assets`：`vendor`、`in_scope`、`alive`、`alive_since`/`alive_until`（最后存活时间半开区间 `[since,until)`，可与 `alive` 叠加；T27）、`mine_status` / `in_cooldown`（挖掘状态与冷却；T32）、`q`（子域名或 URL 标题子串）、`new_since`（资产 new 事件时间，RFC3339）、`include_wildcard`（默认过滤泛解析）。`GET /api/assets/values?field=subdomain|url`：当前筛选下整列复制（去重、上限 100000；T29，与播报 values 同套路）。
+- `GET /api/assets`：`vendor`、`in_scope`、`alive`、`dead_reason`（nxdomain|no_http；T38）、`alive_since`/`alive_until`（最后存活时间半开区间 `[since,until)`，可与 `alive` 叠加；T27）、`mine_status` / `in_cooldown`（挖掘状态与冷却；T32）、`q`（子域名或 URL 标题子串）、`new_since`（资产 new 事件时间，RFC3339）、`include_wildcard`（默认过滤泛解析）。`GET /api/assets/values?field=subdomain|url`：当前筛选下整列复制（去重、上限 100000；T29，与播报 values 同套路）。
 - 挖掘认领（T32）：`POST /api/mine/claim`（原子领取，body：`claimed_by` 必填，`limit` 默认 20 上限 100，`vendor_id`/`since`/`q`/`include_abandoned`）；`POST /api/mine/heartbeat`（`asset_ids` 续锁）；`POST /api/mine/complete`（`asset_ids` + `status=done|deferred|abandoned`，可选 `note`/`report_url`）。默认只领 alive 且非客户托管；冷却与认领 TTL 见环境变量。
 - `GET /api/events`：默认资产级（`level=asset`），`level=url|all` 查 URL 事件；不传 `type` 默认 `new,recovered`（显式传 `changed` 才含）；`since`/`until`、`asset_id`、`vendor`、`include_wildcard`、`q`（子域名或 URL 子串，不区分大小写；`/stats` 与 `/values`、MCP `list_new_assets` 同步）。
 - 范围规则挂在厂商下（`/api/vendors/{id}/scopes`，pattern 为 `域名` 或 `*.域名`）；新增/删除返回 202 + `task_id`，`GET /api/scope-tasks/{id}` 查进度；按 id 分批更新、只改有变化的行，不长时间锁表。重算幂等：进程启动时自动重跑 pending/running 的任务（从头重算、计数清零）。
