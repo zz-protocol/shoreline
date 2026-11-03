@@ -184,7 +184,7 @@
   - 已失败的历史任务不自动重跑，由用户手动重新触发。
   - 测试只用 httptest，不访问真实厂商。
 - **T34 厂商根域名就地添加**：每个厂商行/卡片内提供"添加根域名"按钮和输入框，厂商已预选；删除页面底部的添加表单；校验错误就地显示。
-- **T35 扫描任务记录删除**：`DELETE /api/scan-tasks/{id}`，只允许终态（done/failed/cancelled），成功返回 204；pending/running/retrying 返回 409，页面按钮置灰；单条删除需确认；不影响 assets/urls/events。openapi 同步。
+- **T35 扫描任务记录删除**：`DELETE /api/scan-tasks/{id}`，只允许终态（done/failed/cancelled），成功返回 204；pending/running/retrying 返回 409，页面按钮置灰；单条删除需确认；不影响 assets/urls/events。openapi 同步。只删本条，下游任务的 parent_id/root_scan_id 置空；下游有进行中的任务则返回 409，不做级联删除；cancelled 算终态。
 - **T36 Agent 使用说明**：新增 `docs/AGENT_GUIDE.md`，在 /docs 页面展示，并通过 MCP（`get_agent_guide` 工具或 resource）提供。内容：Bearer 认证；claim→heartbeat→complete 循环的 curl 与 MCP 示例；状态含义（claimed/done/deferred/abandoned）；`MINE_CLAIM_TTL_HOURS`=24、`MINE_COOLDOWN_DAYS`=30 默认值；错误码（409 等）；可直接粘贴的 system prompt 片段，要求 agent 挖完必须带状态调用 complete。
 
 ## 第五轮补充（11-03 用户运行审计，见 docs/bugs/audit-2026-11-03.md）
