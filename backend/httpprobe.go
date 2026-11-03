@@ -651,7 +651,7 @@ func nonNil(s []string) []string {
 	return s
 }
 
-// storeURL upsert URL，并按新增/变更生成事件（状态码、标题、指纹 hash 任一变化为变更）。
+// storeURL upsert URL，并按新增/变更生成事件（状态码或标题变化为变更；T37：只有指纹 hash 变化不算）。
 // 在事务里 SELECT ... FOR UPDATE 锁行后比较新旧值：并发同结果时只有第一个真正改值的记 changed。
 func (p *prober) storeURL(ctx context.Context, d *pgxpool.Pool, assetID int64, r *probeResult) error {
 	if storeURLHook != nil {
@@ -698,8 +698,8 @@ func (p *prober) storeURL(ctx context.Context, d *pgxpool.Pool, assetID int64, r
 			if oldFP == nil || *oldFP != r.Fingerprint {
 				changes["fingerprint_hash"] = change{oldFP, r.Fingerprint}
 			}
-			if len(changes) == 0 {
-				return nil
+			if len(changes) == 0 || len(changes) == 1 && changes["fingerprint_hash"] != (change{}) {
+				return nil // T37：只有指纹变化不产生 changed（新值已照常保存）
 			}
 			return emitEvent(ctx, tx, "changed", assetID, &urlID, map[string]any{"url": url, "changes": changes})
 		})

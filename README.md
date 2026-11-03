@@ -122,12 +122,12 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 | WILDCARD_VERIFIED_TTL | 168h | HTTP 页面复核为真实主机（assets.verified_real_at）的有效期；期内 DNS 不重标 wildcard，过期后重新复核 |
 
 - 资产新增 `new`：子域首次解析成功且非泛解析时生成一次；解析失败照样入库但不发。wildcard=true 的不生成；父域有泛解析的主机等 HTTP 复核为真实后才生成。
-- 资产变更 `changed`：上次与本次都解析成功且非泛解析，只看 CNAME 集合变化（含恢复到原值），detail.changes.cnames 记新旧值；IP 变化不报（T28）；CDN 不单独算。历史上「只改过 IP」的 changed（`changes` 为空或仅剩 ips）保留在库，但列表 / stats / values / MCP 一律不返回、不计入。
+- 资产变更 `changed`：上次与本次都解析成功且非泛解析，只看第一跳 CNAME 变化（含恢复到原值；T37：第一跳不变、仅后续跳变化不报，与 cdn 字段无关，新值照常保存），detail.changes.cnames 记新旧值；IP 变化不报（T28）；CDN 不单独算。历史上「只改过 IP」的 changed（`changes` 为空或仅剩 ips）保留在库，但列表 / stats / values / MCP 一律不返回、不计入。
 - 资产探活（T21）：`alive` = alive / dead / unknown，`last_alive_at`。HTTP 阶段判定：DNS 能解析且任一协议有响应（任何状态码）为 alive，一旦 alive 不再改回、不再复查；DNS 失败或无响应为 dead；未探测或 HTTP 复核确认为泛解析为 unknown。dead 资产由 `SCHEDULE_ALIVE` 定时复查。
 - 资产恢复 `recovered`：仅在 dead→alive 时产生一条（同一事务锁行，并发只发一次）。DNS 解析失败时仍保留最后一次成功的 CNAME，只记 resolved=false，DNS 层不再发 recovered。`GET /api/assets?alive=` 可筛选。
 - 已复核为真实的主机在有效期内解析结果回落到泛解析时不报（v1）。
 - URL 新增 `new`：scheme+host+port 首次入库时生成一次（url_id 非空）。资产 new 与 URL new 都存，默认按资产聚合留给 T12/T13。
-- URL 变更 `changed`：状态码、标题或指纹 hash 变化，detail.changes 记各字段新旧值；只改正文不算。
+- URL 变更 `changed`：状态码或标题变化，detail.changes 记各字段新旧值（指纹 hash 同时变化也一并记入）；只有指纹 hash 变化不产生、不计入（T37，新值照常保存）；只改正文不算。已有历史事件不动。
 - 新旧值比较在 `SELECT ... FOR UPDATE` 事务里做，并发同结果同一字段只记一条 changed；`new` 另由唯一部分索引（迁移 008，建索引前先去重存量重复）保证只生成一次。
 
 迁移编号：004 含大小写重复根域合并（先合并再加约束）；008 事件去重+唯一索引；009 assets.parent_wildcard / verified_real_at。首个公开版本发布前允许原地修改迁移，开发库需重建。

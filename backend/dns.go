@@ -394,8 +394,8 @@ func (r *resolver) storeDNS(ctx context.Context, tx pgx.Tx, host string, hd host
 	if !*oldResolved {
 		return true, nil // 失联后再解析：DNS 层不报；recovered 只在 HTTP 阶段 dead→alive 时产生（T21）
 	}
-	if sameSet(oldCNAMEs, cnames) {
-		return true, nil
+	if firstHop(oldCNAMEs) == firstHop(cnames) {
+		return true, nil // T37：只看第一跳 CNAME，后续跳变化不报，与 cdn 字段无关（新值照常已保存）
 	}
 	changes := map[string]change{"cnames": {oldCNAMEs, cnames}}
 	return true, emitEvent(ctx, tx, "changed", assetID, nil, map[string]any{"subdomain": host, "changes": changes})
