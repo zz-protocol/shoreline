@@ -186,3 +186,24 @@
 - **T34 厂商根域名就地添加**：每个厂商行/卡片内提供"添加根域名"按钮和输入框，厂商已预选；删除页面底部的添加表单；校验错误就地显示。
 - **T35 扫描任务记录删除**：`DELETE /api/scan-tasks/{id}`，只允许终态（done/failed/cancelled），成功返回 204；pending/running/retrying 返回 409，页面按钮置灰；单条删除需确认；不影响 assets/urls/events。openapi 同步。
 - **T36 Agent 使用说明**：新增 `docs/AGENT_GUIDE.md`，在 /docs 页面展示，并通过 MCP（`get_agent_guide` 工具或 resource）提供。内容：Bearer 认证；claim→heartbeat→complete 循环的 curl 与 MCP 示例；状态含义（claimed/done/deferred/abandoned）；`MINE_CLAIM_TTL_HOURS`=24、`MINE_COOLDOWN_DAYS`=30 默认值；错误码（409 等）；可直接粘贴的 system prompt 片段，要求 agent 挖完必须带状态调用 complete。
+
+## 第五轮补充（11-03 用户运行审计，见 docs/bugs/audit-2026-11-03.md）
+
+- **T37 changed 事件降噪**：
+  - 只有 fingerprint_hash 变化时不再产生、也不计入 changed（新值照常保存）。
+  - cnames 变化时，只有第一跳 CNAME 变了才产生 changed。例如第一跳仍是 www.haimian.com.bytedns3.com，就不产生事件。不论 cdn 字段是什么都按此处理。
+  - 旧事件不动。
+- **T38 死亡原因**：
+  - 新增 `assets.dead_reason` 枚举：nxdomain | no_http | null，由 dns/http 阶段写入。
+  - 泛解析资产沿用现有存活逻辑，页面显示"泛解析"标签。
+  - 页面的存活筛选把"死亡"拆成"DNS不解析"和"解析但HTTP不通"；API 增加 `dead_reason` 筛选。
+  - 迁移回填：resolved=false 回填为 nxdomain；resolved=true 且已死回填为 no_http。
+- **T39 被动收集统计**：
+  - passive 任务的 result 写入 `{sources_ok, sources_failed:[{source,error}], found}`。
+  - subfinderEnum 要把每个来源的错误暴露出来。
+  - found==0 且有来源失败时，记 degraded=true 并写 degraded_reason。
+- **T40 大根域分片**：
+  - dns 和 http 处理器按 `HOST_CHUNK_SIZE`（默认 2000）把 hosts 分片，每片作为独立 scan_task 入队，通过 parent_id 关联父任务。
+  - 父任务状态由子任务推导；重启只重跑未完成的分片。
+  - 与 T23 的孤儿任务处理和 409 规则保持一致。
+- **不在开发范围（用户自行运维）**：first_seen 回填 SQL、SCHEDULE_PASSIVE 调整、触发新根域。

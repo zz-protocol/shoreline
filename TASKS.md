@@ -43,3 +43,7 @@
 | T34 | 厂商页根域名就地添加：每个厂商行内添加按钮/输入，厂商预选；删除底部表单 | 在厂商 X 行内添加根域名后，不用滚动页面就能在 X 下看到；校验错误就地显示；底部表单已删除 | 待做 |
 | T35 | 扫描任务记录删除：DELETE /api/scan-tasks/{id}，仅终态可删；页面单条删除带确认 | 测试覆盖终态 204、pending/running/retrying 409；非终态按钮置灰；删除后 assets/urls/events 不变；openapi 同步 | 待做 |
 | T36 | Agent 使用说明：docs/AGENT_GUIDE.md，/docs 页面展示，MCP get_agent_guide；含认证、claim→heartbeat→complete 的 curl/MCP 示例、状态含义、TTL/冷却默认值、错误码、system prompt 片段 | 在本地栈上照文档逐字操作，新 agent 能 claim、heartbeat、complete 一个资产，资产显示 done 且有挖掘时间 | 待做 |
+| T37 | changed 降噪：仅 fingerprint_hash 变化不产生/不计 changed（照常存）；cnames 仅第一跳变化才产生 changed，与 cdn 无关；旧事件不动 | haimian 示例（第一跳保持 www.haimian.com.bytedns3.com，后续跳变化）无事件；第一跳变化有事件；仅 fingerprint 变化无事件且值已更新；统计不计 | 待做 |
+| T38 | assets.dead_reason（nxdomain/no_http/null）由 dns/http 写入；泛解析显示标签；存活筛选拆"DNS不解析"/"解析但HTTP不通"；API dead_reason 筛选；迁移回填 | 迁移在旧库按规则回填；两类死亡筛选结果正确；复活后 dead_reason 清空；泛解析标签可见；openapi 同步 | 待做 |
+| T39 | passive result {sources_ok, sources_failed[{source,error}], found}；subfinderEnum 暴露各来源错误；found==0 且有来源失败时 degraded+reason | mock 来源失败测试：result 字段正确、degraded 与 reason 写入；全成功时不 degraded；无真实网络 | 待做 |
+| T40 | dns/http 按 HOST_CHUNK_SIZE（默认 2000）分片为子 scan_task（parent_id），父状态由子推导；重启只重跑未完成分片；兼容 T23 规则 | 5000 个合成 host 拆成 3 个子任务；子任务全部 done 时父任务 done，任一失败按规则推导；模拟重启只重跑未完成分片；T23 的 409 和孤儿处理测试仍通过 | 待做 |
