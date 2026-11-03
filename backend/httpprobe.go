@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -20,10 +21,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	wappalyzer "github.com/projectdiscovery/wappalyzergo"
+	"golang.org/x/net/html/charset"
+	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/time/rate"
 )
 
@@ -154,7 +158,7 @@ func (p *prober) getWith(ctx context.Context, lim *rate.Limiter, scheme, host st
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, p.cfg.MaxBody))
 	r := &probeResult{Scheme: scheme, Host: host, Port: map[string]int{"https": 443, "http": 80}[scheme], Status: resp.StatusCode,
 		Redirect: resp.Header.Get("Location"), body: body}
-	if m := titleRe.FindSubmatch(body); m != nil {
+	if m := titleRe.FindSubmatch(decodeHTML(resp.Header.Get("Content-Type"), body)); m != nil { // T33：按 charset 解码后再取标题
 		r.Title = strings.Join(strings.Fields(html.UnescapeString(string(m[1]))), " ")
 	}
 	if w, err := wappalyzerClient(); err == nil {
@@ -166,6 +170,28 @@ func (p *prober) getWith(ctx context.Context, lim *rate.Limiter, scheme, host st
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s", r.Status, r.Title, strings.Join(r.Tech, ","))))
 	r.Fingerprint = hex.EncodeToString(sum[:])
 	return r, nil
+}
+
+// decodeHTML 按 Content-Type/BOM/meta 声明把响应体转成 UTF-8；无法判定（未声明，或声明/判定为 UTF-8
+// 但字节非法）时回退 GB18030；
+// 最后兜底剔除非法字节（T33）。
+func decodeHTML(contentType string, body []byte) []byte {
+	enc, name, certain := charset.DetermineEncoding(body, contentType)
+	if (!certain && name != "utf-8") || (name == "utf-8" && !utf8.Valid(body)) {
+		enc = simplifiedchinese.GB18030
+	}
+	if b, err := enc.NewDecoder().Bytes(body); err == nil {
+		body = b
+	}
+	return []byte(validUTF8(string(body)))
+}
+
+// validUTF8 入库前统一清洗：非法字节替换为 U+FFFD（T33 方案 B）。
+func validUTF8(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	return strings.ToValidUTF8(s, "\uFFFD")
 }
 
 // probeHost 对每个 scheme 发一次 GET /，返回成功的结果。
@@ -507,6 +533,20 @@ func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 			}
 			mu.Unlock()
 		}
+		// T33 方案 C：单 host URL 入库失败只记日志并计入 degraded，不让整个任务失败。
+		var storeFailures int
+		var storeReason string
+		store := func(assetID int64, r *probeResult) {
+			if err := p.storeURL(ctx, d, assetID, r); err != nil {
+				log.Printf("http scan %d: store %s://%s failed (degraded): %v", scanID, r.Scheme, r.Host, err)
+				mu.Lock()
+				storeFailures++
+				if storeReason == "" {
+					storeReason = fmt.Sprintf("%s://%s: %v", r.Scheme, r.Host, err)
+				}
+				mu.Unlock()
+			}
+		}
 		// 第一阶段：并发取回全部页面（非候选直接入库）；候选页面先收集，供第二阶段判断同父域候选是否稳定。
 		sem := make(chan struct{}, p.cfg.Concurrency)
 		var wg sync.WaitGroup
@@ -524,9 +564,7 @@ func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 				results := p.probeHost(ctx, lim, it.host)
 				if !it.candidate {
 					for _, r := range results {
-						if err := p.storeURL(ctx, d, it.assetID, r); err != nil {
-							fail(err)
-						}
+						store(it.assetID, r)
 					}
 					if err := markAlive(ctx, d, it.assetID, it.host, len(results) > 0); err != nil {
 						fail(err)
@@ -583,16 +621,21 @@ func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 					}
 				}
 				for _, r := range results {
-					if err := p.storeURL(ctx, d, it.assetID, r); err != nil {
-						fail(err)
-					}
+					store(it.assetID, r)
 				}
 			}(it, results)
 		}
 		wg.Wait()
+		if firstErr == nil && storeFailures > 0 {
+			_, firstErr = d.Exec(ctx, `UPDATE scan_tasks SET result = $2 WHERE id = $1`, scanID, map[string]any{
+				"store_failures": storeFailures, "degraded": true, "degraded_reason": storeReason})
+		}
 		return nil, firstErr
 	}
 }
+
+// storeURLHook 仅供测试注入单 host 入库失败（生产为 nil）。
+var storeURLHook func(r *probeResult) error
 
 func nullIfEmpty(s string) *string {
 	if s == "" {
@@ -611,6 +654,12 @@ func nonNil(s []string) []string {
 // storeURL upsert URL，并按新增/变更生成事件（状态码、标题、指纹 hash 任一变化为变更）。
 // 在事务里 SELECT ... FOR UPDATE 锁行后比较新旧值：并发同结果时只有第一个真正改值的记 changed。
 func (p *prober) storeURL(ctx context.Context, d *pgxpool.Pool, assetID int64, r *probeResult) error {
+	if storeURLHook != nil {
+		if err := storeURLHook(r); err != nil {
+			return err
+		}
+	}
+	r.Title, r.Redirect = validUTF8(r.Title), validUTF8(r.Redirect) // T33 方案 B：入库前清洗
 	url := fmt.Sprintf("%s://%s:%d", r.Scheme, r.Host, r.Port)
 	for {
 		retry := false

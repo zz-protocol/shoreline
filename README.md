@@ -260,5 +260,6 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 - 首屏输入 API token，存 `localStorage`；侧栏：新增播报 / 资产 / 厂商·根域 / 客户托管规则 / 扫描任务 / 测绘 Key / API Key / API 文档。
 - 测绘 Key（T30）：FOFA/Quake/Hunter 可在网页增删改，库内保存；API/页面只返掩码（后 4 位）；「测试连通」只调账户信息接口（mock 测），不耗查询额度。
 - 厂商 `active_enabled` 开关走 `PATCH`；删厂商/根域二次确认；资产 `include_wildcard`；事件 `level` + 每 30s 轮询 `since`。
+- http 扫描标题按 Content-Type/meta 声明的 charset 解码（`golang.org/x/net/html/charset`），无法判定时回退 GB18030；title、redirect、被动子域名入库前清洗为合法 UTF-8；单个 host 的 URL 入库失败只记日志，任务仍为 done，`result` 记 `store_failures` 并标 `degraded:true`（T33）。历史失败任务不自动重跑。
 - 扫描列表展示 `degraded`/`degraded_reason`；`passive`/`active`/`expand` 可重跑（再 `POST /api/scans`）；`dns`/`http` 无重跑钮，提示从 passive 重跑。
 - 本地：`cd frontend && npm install && npm test && npm run build`；`npm run dev` 反代到 `127.0.0.1:8080`。

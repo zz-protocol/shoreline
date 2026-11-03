@@ -245,7 +245,7 @@ func (c passiveConfig) subfinderEnum(ctx context.Context, domain string) ([]stri
 
 // normalizeSubdomain 去掉 scheme、端口、通配前缀，转小写；不属于 domain 的返回空。
 func normalizeSubdomain(s, domain string) string {
-	s = strings.TrimSpace(strings.ToLower(s))
+	s = strings.TrimSpace(strings.ToLower(validUTF8(s))) // T33 方案 B：被动来源入库前清洗
 	if i := strings.Index(s, "://"); i >= 0 {
 		s = s[i+3:]
 	}
