@@ -197,7 +197,7 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 
 ## REST API（T12）
 
-文档：`GET /api/openapi.yaml`（嵌入，无需认证；Swagger UI 留 T14）。其余 `/api/*` 需 `Authorization: Bearer <token>`。
+文档：`GET /api/openapi.yaml`（嵌入，无需认证；Swagger UI 留 T14）。Agent 使用说明：`docs/AGENT_GUIDE.md`，后端嵌入副本 `backend/agent_guide.md`（构建上下文只有 backend/，改文档后需 `cp docs/AGENT_GUIDE.md backend/agent_guide.md`，测试校验两份一致），经 `GET /api/agent-guide`（无需认证）、`/docs` 页与 MCP `get_agent_guide` 提供（T36）。其余 `/api/*` 需 `Authorization: Bearer <token>`。
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
@@ -227,6 +227,7 @@ Streamable HTTP（无状态、JSON 响应），地址 `POST /mcp`，认证同 AP
 | claim_mine_targets | claimed_by, limit, vendor_id, since, q, include_abandoned | 同 `POST /api/mine/claim`；agent 自助领取 |
 | heartbeat_mine | asset_ids | 同 `POST /api/mine/heartbeat`；续认领锁 |
 | complete_mine | asset_ids, status, note, report_url | 同 `POST /api/mine/complete`；回写结果 |
+| get_agent_guide | 无 | 返回 Agent 使用说明 markdown（T36，同 `docs/AGENT_GUIDE.md`） |
 
 `GET /api/check-scope?host=` 与 `check_scope` 共用同一实现，输出一致（非法 host 400）。
 

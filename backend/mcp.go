@@ -181,6 +181,10 @@ func (a *api) mcpServer() *mcp.Server {
 			}
 			return nil, out, nil
 		})
+	mcp.AddTool(s, &mcp.Tool{Name: "get_agent_guide", Description: "Return the Shoreline agent guide (markdown, same as docs/AGENT_GUIDE.md and GET /api/agent-guide): auth, claim -> heartbeat -> complete loop with curl and MCP examples, mine_status meanings, defaults (MINE_CLAIM_TTL_HOURS=24, MINE_COOLDOWN_DAYS=30), error codes, and a system prompt snippet. Read this first."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, mapOut, error) {
+			return nil, mapOut{"guide": string(agentGuideMD)}, nil
+		})
 	mcp.AddTool(s, &mcp.Tool{Name: "claim_mine_targets", Description: "Claim up to N alive, non-customer-hosted assets for vulnerability mining (POST /api/mine/claim). Default candidates: mine_status unset, or done/deferred with cooldown expired, or claimed with claim TTL expired. Atomic (SKIP LOCKED): concurrent callers never get the same asset. Pass claimed_by (agent name). Optional: limit (default 20, max 100), vendor_id, since (first_seen), q, include_abandoned. Returns claimed assets with mine_* fields and claim_expires_at. Heartbeat before expiry; complete when done."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in claimMineIn) (*mcp.CallToolResult, mapOut, error) {
 			by := strings.TrimSpace(in.ClaimedBy)

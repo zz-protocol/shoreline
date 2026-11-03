@@ -395,6 +395,11 @@ paths:
       summary: "删除一条扫描任务记录（T35）：仅终态 done/failed/cancelled 可删，成功 204；pending/running/retrying（或仍有进行中的下游任务）返回 409；只删这一条（下游记录保留、链路引用置空），不影响 assets/urls/events"
       parameters: [{$ref: "#/components/parameters/id"}]
       responses: {"204": {description: "已删除"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/agent-guide:
+    get:
+      summary: "Agent 使用说明（T36；markdown，无需认证；与 docs/AGENT_GUIDE.md、MCP get_agent_guide 内容相同）"
+      security: []
+      responses: {"200": {description: "text/markdown"}}
   /api/tokens:
     get:
       summary: "token 列表（不含明文）"

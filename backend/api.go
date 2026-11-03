@@ -30,6 +30,11 @@ import (
 //go:embed openapi.yaml
 var openapiYAML []byte
 
+// agentGuideMD 是 docs/AGENT_GUIDE.md 的副本（T36；构建上下文只有 backend/，测试保证两份一致）。
+//
+//go:embed agent_guide.md
+var agentGuideMD []byte
+
 // apiConfig：API_BOOTSTRAP_TOKEN（可空；为空且无 api_tokens 时所有 /api 请求 401）、SCOPE_BATCH_SIZE（默认 500，>=1）。
 type apiConfig struct {
 	BootstrapToken    string
@@ -117,6 +122,10 @@ func (a *api) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/yaml")
 		w.Write(openapiYAML)
+	})
+	mux.HandleFunc("GET /api/agent-guide", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.Write(agentGuideMD)
 	})
 	for pat, h := range a.routes() {
 		mux.Handle(pat, a.auth(h))

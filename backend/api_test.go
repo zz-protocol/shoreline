@@ -108,7 +108,7 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 	for k := range a.routes() {
 		want = append(want, k)
 	}
-	want = append(want, "GET /api/openapi.yaml", "POST /mcp")
+	want = append(want, "GET /api/openapi.yaml", "GET /api/agent-guide", "POST /mcp")
 	sort.Strings(want)
 	var got []string
 	path := ""

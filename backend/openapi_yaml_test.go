@@ -28,7 +28,7 @@ func TestOpenAPIYAMLStrict(t *testing.T) {
 			}
 		}
 	}
-	if want := len((&api{}).routes()) + 2; ops != want { // + /api/openapi.yaml、/mcp
+	if want := len((&api{}).routes()) + 3; ops != want { // + /api/openapi.yaml、/api/agent-guide、/mcp
 		t.Fatalf("operations %d want %d", ops, want)
 	}
 	task := doc["components"].(map[string]any)["schemas"].(map[string]any)["ScopeAccepted"].(map[string]any)["properties"].(map[string]any)["task_id"].(map[string]any)
