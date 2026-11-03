@@ -159,3 +159,18 @@
 - T30 网页配置查询 key：FOFA、Quake、Hunter 的 key 可以在网页设置页手动添加、修改和删除，保存在数据库里。页面只显示掩码（后 4 位），API 不返回明文。网页填写的优先，没有填时回退到环境变量。改完后下次扫描就生效，不用重启。每个 key 提供一个「测试连通」按钮，调用对应服务的账户信息接口，只读，不消耗查询额度。
 - T31 客户托管规则支持精确层数匹配（10-24 用户）：用户要排除 `app-xxxx-vitesandbox.miaoda.cn` 这类域名，但不能误拦 `api.miaoda.cn`。规则写法放开：除了 `*.` 开头（匹配 ≥1 层）之外，也允许不以 `*.` 开头的规则，标签数必须与主机名完全一致，逐层匹配，标签内 `*` 只匹配本层（如 `*-vitesandbox.miaoda.cn` 命中 `app-8t89ep1cj4zl-vitesandbox.miaoda.cn`，不命中 `api.miaoda.cn` 和 `a.b-vitesandbox.miaoda.cn`）。校验：至少有一个标签含 `*`；最后一个含 `*` 的标签之后的固定后缀仍须是 eTLD+1 或更长；`*.` 开头的规则行为不变。规则页提示和 openapi、README 同步说明两种写法。
   - T31 补充：不以 `*.` 开头的规则拒绝连续 `**`（避免与 `*.` 混淆）；`*` 可匹配空串（与内置 `oss-*` 一致），规则落库统一小写。
+
+## 第四轮需求（11-03 用户）：挖掘工作流
+目标：自动化管理「该挖 / 正在挖 / 挖过」的域名资产，避免重复挖掘，让接入的挖掘 agent 通过 API/MCP 自助领取和回写。
+- T32 挖掘认领与回写：
+  - 资产增加挖掘字段（或等价侧表）：status = unset|claimed|done|deferred|abandoned；claimed_by、claimed_at、claim_expires_at；completed_at、cooldown_until；note（短结论）、report_url（可选）。
+  - 冷却默认 30 天（环境变量 `MINE_COOLDOWN_DAYS`，0 表示完成后不再自动进入可领队列）；认领锁默认 24h（`MINE_CLAIM_TTL_HOURS`），超时未 complete/heartbeat 则自动回到可领。
+  - API（Bearer）：
+    - `POST /api/mine/claim`：按筛选领取最多 N 条（默认 20，上限 100）。默认条件：alive、非 customer_hosted、status 为 unset 或（done/deferred 且 cooldown_until 已过）或（claimed 且 claim 已过期）。支持 vendor_id、since（对应 first_seen/新资产）、q。原子领取（行锁或等价），返回资产列表；冲突不重复发给两个调用方。
+    - `POST /api/mine/heartbeat`：续锁，body 含 asset_ids。
+    - `POST /api/mine/complete`：回写 status（done|deferred|abandoned）、note、report_url；写 completed_at；done/deferred 时按冷却策略写 cooldown_until；abandoned 默认不再进入队列，除非显式重新 claim 时带 include_abandoned。
+    - `GET /api/assets` 增加 mine_status、cooldown 等筛选；列表返回上述挖掘字段。
+  - MCP：`claim_mine_targets`、`complete_mine`、`heartbeat_mine`，工具描述写清用法，便于 agent 自读。
+  - Web：资产页可按挖掘状态筛选；展示最近挖掘时间/认领人；不提供「假装挖完」以外的手工编辑也可，但至少能看到状态。设置或文案里说明冷却与认领 TTL。
+  - 非目标：不内置实际漏洞扫描；不存扫描原始流量；不做多租户权限隔离（仍是单实例 Bearer）。
+  - 验收：两并发 claim 同一批候选，任意资产只被一方领到；heartbeat 能续期；TTL 过期后可被再领；complete 后在冷却期内 claim 不到；MCP 与 REST 行为一致；openapi/MCP 描述可读；迁移可在旧库执行。
