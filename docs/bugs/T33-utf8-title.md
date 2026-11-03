@@ -66,7 +66,7 @@ if m := titleRe.FindSubmatch(body); m != nil {
 
 `body` 是**原始响应字节**（`io.ReadAll` 得到），这里直接把 `<title>` 的原始字节 **当成 UTF-8 字符串** 使用，**没有做 charset 解码**。
 
-中文站大量使用 GBK / GB18030 / GB2312 编码（`Content-Type: text/html; charset=gb18030`），其标题字节（如 `D3 C3 BB A7 B5 C7 C2 BC` = "用户登陆"）不是合法 UTF-8。这个非法字符串一路带到写库：
+中文站大量使用 GBK / GB18030 / GB2312 编码（`Content-Type: text/html; charset=gb18030`），其标题字节（如 `D3 C3 BB A7 B5 C7 C2 BC` = "用户登录"）不是合法 UTF-8。这个非法字符串一路带到写库：
 
 **`backend/httpprobe.go:624-626`（INSERT 新 URL）**
 
@@ -114,7 +114,7 @@ import re
 body = open('/tmp/p.html','rb').read()
 raw = re.search(rb'(?is)<title[^>]*>(.*?)</title>', body).group(1)
 print('raw bytes :', raw)                 # b'\xd3\xc3\xbb\xa7\xb5\xc7\xc2\xbc'
-print('gb18030   :', raw.decode('gb18030'))  # 用户登陆
+print('gb18030   :', raw.decode('gb18030'))  # 用户登录
 try:
     raw.decode('utf-8')
 except UnicodeDecodeError as e:
@@ -215,9 +215,9 @@ redirect := toValidUTF8(r.Redirect)
 
 ## 七、验收标准
 
-1. `curl http://gdinfo.95516.com/` 对应主机的 `urls.title` 正确落库为 **「用户登陆」**（不是乱码、不是空、不报错）。
+1. `curl http://gdinfo.95516.com/` 对应主机的 `urls.title` 正确落库为 **「用户登录」**（不是乱码、不是空、不报错）。
 2. 重新触发 `95516.com` / `fenbi.com` / `xdf.cn` / `mi.com` 的 http 扫描，任务 `status = done`，无 `invalid byte sequence` 报错。
-3. 回归测试建议：构造一个 GBK 页面（`Content-Type: text/html; charset=gbk`，title 为 GBK 字节）作为 fixture，断言 `probeResult.Title == "用户登陆"` 且 `storeURL` 不报错。
+3. 回归测试建议：构造一个 GBK 页面（`Content-Type: text/html; charset=gbk`，title 为 GBK 字节）作为 fixture，断言 `probeResult.Title == "用户登录"` 且 `storeURL` 不报错。
 4. 全库校验 SQL（应为 0）：
 
 ```sql
@@ -243,6 +243,6 @@ curl -s -D- -o /dev/null http://gdinfo.95516.com/ | grep -i content-type
 
 # 3) 确认 PG 拒收（模拟）
 docker compose exec -T postgres psql -U sam -d sam -c "
-SELECT convert_from('\xd3\xc3\xbb\xa7\xb5\xc7\xc2\xbc'::bytea, 'GB18030');"     -- 用户登陆（PG 认得 GB18030）
+SELECT convert_from('\xd3\xc3\xbb\xa7\xb5\xc7\xc2\xbc'::bytea, 'GB18030');"     -- 用户登录（PG 认得 GB18030）
 -- 而 Go 侧传的是「原始字节冒充 UTF-8 字符串」，PG 以 UTF8 数据库编码校验 → 拒绝
 ```
