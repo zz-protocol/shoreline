@@ -91,7 +91,7 @@ func field(list []map[string]any, k string) []string {
 
 func newAPITest(t *testing.T, batch int) (*testEnv, *apiClient, *api) {
 	e := newTestEnv(t)
-	a := &api{db: e.pool, client: e.client, cfg: apiConfig{BootstrapToken: testBootstrap, ScopeBatch: batch, MaxRetry: 1}, bg: context.Background()}
+	a := &api{db: e.pool, client: e.client, cfg: apiConfig{BootstrapToken: testBootstrap, ScopeBatch: batch, MaxRetry: 1, MineCooldownDays: 30, MineClaimTTLHours: 24}, bg: context.Background()}
 	srv := httptest.NewServer(newMux(nil, a))
 	t.Cleanup(srv.Close)
 	return e, &apiClient{t: t, srv: srv, tok: testBootstrap}, a

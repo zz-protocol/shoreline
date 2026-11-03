@@ -20,6 +20,7 @@ export const HELP = {
   hosted: '客户托管：子域名命中「客户托管规则」（云厂商分配给客户的默认域名，如 OSS/COS 桶、函数、CDN 默认域），属于托管在云上的客户资产，标记但不删除，默认在资产和播报中隐藏。',
   wildcard: '泛解析：任意子域都能解析到同一批 IP 的根域，命中的子域标为泛解析，默认隐藏、不播报。',
   alive: '探活：DNS 能解析且 http/https 任一有响应（任何状态码）即「存活」，确认后不再复查；DNS 失败或无响应为「失活」，按 SCHEDULE_ALIVE（默认 24h）定时复查，恢复时播报一条「恢复」；未探测或确认为泛解析为「未知」。',
+  mine: '挖掘认领：agent 通过 API/MCP 领取存活且非客户托管的资产（claim），挖掘中可 heartbeat 续锁（默认 24h，MINE_CLAIM_TTL_HOURS），完成后 complete 回写 done/deferred/abandoned。冷却默认 30 天（MINE_COOLDOWN_DAYS；0=完成后不再自动进入可领队列）；abandoned 默认不再入队，除非 claim 时带 include_abandoned。',
   level: '资产级：新出现的子域；URL 级：新出现的 http(s) 站点。资产级事件下会挂上它的 URL 事件。',
 }
 

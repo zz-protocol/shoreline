@@ -38,4 +38,4 @@
 | T29 | 资产页子域名和 URL 列一键复制（复制全部筛选结果，去重，HTTP 下可回退） | 跨页全量复制，去重；在 HTTP 下可用 | 完成（79ac04d 复制；4fe49c2 URL 列文本展示窄验过：API/MCP 含 url、页面单元格可见、列头复制保留） |
 | T30 | 网页设置页管理 FOFA/Quake/Hunter key（存数据库，页面掩码显示，网页填写优先、回退到环境变量，不用重启，测试连通只读） | 增删改后不重启就生效；API 不返回明文；测试连通不消耗额度；不填时环境变量照常可用 | 完成（9d6aef3 复验：017 迁移、掩码无明文、env 回退、不重启现取、连通仅 mock、页面测绘 Key、突变 FAIL） |
 | T31 | 客户托管规则支持精确层数匹配（不以 *. 开头的规则：标签数一致，逐层匹配，标签内 * 只匹配本层）；校验与提示、openapi、README 同步 | *-vitesandbox.miaoda.cn 命中 app-8t89ep1cj4zl-vitesandbox.miaoda.cn 和 app-63qix4si5yip-vitesandbox.miaoda.cn，不命中 api.miaoda.cn、miaoda.cn、a.b-vitesandbox.miaoda.cn；无 * 的规则被拒绝；原有 64 条内置规则行为不变；加规则后重算生效 | 完成（989670c 交付验收：真栈 PG17+Redis+生产前端+无头 Chrome；go test -count=2、vitest 48/48、build 过；两项突变均被测试抓住；64 条内置不变；openapi 40 不变） |
-| T32 | 挖掘认领与回写：资产挖掘状态/认领锁/冷却；POST claim/heartbeat/complete；资产列表筛选与字段；MCP 三工具；冷却默认 30 天、认领 TTL 默认 24h | 两并发 claim 不重复；TTL 过期可再领；冷却期内不可领；complete 回写时间与状态正确；MCP=REST；迁移旧库可跑；openapi 与工具描述齐全 | 待做 |
+| T32 | 挖掘认领与回写：资产挖掘状态/认领锁/冷却；POST claim/heartbeat/complete；资产列表筛选与字段；MCP 三工具；冷却默认 30 天、认领 TTL 默认 24h | 两并发 claim 不重复；TTL 过期可再领；冷却期内不可领；complete 回写时间与状态正确；MCP=REST；迁移旧库可跑；openapi 与工具描述齐全 | 待验收 |

@@ -22,12 +22,21 @@ export function AliveTag({ value, at }) {
   )
 }
 
-/** 与列表/整列复制共用的筛选参数（不含分页；T29）。 */
-export function assetFilterParams({ vendor, q, wild, hosted, alive, aliveWin, aliveCustom }) {
+export const MINE_STATUS = {
+  unset: { label: '未挖', color: 'default' },
+  claimed: { label: '挖掘中', color: 'processing' },
+  done: { label: '已挖', color: 'success' },
+  deferred: { label: '暂缓', color: 'warning' },
+  abandoned: { label: '放弃', color: 'error' },
+}
+
+/** 与列表/整列复制共用的筛选参数（不含分页；T29/T32）。 */
+export function assetFilterParams({ vendor, q, wild, hosted, alive, aliveWin, aliveCustom, mineStatus }) {
   const p = new URLSearchParams({ include_wildcard: String(!!wild), include_customer_hosted: String(!!hosted) })
   if (vendor) p.set('vendor', String(vendor))
   if (q?.trim()) p.set('q', q.trim())
   if (alive) p.set('alive', alive)
+  if (mineStatus) p.set('mine_status', mineStatus)
   if (aliveWin && aliveWin !== 'custom') {
     const { since, until } = windowRange(aliveWin, null)
     if (since) p.set('alive_since', since)
@@ -52,6 +61,7 @@ export default function Assets() {
   const [alive, setAlive] = useState()
   const [aliveWin, setAliveWin] = useState('') // ''=不限；today/7d/30d/custom（T27）
   const [aliveCustom, setAliveCustom] = useState(null)
+  const [mineStatus, setMineStatus] = useState()
   const [items, setItems] = useState([])
   const [cursor, setCursor] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -61,7 +71,7 @@ export default function Assets() {
     get('/api/vendors').then((d) => setVendors(d.items || [])).catch((e) => message.error(e.message))
   }, [])
 
-  const filters = () => assetFilterParams({ vendor, q, wild, hosted, alive, aliveWin, aliveCustom })
+  const filters = () => assetFilterParams({ vendor, q, wild, hosted, alive, aliveWin, aliveCustom, mineStatus })
 
   const load = async (next) => {
     setLoading(true)
@@ -81,7 +91,7 @@ export default function Assets() {
   useEffect(() => {
     if (aliveWin === 'custom' && !(aliveCustom?.[0] && aliveCustom?.[1])) return
     load()
-  }, [vendor, wild, hosted, alive, aliveWin, aliveCustom])
+  }, [vendor, wild, hosted, alive, aliveWin, aliveCustom, mineStatus])
 
   const copyCol = async (field) => {
     try {
@@ -150,9 +160,19 @@ export default function Assets() {
         <span>
           <Hint text={HELP.hosted}>含客户托管</Hint> <Switch checked={hosted} onChange={setHosted} data-testid="hosted-switch" />
         </span>
+        <Hint text={HELP.mine}><Select
+          allowClear
+          placeholder="挖掘状态"
+          style={{ width: 140 }}
+          value={mineStatus}
+          onChange={setMineStatus}
+          options={Object.entries(MINE_STATUS).map(([value, a]) => ({ value, label: a.label }))}
+          data-testid="mine-status"
+        /></Hint>
       </Space>
       <Typography.Text type="secondary">
         「复制本列」覆盖当前筛选条件下的全部结果（非仅本页），一行一个、去重；HTTP 下自动回退，失败可手动复制。
+        挖掘认领锁默认 24h（MINE_CLAIM_TTL_HOURS），冷却默认 30 天（MINE_COOLDOWN_DAYS；0=完成后不再自动入队）。
       </Typography.Text>
       <Table
         rowKey="id"
@@ -169,6 +189,15 @@ export default function Assets() {
           { title: <Hint text={HELP.scope}>范围内</Hint>, dataIndex: 'in_scope', render: (v) => (v ? '是' : '否') },
           { title: '泛解析', dataIndex: 'wildcard', render: (v) => (v ? '是' : '') },
           { title: <Hint text={HELP.hosted}>客户托管</Hint>, dataIndex: 'customer_hosted', render: (v) => (v ? <Tag>客户托管</Tag> : '') },
+          { title: <Hint text={HELP.mine}>挖掘</Hint>, dataIndex: 'mine_status', width: 100, render: (v) => {
+            const m = MINE_STATUS[v] || MINE_STATUS.unset
+            return <Tag color={m.color} data-testid="mine-tag">{m.label}</Tag>
+          } },
+          { title: '认领人', dataIndex: 'mine_claimed_by', width: 120, render: (v) => v || '' },
+          { title: '最近挖掘', dataIndex: 'mine_completed_at', width: 170, render: (v, r) => {
+            const t = v || r.mine_claimed_at
+            return t ? dayjs(t).format('YYYY-MM-DD HH:mm:ss') : ''
+          } },
           { title: '来源', dataIndex: 'sources', render: (v) => (v || []).join(', ') },
         ]}
       />

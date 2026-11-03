@@ -182,6 +182,10 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
   确认写入 `root_domains`（不自动扫描）；忽略后再次扩展也不再提示。确认/忽略的操作接口在 T12/T14，当前为函数 `confirmCandidate` / `ignoreCandidate`。
 - 每次 expand 把 found / new_candidates 写入 `scan_tasks.result`。
 
+## 挖掘认领与回写（T32）
+
+自动化管理「该挖 / 正在挖 / 挖过」：资产带 `mine_status`（unset|claimed|done|deferred|abandoned）及认领人/锁过期/完成时间/冷却/结论。挖掘 agent 用 REST 或 MCP（`claim_mine_targets` / `heartbeat_mine` / `complete_mine`）自助领取与回写；Web 资产页可按挖掘状态筛选，并展示认领人与最近挖掘时间。不内置漏洞扫描、不存原始流量。
+
 ## 客户托管排除（T24）
 
 云厂商分配给客户的默认域名（OSS/COS/OBS 桶、函数、网站托管、CDN 默认域等）是托管在云上的客户资产，不是厂商自身资产。资产子域名命中「客户托管规则」时标记 `customer_hosted=true`（不删除），资产列表和播报默认隐藏，`include_customer_hosted=true`（Web 上「含客户托管」开关）可查看。
@@ -199,9 +203,12 @@ crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录
 |---|---|---|
 | API_BOOTSTRAP_TOKEN | 空 | 初始 token，用它调 `POST /api/tokens` 生成正式 token（明文只返回一次，库里只存 sha256，不分权限）。为空时只认 api_tokens 里的 token |
 | SCOPE_BATCH_SIZE | 500 | 改范围规则后异步重算 in_scope 的每批行数（整数 >= 1，非法启动退出） |
+| MINE_COOLDOWN_DAYS | 30 | 挖掘 complete（done/deferred）后的冷却天数；`0` 表示完成后不再自动进入可领队列（整数 >= 0，非法启动退出） |
+| MINE_CLAIM_TTL_HOURS | 24 | 挖掘认领锁小时数；超时未 complete/heartbeat 可被再领（整数 >= 1，非法启动退出） |
 
 - 错误统一 `{"error":"..."}`；查询参数、路径或 JSON 字段含 NUL 一律 400；JSON body 只能有一个值（其后仅允许空白），否则 400；分页 `limit`（默认 50，最大 500）+ `cursor`（按 id 倒序，传上页 `next_cursor`）。
-- `GET /api/assets`：`vendor`、`in_scope`、`alive`、`alive_since`/`alive_until`（最后存活时间半开区间 `[since,until)`，可与 `alive` 叠加；T27）、`q`（子域名或 URL 标题子串）、`new_since`（资产 new 事件时间，RFC3339）、`include_wildcard`（默认过滤泛解析）。`GET /api/assets/values?field=subdomain|url`：当前筛选下整列复制（去重、上限 100000；T29，与播报 values 同套路）。
+- `GET /api/assets`：`vendor`、`in_scope`、`alive`、`alive_since`/`alive_until`（最后存活时间半开区间 `[since,until)`，可与 `alive` 叠加；T27）、`mine_status` / `in_cooldown`（挖掘状态与冷却；T32）、`q`（子域名或 URL 标题子串）、`new_since`（资产 new 事件时间，RFC3339）、`include_wildcard`（默认过滤泛解析）。`GET /api/assets/values?field=subdomain|url`：当前筛选下整列复制（去重、上限 100000；T29，与播报 values 同套路）。
+- 挖掘认领（T32）：`POST /api/mine/claim`（原子领取，body：`claimed_by` 必填，`limit` 默认 20 上限 100，`vendor_id`/`since`/`q`/`include_abandoned`）；`POST /api/mine/heartbeat`（`asset_ids` 续锁）；`POST /api/mine/complete`（`asset_ids` + `status=done|deferred|abandoned`，可选 `note`/`report_url`）。默认只领 alive 且非客户托管；冷却与认领 TTL 见环境变量。
 - `GET /api/events`：默认资产级（`level=asset`），`level=url|all` 查 URL 事件；不传 `type` 默认 `new,recovered`（显式传 `changed` 才含）；`since`/`until`、`asset_id`、`vendor`、`include_wildcard`、`q`（子域名或 URL 子串，不区分大小写；`/stats` 与 `/values`、MCP `list_new_assets` 同步）。
 - 范围规则挂在厂商下（`/api/vendors/{id}/scopes`，pattern 为 `域名` 或 `*.域名`）；新增/删除返回 202 + `task_id`，`GET /api/scope-tasks/{id}` 查进度；按 id 分批更新、只改有变化的行，不长时间锁表。重算幂等：进程启动时自动重跑 pending/running 的任务（从头重算、计数清零）。
 - 根域格式校验，被任一厂商占用返回 409。`POST /api/scans` 手动触发（kind 只允许 passive/active/expand，dns/http 是链路内部步骤；kind=active 需厂商 `active_enabled`，否则 409）。
@@ -217,6 +224,9 @@ Streamable HTTP（无状态、JSON 响应），地址 `POST /mcp`，认证同 AP
 | search_assets | q, vendor, in_scope, new_since, include_wildcard, limit, cursor | 同 `GET /api/assets` |
 | check_scope | host | 归属厂商/根域（最长匹配）、in_scope、命中规则、已知资产 id；不要求已是资产 |
 | trigger_scan | root_id, kind | kind 只允许 passive/active/expand；active 需厂商开关 |
+| claim_mine_targets | claimed_by, limit, vendor_id, since, q, include_abandoned | 同 `POST /api/mine/claim`；agent 自助领取 |
+| heartbeat_mine | asset_ids | 同 `POST /api/mine/heartbeat`；续认领锁 |
+| complete_mine | asset_ids, status, note, report_url | 同 `POST /api/mine/complete`；回写结果 |
 
 `GET /api/check-scope?host=` 与 `check_scope` 共用同一实现，输出一致（非法 host 400）。
 

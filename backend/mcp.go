@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -32,8 +33,30 @@ type searchAssetsIn struct {
 	Alive           string `json:"alive,omitempty" jsonschema:"filter by liveness: alive | dead | unknown"`
 	AliveSince      string `json:"alive_since,omitempty" jsonschema:"RFC3339; last_alive_at >= this time"`
 	AliveUntil      string `json:"alive_until,omitempty" jsonschema:"RFC3339; last_alive_at < this time (half-open)"`
+	MineStatus      string `json:"mine_status,omitempty" jsonschema:"filter by mine status: unset|claimed|done|deferred|abandoned"`
+	InCooldown      *bool  `json:"in_cooldown,omitempty" jsonschema:"if true, only assets still in cooldown; if false, no cooldown or expired"`
 	Limit           *int   `json:"limit,omitempty" jsonschema:"1..500, default 50"`
 	Cursor          string `json:"cursor,omitempty" jsonschema:"next_cursor from the previous page"`
+}
+
+type claimMineIn struct {
+	ClaimedBy        string `json:"claimed_by" jsonschema:"required; who is claiming (agent name), stored as mine_claimed_by"`
+	Limit            *int   `json:"limit,omitempty" jsonschema:"1..100, default 20"`
+	VendorID         *int64 `json:"vendor_id,omitempty" jsonschema:"only this vendor id (>= 1)"`
+	Since            string `json:"since,omitempty" jsonschema:"RFC3339; first_seen >= this time (new assets)"`
+	Q                string `json:"q,omitempty" jsonschema:"substring of subdomain (case-insensitive)"`
+	IncludeAbandoned bool   `json:"include_abandoned,omitempty" jsonschema:"also claim abandoned assets (default false)"`
+}
+
+type heartbeatMineIn struct {
+	AssetIDs []int64 `json:"asset_ids" jsonschema:"required; asset ids to renew claim lock"`
+}
+
+type completeMineIn struct {
+	AssetIDs  []int64 `json:"asset_ids" jsonschema:"required; asset ids to mark complete"`
+	Status    string  `json:"status" jsonschema:"required; done | deferred | abandoned"`
+	Note      string  `json:"note,omitempty" jsonschema:"short conclusion, max 2000 chars"`
+	ReportURL string  `json:"report_url,omitempty" jsonschema:"optional report URL, max 2000 chars"`
 }
 
 type checkScopeIn struct {
@@ -131,7 +154,7 @@ func (a *api) mcpServer() *mcp.Server {
 			list, err := a.queryAssets(ctx, assetFilter{
 				Vendor: in.Vendor, InScope: in.InScope, IncludeWildcard: in.IncludeWildcard, Q: in.Q,
 				NewSince: since, Limit: limit, Cursor: cursor, Alive: in.Alive, IncludeHosted: in.IncludeHosted,
-				AliveSince: aliveSince, AliveUntil: aliveUntil,
+				AliveSince: aliveSince, AliveUntil: aliveUntil, MineStatus: in.MineStatus, InCooldown: in.InCooldown,
 			})
 			if err != nil {
 				return toolErr[pageOut](err)
@@ -157,6 +180,78 @@ func (a *api) mcpServer() *mcp.Server {
 				return toolErr[mapOut](err)
 			}
 			return nil, out, nil
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "claim_mine_targets", Description: "Claim up to N alive, non-customer-hosted assets for vulnerability mining (POST /api/mine/claim). Default candidates: mine_status unset, or done/deferred with cooldown expired, or claimed with claim TTL expired. Atomic (SKIP LOCKED): concurrent callers never get the same asset. Pass claimed_by (agent name). Optional: limit (default 20, max 100), vendor_id, since (first_seen), q, include_abandoned. Returns claimed assets with mine_* fields and claim_expires_at. Heartbeat before expiry; complete when done."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in claimMineIn) (*mcp.CallToolResult, mapOut, error) {
+			by := strings.TrimSpace(in.ClaimedBy)
+			if by == "" {
+				return toolErr[mapOut](errf(400, "claimed_by is required"))
+			}
+			limit := mineClaimDefaultLimit
+			if in.Limit != nil {
+				limit = *in.Limit
+			}
+			if limit < 1 || limit > mineClaimMaxLimit {
+				return toolErr[mapOut](errf(400, "limit must be 1..%d", mineClaimMaxLimit))
+			}
+			if err := checkVendor(in.VendorID); err != nil {
+				return toolErr[mapOut](err)
+			}
+			since, err := parseTime("since", in.Since)
+			if err != nil {
+				return toolErr[mapOut](err)
+			}
+			list, err := a.doClaimMine(ctx, by, limit, in.VendorID, since, in.Q, in.IncludeAbandoned)
+			if err != nil {
+				return toolErr[mapOut](err)
+			}
+			return nil, mapOut{"items": list, "claimed_by": by, "count": len(list)}, nil
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "heartbeat_mine", Description: "Renew claim lock on asset_ids (POST /api/mine/heartbeat). Extends mine_claim_expires_at by MINE_CLAIM_TTL_HOURS (default 24h) for assets still in claimed status. Call periodically while mining so the claim does not expire and get reclaimed by others."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in heartbeatMineIn) (*mcp.CallToolResult, mapOut, error) {
+			if len(in.AssetIDs) == 0 {
+				return toolErr[mapOut](errf(400, "asset_ids is required"))
+			}
+			if len(in.AssetIDs) > mineClaimMaxLimit {
+				return toolErr[mapOut](errf(400, "asset_ids at most %d", mineClaimMaxLimit))
+			}
+			ttl := a.cfg.mineClaimTTL()
+			tag, err := a.db.Exec(ctx, `UPDATE assets SET mine_claim_expires_at = now() + $2::interval WHERE id = ANY($1) AND mine_status = 'claimed'`, in.AssetIDs, ttl.String())
+			if err != nil {
+				return toolErr[mapOut](err)
+			}
+			return nil, mapOut{"renewed": tag.RowsAffected()}, nil
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "complete_mine", Description: "Write back mining result (POST /api/mine/complete). status=done|deferred|abandoned; sets mine_completed_at, note, report_url; clears claim lock. done/deferred set mine_cooldown_until = now()+MINE_COOLDOWN_DAYS (default 30; 0 means never auto-requeue). abandoned stays out of the claim queue unless claim_mine_targets is called with include_abandoned=true."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in completeMineIn) (*mcp.CallToolResult, mapOut, error) {
+			if len(in.AssetIDs) == 0 {
+				return toolErr[mapOut](errf(400, "asset_ids is required"))
+			}
+			if len(in.AssetIDs) > mineClaimMaxLimit {
+				return toolErr[mapOut](errf(400, "asset_ids at most %d", mineClaimMaxLimit))
+			}
+			st := strings.TrimSpace(in.Status)
+			if st != "done" && st != "deferred" && st != "abandoned" {
+				return toolErr[mapOut](errf(400, "status must be done|deferred|abandoned"))
+			}
+			if len(in.Note) > 2000 || len(in.ReportURL) > 2000 {
+				return toolErr[mapOut](errf(400, "note and report_url must be at most 2000 characters"))
+			}
+			days := a.cfg.MineCooldownDays
+			if days < 0 {
+				days = defaultMineCooldownDays
+			}
+			var cooldown any
+			if (st == "done" || st == "deferred") && days > 0 {
+				cooldown = (time.Duration(days) * 24 * time.Hour).String()
+			}
+			tag, err := a.db.Exec(ctx, `UPDATE assets SET mine_status = $2, mine_note = $3, mine_report_url = $4, mine_completed_at = now(),
+				mine_cooldown_until = CASE WHEN $5::text IS NULL THEN NULL ELSE now() + $5::interval END,
+				mine_claimed_by = NULL, mine_claim_expires_at = NULL WHERE id = ANY($1)`, in.AssetIDs, st, in.Note, in.ReportURL, cooldown)
+			if err != nil {
+				return toolErr[mapOut](err)
+			}
+			return nil, mapOut{"updated": tag.RowsAffected(), "status": st}, nil
 		})
 	return s
 }
