@@ -62,13 +62,23 @@ func main() {
 		"active":  activeHandler(pool, newActiveScanner(acfg, dcfg)),
 		"expand":  expandHandler(pool, icp, dbSubsidiaries{pool}),
 	}
-	// 孤儿清理必须在 worker/scheduler 启动前：否则 scheduled 任务可能在枚举 asynq 时已变 pending 被误标。
+	// 分片重投与孤儿清理必须在 worker/scheduler 启动前（T40/T23）。
 	startedAt := time.Now()
 	redisOpt := asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")}
+	bootClient := asynq.NewClient(redisOpt)
+	if n, err := requeueIncompleteChunks(context.Background(), pool, bootClient, redisOpt, cfg.MaxRetry); err != nil {
+		log.Printf("chunk requeue: %v", err)
+	} else if n > 0 {
+		log.Printf("requeued %d incomplete chunk scans", n)
+	}
+	bootClient.Close()
 	if n, err := failOrphanScans(context.Background(), pool, redisOpt, startedAt); err != nil {
 		log.Printf("orphan scans check: %v", err)
 	} else if n > 0 {
 		log.Printf("marked %d orphan pending scans failed", n)
+	}
+	if err := refreshAllChunkParents(context.Background(), pool); err != nil {
+		log.Printf("chunk parent refresh: %v", err)
 	}
 	srv, wmux := newWorker(redisOpt, pool, cfg, handlers)
 	go func() { log.Fatal(srv.Run(wmux)) }()

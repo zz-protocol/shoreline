@@ -38,15 +38,16 @@ type ScanHandler func(ctx context.Context, scanID int64, hosts []string) ([]stri
 
 // workerConfig 汇总 worker 可配置项。
 type workerConfig struct {
-	Rates      map[string]rate.Limit
-	MaxRetry   int           // MAX_RETRY，默认 3
-	RetryBase  time.Duration // RETRY_BASE_SECONDS，默认 1s，最小 1s；第 k 次重试前等待 base*2^(k-1)
-	Concurrent int
-	PollDelay  time.Duration // 到期重试任务的检查间隔，0 为 Asynq 默认（5s），测试中调小
+	Rates         map[string]rate.Limit
+	MaxRetry      int           // MAX_RETRY，默认 3
+	RetryBase     time.Duration // RETRY_BASE_SECONDS，默认 1s，最小 1s；第 k 次重试前等待 base*2^(k-1)
+	Concurrent    int
+	PollDelay     time.Duration // 到期重试任务的检查间隔，0 为 Asynq 默认（5s），测试中调小
+	HostChunkSize int           // HOST_CHUNK_SIZE，默认 2000；dns/http hosts 超过则分片（T40）
 }
 
 func configFromEnv() (workerConfig, error) {
-	c := workerConfig{Rates: map[string]rate.Limit{}, MaxRetry: 3, RetryBase: time.Second, Concurrent: 10}
+	c := workerConfig{Rates: map[string]rate.Limit{}, MaxRetry: 3, RetryBase: time.Second, Concurrent: 10, HostChunkSize: 2000}
 	for _, k := range scanKinds {
 		v := defaultRates[k]
 		name := "RATE_" + strings.ToUpper(k)
@@ -72,6 +73,13 @@ func configFromEnv() (workerConfig, error) {
 			return c, fmt.Errorf("RETRY_BASE_SECONDS: invalid %q (must be >= 1)", s)
 		}
 		c.RetryBase = time.Duration(f * float64(time.Second))
+	}
+	if s := os.Getenv("HOST_CHUNK_SIZE"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 {
+			return c, fmt.Errorf("HOST_CHUNK_SIZE: invalid %q (must be >= 1)", s)
+		}
+		c.HostChunkSize = n
 	}
 	return c, nil
 }
@@ -194,6 +202,14 @@ func newWorker(redisOpt asynq.RedisClientOpt, d *pgxpool.Pool, cfg workerConfig,
 			if tag.RowsAffected() == 0 {
 				return nil
 			}
+			// T40：dns/http hosts 超过 HOST_CHUNK_SIZE 时拆成子任务，父任务保持 running，状态由子推导
+			if (kind == "dns" || kind == "http") && cfg.HostChunkSize > 0 && len(p.Hosts) > cfg.HostChunkSize {
+				if err := splitScanIntoChunks(ctx, d, client, p.ScanID, kind, p.Hosts, cfg.HostChunkSize, cfg.MaxRetry); err != nil {
+					d.Exec(ctx, `UPDATE scan_tasks SET status = 'failed', error = $2, finished_at = now() WHERE id = $1`, p.ScanID, err.Error())
+					return fmt.Errorf("%v: %w", err, asynq.SkipRetry)
+				}
+				return nil // 父任务保持 running，等子任务 deriveChunkParentStatus
+			}
 			var out []string
 			if h != nil {
 				out, err = h(ctx, p.ScanID, p.Hosts)
@@ -209,14 +225,159 @@ func newWorker(redisOpt asynq.RedisClientOpt, d *pgxpool.Pool, cfg workerConfig,
 				maxRetry, _ := asynq.GetMaxRetry(ctx)
 				if retried >= maxRetry || errors.Is(err, asynq.SkipRetry) { // 重试用尽：failed（终态）
 					d.Exec(ctx, `UPDATE scan_tasks SET status = 'failed', error = $2, finished_at = now() WHERE id = $1`, p.ScanID, err.Error())
+					_ = deriveChunkParentStatus(ctx, d, p.ScanID)
 					return fmt.Errorf("%v: %w", err, asynq.SkipRetry)
 				}
 				d.Exec(ctx, `UPDATE scan_tasks SET status = 'retrying', error = $2 WHERE id = $1`, p.ScanID, err.Error())
 				return err
 			}
 			_, err = d.Exec(ctx, `UPDATE scan_tasks SET status = 'done', error = NULL, finished_at = now() WHERE id = $1`, p.ScanID)
+			if err == nil {
+				_ = deriveChunkParentStatus(ctx, d, p.ScanID)
+			}
 			return err
 		})
 	}
 	return srv, mux
+}
+
+// chunkHosts 按 size 切分（最后一片可短于 size）；size<1 时整段一片。
+func chunkHosts(hosts []string, size int) [][]string {
+	if size < 1 || len(hosts) == 0 {
+		if len(hosts) == 0 {
+			return nil
+		}
+		return [][]string{hosts}
+	}
+	var out [][]string
+	for i := 0; i < len(hosts); i += size {
+		j := i + size
+		if j > len(hosts) {
+			j = len(hosts)
+		}
+		out = append(out, hosts[i:j])
+	}
+	return out
+}
+
+// splitScanIntoChunks（T40）：把父任务的 hosts 拆成子 scan_tasks（parent_id=父），hosts 写入子 result 供重启重投。
+func splitScanIntoChunks(ctx context.Context, d *pgxpool.Pool, client *asynq.Client, parentID int64, kind string, hosts []string, size, maxRetry int) error {
+	chunks := chunkHosts(hosts, size)
+	if len(chunks) == 0 {
+		return nil
+	}
+	var rootID int64
+	if err := d.QueryRow(ctx, `SELECT root_id FROM scan_tasks WHERE id = $1`, parentID).Scan(&rootID); err != nil {
+		return err
+	}
+	type child struct {
+		id    int64
+		hosts []string
+	}
+	var children []child
+	parentResult, _ := json.Marshal(map[string]any{
+		"chunked": true, "chunk_size": size, "chunks": len(chunks), "hosts_total": len(hosts),
+	})
+	err := pgx.BeginFunc(ctx, d, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `UPDATE scan_tasks SET result = $2 WHERE id = $1`, parentID, parentResult); err != nil {
+			return err
+		}
+		for i, ch := range chunks {
+			id, err := insertScan(ctx, tx, rootID, kind, parentID)
+			if err != nil {
+				return err
+			}
+			childResult, _ := json.Marshal(map[string]any{
+				"chunk_index": i, "chunk_total": len(chunks), "hosts": ch,
+			})
+			if _, err := tx.Exec(ctx, `UPDATE scan_tasks SET result = $2 WHERE id = $1`, id, childResult); err != nil {
+				return err
+			}
+			children = append(children, child{id: id, hosts: ch})
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	var deliverErr error
+	for _, ch := range children {
+		if err := deliverScan(ctx, d, client, ch.id, kind, ch.hosts, maxRetry); err != nil && deliverErr == nil {
+			deliverErr = err
+		}
+	}
+	if deliverErr != nil {
+		_ = refreshChunkParent(ctx, d, parentID) // 可能已有子失败
+		return deliverErr
+	}
+	return nil
+}
+
+// deriveChunkParentStatus：若 childID 的父任务是分片协调者（result.chunked），按子任务推导父状态。
+// 仍有未终态子任务 → 父保持 running；全部终态且有 failed → 父 failed；否则父 done。
+func deriveChunkParentStatus(ctx context.Context, d *pgxpool.Pool, childID int64) error {
+	var parentID *int64
+	if err := d.QueryRow(ctx, `SELECT parent_id FROM scan_tasks WHERE id = $1`, childID).Scan(&parentID); err != nil || parentID == nil {
+		return err
+	}
+	return refreshChunkParent(ctx, d, *parentID)
+}
+
+func refreshChunkParent(ctx context.Context, d *pgxpool.Pool, parentID int64) error {
+	return pgx.BeginFunc(ctx, d, func(tx pgx.Tx) error {
+		var status string
+		var chunked bool
+		if err := tx.QueryRow(ctx, `SELECT status, COALESCE((result->>'chunked')::boolean, false)
+			FROM scan_tasks WHERE id = $1 FOR UPDATE`, parentID).Scan(&status, &chunked); err != nil {
+			return err
+		}
+		if !chunked || status == "done" || status == "failed" {
+			return nil
+		}
+		var total, active, failed int
+		if err := tx.QueryRow(ctx, `SELECT count(*),
+			count(*) FILTER (WHERE status IN ('pending', 'running', 'retrying')),
+			count(*) FILTER (WHERE status = 'failed')
+			FROM scan_tasks WHERE parent_id = $1`, parentID).Scan(&total, &active, &failed); err != nil {
+			return err
+		}
+		if total == 0 || active > 0 {
+			return nil
+		}
+		if failed > 0 {
+			_, err := tx.Exec(ctx, `UPDATE scan_tasks SET status = 'failed', error = $2, finished_at = now() WHERE id = $1`,
+				parentID, fmt.Sprintf("%d/%d chunks failed", failed, total))
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE scan_tasks SET status = 'done', error = NULL, finished_at = now() WHERE id = $1`, parentID)
+		return err
+	})
+}
+
+// refreshAllChunkParents：启动收尾——对所有仍非终态的分片父任务按子状态再推导一次（孤儿清理后可能已无 active 子）。
+func refreshAllChunkParents(ctx context.Context, d *pgxpool.Pool) error {
+	rows, err := d.Query(ctx, `SELECT id FROM scan_tasks
+		WHERE COALESCE((result->>'chunked')::boolean, false)
+		  AND status IN ('pending', 'running', 'retrying')`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := refreshChunkParent(ctx, d, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }

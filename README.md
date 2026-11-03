@@ -24,6 +24,7 @@ docker compose up --build -d
 |---|---|---|
 | RATE_PASSIVE / RATE_DNS / RATE_HTTP | 1 / 10 / 5 | 每类任务每秒处理数（单实例）；须为有限正数 |
 | MAX_RETRY | 3 | 失败重试次数；重试中状态为 retrying，用尽后为 failed（终态） |
+| HOST_CHUNK_SIZE | 2000 | dns/http 单任务 hosts 超过此数则拆成子 scan_task（parent_id）；父状态由子推导；重启只重投未完成分片（T40） |
 | RETRY_BASE_SECONDS | 1 | 指数退避基数（最小 1，asynq 重试调度为秒级精度），第 k 次重试前等待 base × 2^(k-1) 秒，默认即 1s/2s/4s |
 
 ## 被动源配置（环境变量）
