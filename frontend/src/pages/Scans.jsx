@@ -1,14 +1,15 @@
 import React, { useEffect, useState } from 'react'
 import {
-  App, Button, Form, Modal, Select, Space, Switch, Table, Tag, Tooltip, Typography,
+  App, Button, Form, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, Typography,
 } from 'antd'
 import dayjs from 'dayjs'
-import { get, post } from '../api'
+import { del, get, post } from '../api'
 import { Guide, HELP, Hint } from '../help'
 
 const statuses = ['pending', 'running', 'retrying', 'done', 'failed']
 const kinds = ['passive', 'active', 'dns', 'http', 'expand']
 const manual = new Set(['passive', 'active', 'expand'])
+const terminal = new Set(['done', 'failed', 'cancelled']) // T35：仅终态可删
 
 export default function Scans() {
   const { message } = App.useApp()
@@ -62,6 +63,16 @@ export default function Scans() {
     }
   }
 
+  const remove = async (row) => {
+    try {
+      await del(`/api/scan-tasks/${row.id}`)
+      message.success('已删除扫描记录')
+      setItems((xs) => xs.filter((x) => x.id !== row.id))
+    } catch (e) {
+      message.error(e.message)
+    }
+  }
+
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="large">
       <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
@@ -100,11 +111,20 @@ export default function Scans() {
           { title: <Hint text={HELP.degraded}>降级原因</Hint>, dataIndex: 'degraded_reason', ellipsis: true, render: (v, r) => (r.degraded ? (v || '-') : '') },
           { title: '创建', dataIndex: 'created_at', width: 170, render: (v) => dayjs(v).format('YYYY-MM-DD HH:mm:ss') },
           {
-            title: '操作', width: 160,
+            title: '操作', width: 230,
             render: (_, r) => (
-              manual.has(r.kind)
-                ? <Button size="small" onClick={() => rerun(r)}>重跑</Button>
-                : <Tooltip title="dns/http 为链路步骤，请从 passive 重跑整条链"><Button size="small" disabled>从 passive 重跑</Button></Tooltip>
+              <Space>
+                {manual.has(r.kind)
+                  ? <Button size="small" onClick={() => rerun(r)}>重跑</Button>
+                  : <Tooltip title="dns/http 为链路步骤，请从 passive 重跑整条链"><Button size="small" disabled>从 passive 重跑</Button></Tooltip>}
+                {terminal.has(r.status)
+                  ? (
+                    <Popconfirm title="删除这条扫描记录？（不影响资产/URL/事件）" onConfirm={() => remove(r)}>
+                      <Button size="small" danger data-testid={`del-scan-${r.id}`}>删除</Button>
+                    </Popconfirm>
+                  )
+                  : <Tooltip title="进行中的任务不能删除"><Button size="small" danger disabled data-testid={`del-scan-${r.id}`}>删除</Button></Tooltip>}
+              </Space>
             ),
           },
         ]}

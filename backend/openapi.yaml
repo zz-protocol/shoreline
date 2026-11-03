@@ -390,6 +390,11 @@ paths:
       summary: "扫描任务状态"
       parameters: [{$ref: "#/components/parameters/id"}]
       responses: {"200": {description: "Scan"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/scan-tasks/{id}:
+    delete:
+      summary: "删除一条扫描任务记录（T35）：仅终态 done/failed/cancelled 可删，成功 204；pending/running/retrying（或仍有进行中的下游任务）返回 409；只删这一条（下游记录保留、链路引用置空），不影响 assets/urls/events"
+      parameters: [{$ref: "#/components/parameters/id"}]
+      responses: {"204": {description: "已删除"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/tokens:
     get:
       summary: "token 列表（不含明文）"

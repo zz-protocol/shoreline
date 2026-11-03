@@ -98,6 +98,7 @@ func (a *api) routes() map[string]http.HandlerFunc {
 		"GET /api/scans":                            a.listScans,
 		"POST /api/scans":                           a.createScan,
 		"GET /api/scans/{id}":                       a.getScan,
+		"DELETE /api/scan-tasks/{id}":               a.deleteScanTask,
 		"GET /api/tokens":                           a.listTokens,
 		"POST /api/tokens":                          a.createToken,
 		"DELETE /api/tokens/{id}":                   a.deleteToken,
@@ -1565,4 +1566,50 @@ func (a *api) checkScopeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, out)
+}
+
+// deleteScanTask（T35）：只删一条终态（done/failed/cancelled）扫描记录，返回 204；
+// pending/running/retrying 返回 409；仍有进行中的下游任务（parent_id/root_scan_id 指向它）也返回 409。
+// 子任务的 parent_id/root_scan_id 外键是 ON DELETE CASCADE：删除前先把它们置空，保证只删这一条；
+// assets/urls/events 与 scan_tasks 无外键，不受影响。
+func (a *api) deleteScanTask(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	err := pgx.BeginFunc(r.Context(), a.db, func(tx pgx.Tx) error {
+		var status string
+		err := tx.QueryRow(r.Context(), `SELECT status FROM scan_tasks WHERE id = $1 FOR UPDATE`, id).Scan(&status)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errf(404, "not found")
+		} else if err != nil {
+			return err
+		}
+		switch status {
+		case "done", "failed", "cancelled":
+		default:
+			return errf(409, "scan task is %s; only done/failed/cancelled can be deleted", status)
+		}
+		var active bool
+		if err := tx.QueryRow(r.Context(), `SELECT EXISTS (SELECT 1 FROM scan_tasks WHERE id <> $1 AND (parent_id = $1 OR root_scan_id = $1)
+			AND status IN ('pending', 'running', 'retrying'))`, id).Scan(&active); err != nil {
+			return err
+		}
+		if active {
+			return errf(409, "scan task has downstream tasks still pending/running/retrying")
+		}
+		if _, err := tx.Exec(r.Context(), `UPDATE scan_tasks SET parent_id = NULL WHERE parent_id = $1 AND id <> $1`, id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(r.Context(), `UPDATE scan_tasks SET root_scan_id = NULL WHERE root_scan_id = $1 AND id <> $1`, id); err != nil {
+			return err
+		}
+		_, err = tx.Exec(r.Context(), `DELETE FROM scan_tasks WHERE id = $1`, id)
+		return err
+	})
+	if err != nil {
+		writeAnyErr(w, err)
+		return
+	}
+	w.WriteHeader(204)
 }
