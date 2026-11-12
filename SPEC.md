@@ -207,3 +207,48 @@
   - 父任务状态由子任务推导；重启只重跑未完成的分片。
   - 与 T23 的孤儿任务处理和 409 规则保持一致。
 - **不在开发范围（用户自行运维）**：first_seen 回填 SQL、SCHEDULE_PASSIVE 调整、触发新根域。
+
+## 第六轮需求（11-12 用户）：开源对外整理
+
+仓库已是公开 MIT（https://github.com/zz-protocol/shoreline）。本轮只整理对外文档与元数据，让首页像开源产品，而不是内部规格。
+
+### 目标
+1. 重写根目录 `README.md`：一句话定位、能做什么、一分钟启动；详细配置与 API 迁到 `docs/`。
+2. README「产品演示」一节留 3 个固定图位，先放带说明的占位图；用户按同名文件替换即可，不必改 Markdown。
+3. 补 `CONTRIBUTING.md`、`SECURITY.md`；LICENSE 版权人改为 `Shoreline contributors`。
+4. `SPEC.md` / `TASKS.md` 留在仓库根目录，只是不再当 README 的主要入口。
+
+### 非目标
+- 不改业务功能、API、数据库、前端逻辑、docker-compose 端口绑定或默认调度。
+- 不部署、不对真实厂商扫描、不改线上环境。
+- 不在仓库任何对外文档中写生产/演示公网地址或 IP。
+- 不另写完整英文 README（中文为主；标题下可有一句英文定位）。
+- 不删除 `research.md`、`docs/bugs/`、已有 `docs/screenshots/t14-*.png`。
+- 不把 SPEC/TASKS 移出根目录。
+
+### README 结构（按此顺序）
+1. 标题「岸线 Shoreline」+ 一句话定位（攻击面的海岸线：SRC / 厂商资产发现与新增监控；被动 + 可选主动，无攻击行为）+ MIT 许可。
+2. 功能要点（短列表即可）：厂商→根域配置；子域名与可访问 URL 发现；新增/恢复播报；范围与客户托管排除；REST / OpenAPI / MCP；挖掘认领与回写；Web 管理端。不写任务编号（T14 等）作标题。
+3. **产品演示**：三张图，固定路径与含义（顺序不可改）：
+   - `docs/screenshots/demo-vendors.png`：厂商与根域
+   - `docs/screenshots/demo-assets.png`：资产列表
+   - `docs/screenshots/demo-events.png`：新增播报
+   用标准 Markdown 图片，alt 与图题用上述中文名。占位图须能显示（非空 PNG），图上写清「请将此文件替换为『…』截图」。用户之后用同名文件覆盖即可。已有 `t14-*.png` 保留，不充当这三张演示图。
+4. 一分钟本地起：`cp .env.example .env`，填 `API_BOOTSTRAP_TOKEN`，`docker compose up --build -d`；写明 Web `http://127.0.0.1:5173`、API `http://127.0.0.1:8080`。升级注意（T28 删 IP，不可逆、先备份）保留，并链到 DEPLOY「备份与升级」。
+5. 文档入口：部署 `docs/DEPLOY.md`，配置与接口 `docs/REFERENCE.md`（新建，见下），Agent `docs/AGENT_GUIDE.md`。SPEC/TASKS 如需提及，放在「开发」或页脚，不当主入口。
+
+### 详细文档迁移
+- 将当前 README 中的环境变量、被动源、DNS/HTTP、Certstream、事件、主动发现、测试、ICP、挖掘认领、客户托管、REST、MCP、定时调度、压测、Web 端等技术细节**完整迁入** `docs/REFERENCE.md`，不得丢条目或默认值。
+- 迁入后允许整理标题、去掉「作为 README 首页」的口吻，但技术事实保持与迁出前一致。
+- `docs/DEPLOY.md`、`docs/AGENT_GUIDE.md`、`docs/bench.md` 继续独立存在；REFERENCE 用链接指向，不复制成第二份。
+
+### 元数据
+- `LICENSE`：版权行改为 `Copyright (c) 2026 Shoreline contributors`；MIT 正文其余不动。
+- `CONTRIBUTING.md`：本地启动、测试命令（后端 `go test`、前端 `vitest` / `build`）、PR 约定、禁止对真实厂商扫描、如何用同名文件替换三张演示图。
+- `SECURITY.md`：通过 GitHub Security Advisories 私下报告漏洞；不要用公开 Issue 报未公开漏洞。不编造邮箱。
+
+### 验收
+- README 按上述结构可读；按一分钟步骤能找到启动命令；产品演示三张图路径、顺序、图题正确，占位图可显示。
+- 现 README 中的配置/接口细节都能在 `docs/REFERENCE.md` 找到，无信息丢失。
+- LICENSE / CONTRIBUTING / SECURITY 符合上文；根目录仍有 SPEC.md、TASKS.md。
+- 全仓库对外文档不含生产公网地址或 IP；业务代码与 compose 行为与本轮之前一致。
