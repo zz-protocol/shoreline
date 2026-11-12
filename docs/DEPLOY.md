@@ -79,7 +79,7 @@ your.domain.com {
 }
 ```
 
-若 MCP 客户端直连后端且与 backend 同机、backend 只听环回：反代到 backend 时 Host 要用上游地址（nginx 默认 `proxy_set_header Host $proxy_host`），不要改成 `$host`。详见 README「MCP」一节。
+若 MCP 客户端直连后端且与 backend 同机、backend 只听环回：反代到 backend 时 Host 要用上游地址（nginx 默认 `proxy_set_header Host $proxy_host`），不要改成 `$host`。详见 [REFERENCE.md](REFERENCE.md)「MCP server」一节。
 
 **B. 改端口映射**
 
@@ -175,4 +175,4 @@ docker compose up -d
 - [ ] ICP：与真实 icp_yanzhenma 联调（企业名查询与 `domain` 字段曾为推断）  
 - [ ] 主动发现默认关；对目标授权范围内使用，注意限速  
 
-更细的配置表、泛解析局限、压测报告见仓库根目录 `README.md` 与 `docs/bench.md`。
+更细的配置表、泛解析局限、压测报告见 [REFERENCE.md](REFERENCE.md) 与 [bench.md](bench.md)。

@@ -1,269 +1,52 @@
 # 岸线 Shoreline
 
-攻击面的海岸线：SRC / 厂商资产（子域名与可访问业务 URL）发现与新增监控。被动 + 可选主动，无攻击行为。MIT。
+攻击面的海岸线：SRC / 厂商资产发现与新增监控；被动 + 可选主动，无攻击行为。MIT 许可。
 
-- 部署一步步说明：**[docs/DEPLOY.md](docs/DEPLOY.md)**
-- 规格：`SPEC.md` · 任务进度：`TASKS.md` · 压测：`docs/bench.md`
+The coastline of your attack surface: discover and watch vendor assets for SRC programs.
 
-> ⚠️ **升级注意（T28，迁移 016_drop_ips）：删除 `assets.ips` 列并抹掉历史播报里的 IP，「不可逆，先备份」。** 升级前按 [docs/DEPLOY.md「9. 备份与升级」](docs/DEPLOY.md#9-备份与升级) 用 `pg_dump -Fc` 备份；回退只能靠旧镜像 + `pg_restore`。
+## 功能要点
+
+- 厂商 → 根域配置
+- 子域名与可访问 URL 发现
+- 新增 / 恢复播报
+- 范围与客户托管排除
+- REST / OpenAPI / MCP
+- 挖掘认领与回写
+- Web 管理端
+
+## 产品演示
+
+![厂商与根域](docs/screenshots/demo-vendors.png)
+
+*厂商与根域*
+
+![资产列表](docs/screenshots/demo-assets.png)
+
+*资产列表*
+
+![新增播报](docs/screenshots/demo-events.png)
+
+*新增播报*
 
 ## 一分钟本地起
 
 ```bash
 cp .env.example .env   # 填入 API_BOOTSTRAP_TOKEN
 docker compose up --build -d
-# Web: http://127.0.0.1:5173  · API: http://127.0.0.1:8080
-# 队列用 Valkey 8（Redis 兼容，BSD-3）
 ```
+
+Web：`http://127.0.0.1:5173`　·　API：`http://127.0.0.1:8080`
 
 公网 VPS、反代、Certstream、ICP 见 [部署指南](docs/DEPLOY.md)。
 
-## Worker 配置（环境变量）
+> ⚠️ **升级注意（T28，迁移 016_drop_ips）：删除 `assets.ips` 列并抹掉历史播报里的 IP，「不可逆，先备份」。** 升级前按 [docs/DEPLOY.md「9. 备份与升级」](docs/DEPLOY.md#9-备份与升级) 用 `pg_dump -Fc` 备份；回退只能靠旧镜像 + `pg_restore`。
 
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| RATE_PASSIVE / RATE_DNS / RATE_HTTP | 1 / 10 / 5 | 每类任务每秒处理数（单实例）；须为有限正数 |
-| MAX_RETRY | 3 | 失败重试次数；重试中状态为 retrying，用尽后为 failed（终态） |
-| HOST_CHUNK_SIZE | 2000 | dns/http 单任务 hosts 超过此数则拆成子 scan_task（parent_id）；父状态由子推导；重启只重投未完成分片（T40） |
-| RETRY_BASE_SECONDS | 1 | 指数退避基数（最小 1，asynq 重试调度为秒级精度），第 k 次重试前等待 base × 2^(k-1) 秒，默认即 1s/2s/4s |
+## 文档
 
-## 被动源配置（环境变量）
+- 部署：[docs/DEPLOY.md](docs/DEPLOY.md)
+- 配置与接口：[docs/REFERENCE.md](docs/REFERENCE.md)
+- Agent：[docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md)
 
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| FOFA_KEY / QUAKE_KEY / HUNTER_KEY | 空 | 测绘 API key；为空则跳过该源。网页「测绘 Key」设置优先，未配置时回退到此处；改网页配置后下次扫描生效、无需重启 |
-| PASSIVE_PAGES | 1 | 测绘源每次查询最多翻页数 |
-| PASSIVE_PAGE_SIZE | 100 | 每页条数 |
-| SUBFINDER_MAX_TIME | 5m | subfinder 单次枚举最长时间（Go duration，整秒，>= 1s） |
-| SUBFINDER_TIMEOUT | 30s | subfinder 单源请求超时（整秒，>= 1s） |
+## 开发
 
-> ⚠️ 测绘 API（FOFA/Quake/Hunter）的请求与响应格式按公开文档实现，**尚未用真实 key 核对**，测试仅基于 mock。
-
-crt.sh 与 subfinder 免 key 源始终启用，结果合并去重，资产记录全部来源。
-passive 任务把 `{sources_ok, sources_failed:[{source,error}], found}` 写入 `scan_tasks.result`；subfinder 各内部源错误会进入 `sources_failed`。`found==0` 且有来源失败时标 `degraded=true` 并写 `degraded_reason`（T39）。
-
-主机名（根域、子域、URL host）在入库层统一为小写并去掉末尾点（数据库触发器），大写录入的根域也能正确匹配。
-
-第三方依赖许可见 THIRD_PARTY_LICENSES。
-
-## DNS 解析（dns 扫描）
-
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| DNS_RESOLVERS | 223.5.5.5:53,119.29.29.29:53,1.1.1.1:53 | 逗号分隔，依次回退；无端口默认 53 |
-| DNS_TIMEOUT | 2s | 单次查询超时 |
-| DNS_WILDCARD_STABLE | 5 | 泛解析初始探测：连续 N 次无新 IP 即停止 |
-| DNS_WILDCARD_MAX | 60 | 每个父域泛解析探测总上限（含补探），须 >= DNS_WILDCARD_STABLE |
-| DNS_QPS | 50 | 每秒 DNS 查询数（单实例，含泛解析探测与回退重试）；须为有限正数 |
-
-查询 A/AAAA（记录 CNAME 链）。泛解析过滤：对子域的父域（仅限根域及其子域）自适应探测随机子域——
-探到新 IP 就继续，直到连续 DNS_WILDCARD_STABLE 次无新 IP 或达 DNS_WILDCARD_MAX；前 3 次均无解析视为无泛解析。
-
-### HTTP 探测（T8）
-
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| HTTP_RPS | 10 | 每实例每秒 HTTP 请求数（含泛解析对照请求），>0 |
-| HTTP_TIMEOUT | 10s | 单请求超时（Go duration） |
-| HTTP_SIMILARITY | 0.9 | 泛解析页面相似度阈值，0 < x <= 1 |
-| HTTP_CONCURRENCY | 10 | 单个扫描任务内同时探测的主机数，整数 >= 1；非法值启动即退出 |
-| HTTP_VERIFY_RPS | 3 | 泛解析页面复核的单独限速（每实例，含对照页请求），>0 |
-| HTTP_VERIFY_MAX | 200 | 每根域每轮最多复核的候选主机数，超出的直接标 wildcard，整数 >= 0 |
-
-对每个主机按 https、http 各发一次 `GET /`，不跟随跳转（记录 Location 为 redirect_to），不校验证书，正文最多读 1MB；
-记录状态码、标题、技术栈（wappalyzergo）和指纹 fingerprint_hash = sha256(状态码|标题|技术栈)。
-泛解析候选走页面复核：DNS 阶段 IP 落在泛解析集合的主机，以及父域存在泛解析但 IP 未命中的主机（轮换 IP 时 DNS 可能漏标，记 assets.parent_wildcard）。
-复核用 HTTP_VERIFY_RPS 单独限速，每根域每轮最多 HTTP_VERIFY_MAX 个。每个父域每个 scheme 取 2 个随机子域 `wc-<随机>.<父域>` 的页面作对照（某次请求失败或超时时重取 1 个随机子域；仍不足 2 页、两页状态码不一致、或两页公共内容不足 5 个词（空页/几乎全是动态内容，相同跳转除外），一律不放行：本轮该父域候选保持 wildcard、不入库 URL，留待下轮）：
-先规范化（去掉主机名、uuid、>= 8 位十六进制串、含数字的词、长度 >= 20 的词、英文星期/月份名），
-再把两页之间不同的词视为动态内容掩码掉（两页最长公共词序列为模板，差异词数为动态配额），覆盖规则外的随机词、短 base64、文本日期等。
-候选页相似度 = 与模板的最长公共词数 /（模板词数 + 超出动态配额的多余词数），状态码须相同，>= HTTP_SIMILARITY 视为泛解析。
-任一协议页面不相似即视为真实主机（wildcard=false、入库 URL、此时才生成新增事件）；否则标 wildcard、不入库 URL。
-
-已知局限：泛解析页本身为空或全动态时，该父域下真实主机救不回、保持 wildcard。
-短页模式（T8 封版）：每个父域每协议取 3 张随机子域对照页（失败重取 1 次），三张都返回、状态码一致、非空才可用，否则本轮该父域候选保持 wildcard。三张对照页归一化后的公共词都 < 5（如 nginx 默认 404、正文 "not found"、"ok"+随机字母）时不比 3-gram，而是：
-- 候选状态码与对照页不同 → 真实（如泛解析 404、真实主机 200）。
-- 候选与对照页同状态码时：先取回本轮全部候选再判定；同父域同状态码的候选有 2 个及以上 → 父域视为不稳定，这些候选一律保持 wildcard（长度差异大说明泛解析页在变；长度相近说明是泛解析的另一种模板）。
-- 只有 1 个同状态码候选时才用长度/hash：比最长对照页长出 max(64B,30%)，或对照页长度稳定（相差 ≤10%）而候选长度差 > max(64B,30%)，或对照页 hash 一致而候选 hash 不同 → 真实；否则保持 wildcard。
-
-已知局限（原则：宁可漏救不误放）：泛解析返回短页且与真实主机同状态码时，同一轮里只要还有其它同状态码候选（通常都有），真实主机（如 lb/blog 返回 200 长页而泛解析返回 200 短页）救不回，保持 wildcard；只有它是本轮该父域唯一的同状态码候选时才可能救回。
-若子域全部 IP 都落在泛解析 IP 集合内则标记 `wildcard`、不交给 http；有 IP 不在集合内时在剩余预算内补探（应对轮换 IP），仍未覆盖则视为真实记录。
-共用泛解析 IP 的真实主机由 T8 页面相似度进一步区分。CDN 先按 CNAME 后缀识别（阿里、腾讯、字节、网宿、Cloudflare、Akamai、CloudFront、Fastly），未命中再用 cdncheck（MIT）内置 IP 段匹配 CDN/WAF（本地匹配，不发 DNS/HTTP 请求；数据随依赖版本更新）。注意：cdncheck 包初始化时会对 [2001:4860:4860::8888]:53 做一次 UDP connect 以探测本机 IPv6（UDP connect 不发包）。
-
-泛解析命中的子域不删除，标记 `wildcard=true`；API/列表默认过滤、不产生新增事件（T9/T12 实现），可用参数查看。
-结果写入 assets 的 cnames / resolved / wildcard / cdn / resolved_at。解析出的 IP 只在内存里用于泛解析、CDN 与存活判断，不入库、不出现在 API/MCP/页面（T28）。
-
-## Certstream
-
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| CERTSTREAM_URL | 空（不启动） | 实时 CT 流 websocket 地址；断线 5s 重连，根域列表每分钟刷新 |
-| CERTSTREAM_BATCH_SIZE | 100 | 新子域攒满 N 条即交 dns 扫描（整数 >= 1） |
-| CERTSTREAM_BATCH_INTERVAL | 60s | 首条进批后最多等 T 交 dns（Go duration，>= 1s） |
-
-匹配任一根域的证书域名以来源 `certstream` 入库；**首次入库**的子域按根域分组攒批后创建 dns 扫描任务。
-
-自建 CT 流（可选，镜像 `0rickyy0/certstream-server-go:v1.10.1`，MIT）：
-
-    CERTSTREAM_URL=ws://certstream:8080/ docker compose --profile certstream up --build
-
-不加 `--profile certstream` 时该服务不启动；配置在 `certstream/config.yaml`（只允许 docker 内网访问，不对宿主暴露端口）。
-
-> ⚠️ `certstream/config.yaml` 为最小配置，开发阶段只做过 `docker compose config` 校验、未实际启动，**部署时需核对**（省略字段是否取默认值、CT 日志列表、白名单网段）。
-也可把 CERTSTREAM_URL 指向公共服务（如 wss://certstream.calidog.io/）而不启自建服务。
-
-> ⚠️ 测试用的 `backend/testdata/certstream_sample.jsonl` 是按 certstream 公开消息格式**手写的合成样本，未用真实流核对**。
-
-限速按单进程计：**总速率 = 单实例速率 × 实例数**。
-
-扫描自动串联：passive → dns → http（只传解析成功、非泛解析的主机）。
-
-### 新增与变更事件（T9）
-
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| WILDCARD_VERIFIED_TTL | 168h | HTTP 页面复核为真实主机（assets.verified_real_at）的有效期；期内 DNS 不重标 wildcard，过期后重新复核 |
-
-- 资产新增 `new`：子域首次解析成功且非泛解析时生成一次；解析失败照样入库但不发。wildcard=true 的不生成；父域有泛解析的主机等 HTTP 复核为真实后才生成。
-- 资产变更 `changed`：上次与本次都解析成功且非泛解析，只看第一跳 CNAME 变化（含恢复到原值；T37：第一跳不变、仅后续跳变化不报，与 cdn 字段无关，新值照常保存），detail.changes.cnames 记新旧值；IP 变化不报（T28）；CDN 不单独算。历史上「只改过 IP」的 changed（`changes` 为空或仅剩 ips）保留在库，但列表 / stats / values / MCP 一律不返回、不计入。
-- 资产探活（T21/T38）：`alive` = alive / dead / unknown，`last_alive_at`，`dead_reason` = nxdomain / no_http / null。HTTP 阶段判定：DNS 能解析且任一协议有响应（任何状态码）为 alive，一旦 alive 不再改回、不再复查，并清空 dead_reason；DNS 失败为 dead+nxdomain；HTTP 无响应为 dead+no_http；未探测或 HTTP 复核确认为泛解析为 unknown。dead 资产由 `SCHEDULE_ALIVE` 定时复查。
-- 资产恢复 `recovered`：仅在 dead→alive 时产生一条（同一事务锁行，并发只发一次）。DNS 解析失败时仍保留最后一次成功的 CNAME，只记 resolved=false，DNS 层不再发 recovered。`GET /api/assets?alive=` 可筛选。
-- 已复核为真实的主机在有效期内解析结果回落到泛解析时不报（v1）。
-- URL 新增 `new`：scheme+host+port 首次入库时生成一次（url_id 非空）。资产 new 与 URL new 都存，默认按资产聚合留给 T12/T13。
-- URL 变更 `changed`：状态码或标题变化，detail.changes 记各字段新旧值（指纹 hash 同时变化也一并记入）；只有指纹 hash 变化不产生、不计入（T37，新值照常保存）；只改正文不算。已有历史事件不动。
-- 新旧值比较在 `SELECT ... FOR UPDATE` 事务里做，并发同结果同一字段只记一条 changed；`new` 另由唯一部分索引（迁移 008，建索引前先去重存量重复）保证只生成一次。
-
-迁移编号：004 含大小写重复根域合并（先合并再加约束）；008 事件去重+唯一索引；009 assets.parent_wildcard / verified_real_at。首个公开版本发布前允许原地修改迁移，开发库需重建。
-
-### 主动发现（T10）
-
-按厂商总开关 `vendors.active_enabled`（默认关）；关闭时 active 任务直接跳过、不发任何 DNS 查询。只支持手动触发（`TriggerScan(..., "active", ...)`），定时在 T15。产出交 dns → http。
-
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| ACTIVE_QPS | 20 | 主动发现所有 DNS 查询（批量解析、可信复核、泛解析探测）共享的每秒查询数（单实例），>0 |
-| ACTIVE_MAX_CANDIDATES | 20000 | 每根域每轮候选上限（含递归一层；递归层预留 20%，第一层没用完的额度转给递归层），整数 >= 1 |
-| ACTIVE_TRUSTED_RESOLVERS | 223.5.5.5,119.29.29.29,1.1.1.1,8.8.8.8 | 可信 resolver，逗号分隔，未写端口默认 53 |
-| ACTIVE_WORDLIST | 内置 | 外部字典文件（每行一词，# 开头为注释），设置后替换内置字典 |
-| RATE_ACTIVE | 1 | active 任务速率（任务/秒，同 RATE_*） |
-
-非法值启动即退出。
-
-- 字典：内置 SecLists `Discovery/DNS/subdomains-top1million-5000.txt`（MIT，取自 commit 6106054），转小写、跳过不合法标签与重复。
-- 变形：对已解析、非泛解析的已知子域首个标签做数字 ±1、dev/test/staging/api 前后缀（`-` 连接）及作为新一级前缀，每子域最多 50 个。
-- 流程：批量用 DNS_RESOLVERS 解析 → 命中者用可信 resolver 复核（不通过视为投毒剔除）→ 按 T7 规则（父域随机子域 IP 集合）过滤泛解析 → 以本轮新增的非泛解析子域为父域再跑一层字典 → 入库。来源细分为 `active:wordlist`（字典 × 根域）、`active:mutation`（变形）、`active:recursive`（递归一层）；同一子域被多种方式生成或已有其他来源时，按现有 sources 语义合并去重。已入库子域不作候选。
-- 每次 active 扫描把统计写入 `scan_tasks.result`（candidates、first_layer、recursive、hits、trusted_rejected＝可信复核剔除数），并打一行日志。
-- 总速率仍按单实例 × 实例数计算。
-
-### 测试
-
-- 全量：`cd backend && TEST_DATABASE_URL=postgres://sam:sam@127.0.0.1:5432/sam?sslmode=disable go test ./...`（外部依赖全部本地 mock）。
-- 真实时间的重试间隔测试 `TestRetryIntervals` 依赖 asynq 调度时序，放在 `//go:build integration` 文件里，全量不含，单独跑：
-  `TEST_DATABASE_URL=... go test -tags integration -count=10 -run TestRetryIntervals .`
-
-### ICP/子公司扩展（T11）
-
-只手动触发（`TriggerScan(..., "expand", ...)`，按任务所属根域的厂商跑；Web「厂商 / 根域」页点厂商后有「一键发现新根域（expand）」按钮，显示最近一次运行状态与结果，T23；同一厂商已有 pending/running/retrying 的 expand 时再触发返回 409，REST 与 MCP 一致），发现的新根域进 `root_candidates`（待确认），不自动加入扫描、不串联后续任务。
-
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| ICP_API_URL | 空（跳过扩展） | 通用 HTTP JSON ICP 接口地址，须 http/https；非法值启动即退出 |
-| ICP_PROVIDER | generic | 接口预设：`generic`（下方约定格式）或 `icp_yanzhenma`；其他值启动即退出（exit 1） |
-| ICP_API_KEY | 空 | 有值时请求带 `Authorization: Bearer <key>`；URL/KEY 含控制字符启动即退出（exit 1） |
-| RATE_EXPAND | 1 | expand 任务速率（任务/秒，同 RATE_*） |
-| SCHEDULE_PASSIVE | 6h | 定时被动扫描间隔（Go duration）；`0`/`off` 关闭；非法启动退出 |
-| SCHEDULE_ACTIVE | 24h | 定时主动扫描间隔；仅 `active_enabled` 厂商的根域；`0`/`off` 关闭 |
-| SCHEDULE_ALIVE | 24h | dead 资产复查间隔（重做 DNS+HTTP）；alive 不再复查；`0`/`off` 关闭；非法启动退出 |
-
-- ICP 接口约定：`GET <ICP_API_URL>?company=<主体名>` 或 `?domain=<域名>`，响应 `{"records":[{"domain":"...","company":"...","license":"备案号"}]}`。对接具体服务商时需按此约定加一层转换。
-- `ICP_PROVIDER=icp_yanzhenma`：对接自建的 [zz-protocol/icp_yanzhenma](https://github.com/zz-protocol/icp_yanzhenma)（FastAPI，MIT；本仓库不含其代码，只走 HTTP）。`ICP_API_URL` 填该服务根地址（如 `http://icp:8000`），请求 `GET <ICP_API_URL>/query?domain=<值>`；该服务把参数作为工信部查询的 unitName 透传，主体名与域名都走此接口（**推断，待真实联调确认**）。响应 `status=success` 时从 `data.params.list`（或 `data.list`）取 `domain`/`unitName`/`mainLicence`（`domain` 字段取法为**推断，待真实联调确认**）；`status=failed`、HTTP 非 200、超时（30s）或连不上都计入 `icp_failures`，若本轮全部失败扫描一律为 done 并标 `degraded:true`，不重试；`GET /api/scans/{id}` 返回 `degraded` 与 `degraded_reason`。该服务按其自述**仅限安全研究**用途，需控制请求频率：本项目超时 30s，`RATE_EXPAND` 默认 1 任务/秒。真实联调留到部署时做。
-- 未配置 `ICP_API_URL` 时 ICP 扩展自动关闭（扫描结果 `skipped: icp not configured`），只用手工导入的子公司名单。
-- 链路：厂商主体名（`vendors.company_name`）→ ICP；子公司（持股 >= 50%，只一层）→ ICP；已有根域 → ICP 反查主体 → 该主体的 ICP。ICP 返回的域名先规范化（去 `*.`、scheme、path/query、端口、末尾点，转小写），中文等 IDN 转 punycode（golang.org/x/net/idna，BSD-3）入库，非法的丢弃；IP 不生成候选（先去 scheme、userinfo、端口、路径、IPv6 zone、末尾点，再判：可解析为 IPv4/IPv6，或末级标签全数字 / 0x 十六进制，覆盖 127.1、0x7f.0.0.1、010.0.0.1 等写法）；扫描结果 `scan_tasks.result` 记 `icp_failures`、`skipped_ip`、`skipped_invalid`、`skipped_known_root`；已有根域及其子域（如 www.corp.test）不进候选；同批同域名重复记录证据去重。
-- 子公司只查导入名单里的公司（不自动展开股权链）；孙公司是否被查询，取决于导入名单里是否列入了它。
-- 子公司源可插拔；当前实现为手工导入名单 `vendor_subsidiaries`（CSV：`名称,持股百分比`，# 开头为注释，同名覆盖比例；自动去掉 UTF-8 BOM；第一行所有列都是非数字列名、且比例列是已知列名（比例/持股/持股比例/持股百分比/ratio/share/percent/percentage 等）时才视为表头跳过，否则按数据校验；比例为十进制数字，可带 `%`/`％`（如 `51 %`、`51％`），范围 0-100；任一行非法整批拒绝并报行号（API 返回 400）；没有有效数据行（空文件、只有注释或表头）也返回 400）。
-- `root_candidates`：厂商、域名、来源（icp:company / icp:subsidiary / icp:reverse，可多种）、依据（主体、备案号、子公司及比例、反查的根域）、状态（pending 待确认 / confirmed 已确认 / ignored 已忽略）、时间。
-  确认写入 `root_domains`（不自动扫描）；忽略后再次扩展也不再提示。确认/忽略的操作接口在 T12/T14，当前为函数 `confirmCandidate` / `ignoreCandidate`。
-- 每次 expand 把 found / new_candidates 写入 `scan_tasks.result`。
-
-## 挖掘认领与回写（T32）
-
-自动化管理「该挖 / 正在挖 / 挖过」：资产带 `mine_status`（unset|claimed|done|deferred|abandoned）及认领人/锁过期/完成时间/冷却/结论。挖掘 agent 用 REST 或 MCP（`claim_mine_targets` / `heartbeat_mine` / `complete_mine`）自助领取与回写；Web 资产页可按挖掘状态筛选，并展示认领人与最近挖掘时间。不内置漏洞扫描、不存原始流量。
-
-## 客户托管排除（T24）
-
-云厂商分配给客户的默认域名（OSS/COS/OBS 桶、函数、网站托管、CDN 默认域等）是托管在云上的客户资产，不是厂商自身资产。资产子域名命中「客户托管规则」时标记 `customer_hosted=true`（不删除），资产列表和播报默认隐藏，`include_customer_hosted=true`（Web 上「含客户托管」开关）可查看。
-
-- 只匹配资产子域名本身，不看 CNAME；规则两种写法：① 以 `*.` 开头（匹配 ≥1 层子域）；② （T31）不以 `*.` 开头、至少一个标签含 `*`，**标签数必须与主机名完全一致**、逐层匹配，如 `*-vitesandbox.miaoda.cn` 命中 `app-8t89ep1cj4zl-vitesandbox.miaoda.cn`，不命中 `api.miaoda.cn`、`miaoda.cn`、`a.b-vitesandbox.miaoda.cn`；不含 `*`（或含 `**`）的规则返回 400。标签内 `*`（如 `oss-*`）只匹配本层；每条规则至少比服务端点多一层，端点本身不命中；内置与新增规则走同一校验：最后一个含 `*` 的标签之后的固定后缀须比 PSL ICANN 段公共后缀至少多一层（golang.org/x/net/publicsuffix，BSD-3，只看 ICANN 段、不看私有段），`*.*.com`、`*.co.uk` 返回 400，`*.github.io` 这类允许。
-- 内置 64 条（AWS/Azure/GCP/阿里云/腾讯云/华为云/火山/百度/七牛/Cloudflare/Akamai/Fastly/GitHub Pages/Heroku），每条在 `backend/customer_hosted.go` 注释云产品和官方文档。启动时补种；内置规则可在「客户托管规则」页停用或删除，删除后升级不会加回。
-- 改规则后后台异步重算（`GET /api/customer-hosted-tasks/{id}` 看进度）。
-- 未内置，可自行添加：火山引擎 CDN（*.volccdn.com）、又拍云、网宿、金山云（KS3）、京东云、UCloud、Vercel、Netlify。
-
-## REST API（T12）
-
-文档：`GET /api/openapi.yaml`（嵌入，无需认证；Swagger UI 留 T14）。Agent 使用说明：`docs/AGENT_GUIDE.md`，后端嵌入副本 `backend/agent_guide.md`（构建上下文只有 backend/，改文档后需 `cp docs/AGENT_GUIDE.md backend/agent_guide.md`，测试校验两份一致），经 `GET /api/agent-guide`（无需认证）、`/docs` 页与 MCP `get_agent_guide` 提供（T36）。其余 `/api/*` 需 `Authorization: Bearer <token>`。
-
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| API_BOOTSTRAP_TOKEN | 空 | 初始 token，用它调 `POST /api/tokens` 生成正式 token（明文只返回一次，库里只存 sha256，不分权限）。为空时只认 api_tokens 里的 token |
-| SCOPE_BATCH_SIZE | 500 | 改范围规则后异步重算 in_scope 的每批行数（整数 >= 1，非法启动退出） |
-| MINE_COOLDOWN_DAYS | 30 | 挖掘 complete（done/deferred）后的冷却天数；`0` 表示完成后不再自动进入可领队列（整数 >= 0，非法启动退出） |
-| MINE_CLAIM_TTL_HOURS | 24 | 挖掘认领锁小时数；超时未 complete/heartbeat 可被再领（整数 >= 1，非法启动退出） |
-
-- 错误统一 `{"error":"..."}`；查询参数、路径或 JSON 字段含 NUL 一律 400；JSON body 只能有一个值（其后仅允许空白），否则 400；分页 `limit`（默认 50，最大 500）+ `cursor`（按 id 倒序，传上页 `next_cursor`）。
-- `GET /api/assets`：`vendor`、`in_scope`、`alive`、`dead_reason`（nxdomain|no_http；T38）、`alive_since`/`alive_until`（最后存活时间半开区间 `[since,until)`，可与 `alive` 叠加；T27）、`mine_status` / `in_cooldown`（挖掘状态与冷却；T32）、`q`（子域名或 URL 标题子串）、`new_since`（资产 new 事件时间，RFC3339）、`include_wildcard`（默认过滤泛解析）。`GET /api/assets/values?field=subdomain|url`：当前筛选下整列复制（去重、上限 100000；T29，与播报 values 同套路）。
-- 挖掘认领（T32）：`POST /api/mine/claim`（原子领取，body：`claimed_by` 必填，`limit` 默认 20 上限 100，`vendor_id`/`since`/`q`/`include_abandoned`）；`POST /api/mine/heartbeat`（`asset_ids` 续锁）；`POST /api/mine/complete`（`asset_ids` + `status=done|deferred|abandoned`，可选 `note`/`report_url`）。默认只领 alive 且非客户托管；冷却与认领 TTL 见环境变量。
-- `GET /api/events`：默认资产级（`level=asset`），`level=url|all` 查 URL 事件；不传 `type` 默认 `new,recovered`（显式传 `changed` 才含）；`since`/`until`、`asset_id`、`vendor`、`include_wildcard`、`q`（子域名或 URL 子串，不区分大小写；`/stats` 与 `/values`、MCP `list_new_assets` 同步）。
-- 范围规则挂在厂商下（`/api/vendors/{id}/scopes`，pattern 为 `域名` 或 `*.域名`）；新增/删除返回 202 + `task_id`，`GET /api/scope-tasks/{id}` 查进度；按 id 分批更新、只改有变化的行，不长时间锁表。重算幂等：进程启动时自动重跑 pending/running 的任务（从头重算、计数清零）。
-- 根域格式校验，被任一厂商占用返回 409。`POST /api/scans` 手动触发（kind 只允许 passive/active/expand，dns/http 是链路内部步骤；kind=active 需厂商 `active_enabled`，否则 409）。
-- 待确认根域：`GET /api/vendors/{id}/root-candidates`，`POST /api/root-candidates/{id}/confirm|ignore|reassign`（仅 pending；确认时域名已是别厂商根域返回 409，候选保持 pending）。`GET /api/events` 里资产级 new 事件嵌套 `url_events`（该资产的 URL 级 new 事件）。子公司导入：`POST /api/vendors/{id}/subsidiaries`（CSV：名称,持股比例）。
-
-## MCP server（T13）
-
-Streamable HTTP（无状态、JSON 响应），地址 `POST /mcp`，认证同 API（`Authorization: Bearer <token>`）。基于官方 `modelcontextprotocol/go-sdk`（Apache-2.0/MIT）。
-
-| 工具 | 参数 | 说明 |
-|---|---|---|
-| list_new_assets | vendor, since, include_wildcard, limit, cursor | 资产级 new 事件（新→旧），嵌套 url_events；默认过滤 wildcard |
-| search_assets | q, vendor, in_scope, new_since, include_wildcard, limit, cursor | 同 `GET /api/assets` |
-| check_scope | host | 归属厂商/根域（最长匹配）、in_scope、命中规则、已知资产 id；不要求已是资产 |
-| trigger_scan | root_id, kind | kind 只允许 passive/active/expand；active 需厂商开关 |
-| claim_mine_targets | claimed_by, limit, vendor_id, since, q, include_abandoned | 同 `POST /api/mine/claim`；agent 自助领取 |
-| heartbeat_mine | asset_ids | 同 `POST /api/mine/heartbeat`；续认领锁 |
-| complete_mine | asset_ids, status, note, report_url | 同 `POST /api/mine/complete`；回写结果 |
-| get_agent_guide | 无 | 返回 Agent 使用说明 markdown（T36，同 `docs/AGENT_GUIDE.md`） |
-
-`GET /api/check-scope?host=` 与 `check_scope` 共用同一实现，输出一致（非法 host 400）。
-
-**DNS rebinding 防护（保留，go-sdk 默认开启）**：请求如果经回环地址（127.0.0.1 / ::1）到达后端，而 Host 头不是回环地址（如 `assets.example.com`），`/mcp` 返回 403（纯文本，非 JSON）。只影响 `/mcp`，`/api/*` 不受影响。反代部署：
-- 反代与后端同机、后端监听 `ADDR=127.0.0.1:8080`：反代转发时把 Host 设为上游地址，nginx 用默认的 `proxy_set_header Host $proxy_host;`（即 `127.0.0.1:8080`），**不要**设成 `$host`；Caddy `reverse_proxy` 需加 `header_up Host {upstream_hostport}`。
-- 反代与后端不同机（后端监听内网地址如 `10.0.0.5:8080`）：请求不经回环，防护不触发，Host 可原样透传。
-- docker compose：前端 nginx（`frontend/nginx.conf` 的 `location /mcp`）经 compose 内网转发到 `backend:8080`，请求不经回环地址，**DNS rebinding 防护在这条路径上不生效**，由 Bearer token 认证兜底（宿主端口仍只绑定 127.0.0.1）。nginx 保持默认 `Host $proxy_host`、`proxy_http_version 1.1`、`proxy_buffering off`。
-- 不要为此关闭防护；客户端直连本机时用 `http://127.0.0.1:8080/mcp` 或 `http://localhost:8080/mcp`。
-
-业务错误返回工具结果 `isError: true`，文本 `{"error":"..."}`。curl 示例：
-
-```
-curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_scope","arguments":{"host":"www.example.com"}}}'
-```
-
-
-
-### 定时调度（T15）
-- 进程内调度：到点为**所有根域**触发 `passive`；为 **`vendors.active_enabled=true`** 的根域触发 `active`。不自动跑 expand（仍手动）。
-- 若该根域已有同 kind 的 `pending`/`running` 任务则跳过，避免堆积。
-- 间隔可读环境变量；运行中改配置需重启进程，或测试里 `SetConfig` 热更新（会打断当前等待，新间隔立即生效）。
-
-### 压测（T16）
-- 10 万条模拟子域：`TEST_BENCH=1 TEST_DATABASE_URL=... go test -count=1 -run TestBenchListAssets -timeout 30m ./backend`（默认跳过）。
-- 验收：`GET /api/assets` 列表（limit≤50）单次 < 1s；报告见 `docs/bench.md`。
-
-## Web 端（T14）
-- React + Vite + Ant Design 5（MIT，深色算法主题，不做浅色切换）+ swagger-ui-dist（Apache-2.0）做 `/docs`。
-- 首屏输入 API token，存 `localStorage`；侧栏：新增播报 / 资产 / 厂商·根域 / 客户托管规则 / 扫描任务 / 测绘 Key / API Key / API 文档。
-- 测绘 Key（T30）：FOFA/Quake/Hunter 可在网页增删改，库内保存；API/页面只返掩码（后 4 位）；「测试连通」只调账户信息接口（mock 测），不耗查询额度。
-- 厂商 `active_enabled` 开关走 `PATCH`；删厂商/根域二次确认；资产 `include_wildcard`；事件 `level` + 每 30s 轮询 `since`。
-- http 扫描标题按 Content-Type/meta 声明的 charset 解码（`golang.org/x/net/html/charset`），无法判定时回退 GB18030；title、redirect、被动子域名入库前清洗为合法 UTF-8；单个 host 的 URL 入库失败只记日志，任务仍为 done，`result` 记 `store_failures` 并标 `degraded:true`（T33）。历史失败任务不自动重跑。
-- 扫描记录删除（T35）：`DELETE /api/scan-tasks/{id}` 只删终态（done/failed/cancelled）记录，返回 204；pending/running/retrying 或仍有进行中的下游任务返回 409。只删这一条（下游记录保留，其 parent_id/root_scan_id 置空），不影响 assets/urls/events。页面上非终态的删除按钮置灰，删除需确认。
-- 扫描列表展示 `degraded`/`degraded_reason`；`passive`/`active`/`expand` 可重跑（再 `POST /api/scans`）；`dns`/`http` 无重跑钮，提示从 passive 重跑。
-- 本地：`cd frontend && npm install && npm test && npm run build`；`npm run dev` 反代到 `127.0.0.1:8080`。
+规格见 [`SPEC.md`](SPEC.md)，任务进度见 [`TASKS.md`](TASKS.md)。欢迎阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md) 与 [`SECURITY.md`](SECURITY.md)。
