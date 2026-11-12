@@ -1,8 +1,8 @@
 # 岸线 Shoreline
 
-攻击面的海岸线：SRC / 厂商资产发现与新增监控；被动 + 可选主动，无攻击行为。MIT 许可。
+岸线帮你持续盯住 SRC 厂商的资产变化：按「厂商 → 根域」收集子域名和可访问的业务 URL，定时复扫后只播报新增和恢复，不用每次从头扫一遍。范围规则和客户托管排除用来判断该不该看；REST / OpenAPI / MCP 让 agent 可以查询、认领任务并在挖完后回写。只做发现与监控，不做攻击。MIT 许可。
 
-The coastline of your attack surface: discover and watch vendor assets for SRC programs.
+Shoreline watches SRC vendor assets and reports only new and recovered findings; discovery and monitoring, no attacks.
 
 ## 功能要点
 
@@ -13,6 +13,10 @@ The coastline of your attack surface: discover and watch vendor assets for SRC p
 - REST / OpenAPI / MCP
 - 挖掘认领与回写
 - Web 管理端
+
+## 技术栈
+
+后端 Go，前端 React + Vite + Ant Design；PostgreSQL 持久化，Valkey + Asynq 做任务队列，被动 / DNS / HTTP 分类限速，大根域按片扫描、重启只重跑未完成分片。列表在 10 万级模拟子域下单次查询低于 1 秒。单机 Docker Compose 即可启动，对外提供 REST（OpenAPI）和 MCP。
 
 ## 产品演示
 
