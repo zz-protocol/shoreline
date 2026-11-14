@@ -275,3 +275,10 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | GITHUB_TOKEN | 空 | 可选。有值时 GitHub 请求带 `Authorization: Bearer`；为空仍访问公开接口，失败则该组件富集标失败 |
+
+
+## 识别面加深（T45）
+
+新的 http 扫描（含后续复扫）在现有 GET `/` 之外，会记下少量响应头（`Server`、`X-Powered-By`、`X-Generator`，以及规则中出现的头），并在页面声明了同主机 favicon 或回退 `/favicon.ico` 时再发 **一次** GET，计算 sha256 写入 `urls.favicon_hash`。走现有 HTTP 限速，不跟随站外跳转，不目录爆破，不扫其它路径。内置少量标题/响应头规则把命中写成组件来源 `header` 或 `title`（与 wappalyzer 并存；若同一组件已有 wappalyzer 关联则保留其来源）。
+
+新证据只在新的 http 扫描写入。迁移只加列，**升级时不对历史资产对外补探测**；历史 URL 会在下一次常规 http 复扫时加深识别。

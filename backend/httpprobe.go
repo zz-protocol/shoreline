@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -130,7 +131,9 @@ type probeResult struct {
 	Title        string
 	Redirect     string
 	Tech         []string
-	Fingerprint  string // sha256(status|title|tech)
+	Fingerprint  string            // sha256(status|title|tech)
+	Headers      map[string]string // T45：少量响应头（Server / X-Powered-By / X-Generator 等）
+	FaviconHash  string            // T45：同主机 favicon 的 sha256，未取到则为空
 	body         []byte
 }
 
@@ -157,7 +160,7 @@ func (p *prober) getWith(ctx context.Context, lim *rate.Limiter, scheme, host st
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, p.cfg.MaxBody))
 	r := &probeResult{Scheme: scheme, Host: host, Port: map[string]int{"https": 443, "http": 80}[scheme], Status: resp.StatusCode,
-		Redirect: resp.Header.Get("Location"), body: body}
+		Redirect: resp.Header.Get("Location"), Headers: collectProbeHeaders(resp.Header), body: body}
 	if m := titleRe.FindSubmatch(decodeHTML(resp.Header.Get("Content-Type"), body)); m != nil { // T33：按 charset 解码后再取标题
 		r.Title = strings.Join(strings.Fields(html.UnescapeString(string(m[1]))), " ")
 	}
@@ -536,7 +539,11 @@ func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 		// T33 方案 C：单 host URL 入库失败只记日志并计入 degraded，不让整个任务失败。
 		var storeFailures int
 		var storeReason string
-		store := func(assetID int64, r *probeResult) {
+		store := func(assetID int64, r *probeResult, lim *rate.Limiter) {
+			if lim == nil {
+				lim = p.limiter
+			}
+			p.fetchFavicon(ctx, lim, r)
 			if err := p.storeURL(ctx, d, assetID, r); err != nil {
 				log.Printf("http scan %d: store %s://%s failed (degraded): %v", scanID, r.Scheme, r.Host, err)
 				mu.Lock()
@@ -564,7 +571,7 @@ func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 				results := p.probeHost(ctx, lim, it.host)
 				if !it.candidate {
 					for _, r := range results {
-						store(it.assetID, r)
+						store(it.assetID, r, lim)
 					}
 					if err := markAlive(ctx, d, it.assetID, it.host, len(results) > 0); err != nil {
 						fail(err)
@@ -622,7 +629,7 @@ func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 					}
 				}
 				for _, r := range results {
-					store(it.assetID, r)
+					store(it.assetID, r, p.verify)
 				}
 			}(it, results)
 		}
@@ -652,6 +659,17 @@ func nonNil(s []string) []string {
 	return s
 }
 
+func headerJSON(h map[string]string) []byte {
+	if h == nil {
+		h = map[string]string{}
+	}
+	b, err := json.Marshal(h)
+	if err != nil {
+		return []byte("{}")
+	}
+	return b
+}
+
 // storeURL upsert URL，并按新增/变更生成事件（状态码或标题变化为变更；T37：只有指纹 hash 变化不算）。
 // 在事务里 SELECT ... FOR UPDATE 锁行后比较新旧值：并发同结果时只有第一个真正改值的记 changed。
 func (p *prober) storeURL(ctx context.Context, d *pgxpool.Pool, assetID int64, r *probeResult) error {
@@ -671,9 +689,9 @@ func (p *prober) storeURL(ctx context.Context, d *pgxpool.Pool, assetID int64, r
 			err := tx.QueryRow(ctx, `SELECT id, status_code, title, fingerprint_hash FROM urls
 				WHERE scheme = $1 AND host = $2 AND port = $3 FOR UPDATE`, r.Scheme, r.Host, r.Port).Scan(&urlID, &oldStatus, &oldTitle, &oldFP)
 			if errors.Is(err, pgx.ErrNoRows) {
-				err = tx.QueryRow(ctx, `INSERT INTO urls (asset_id, scheme, host, port, status_code, title, fingerprint_hash, redirect_to, tech, sources)
-					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, '{http}') ON CONFLICT (scheme, host, port) DO NOTHING RETURNING id`,
-					assetID, r.Scheme, r.Host, r.Port, r.Status, r.Title, r.Fingerprint, nullIfEmpty(r.Redirect), nonNil(r.Tech)).Scan(&urlID)
+				err = tx.QueryRow(ctx, `INSERT INTO urls (asset_id, scheme, host, port, status_code, title, fingerprint_hash, redirect_to, tech, sources, http_headers, favicon_hash, deep_probed_at)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, '{http}', $10, $11, now()) ON CONFLICT (scheme, host, port) DO NOTHING RETURNING id`,
+					assetID, r.Scheme, r.Host, r.Port, r.Status, r.Title, r.Fingerprint, nullIfEmpty(r.Redirect), nonNil(r.Tech), headerJSON(r.Headers), nullIfEmpty(r.FaviconHash)).Scan(&urlID)
 				if errors.Is(err, pgx.ErrNoRows) { // 并发插入：重来走更新路径
 					retry = true
 					return nil
@@ -683,16 +701,22 @@ func (p *prober) storeURL(ctx context.Context, d *pgxpool.Pool, assetID int64, r
 				if err := syncURLComponents(ctx, tx, urlID, r.Tech); err != nil {
 					return err
 				}
+				if err := syncIdentifyComponents(ctx, tx, urlID, matchIdentifyRules(r.Title, r.Headers)); err != nil {
+					return err
+				}
 				return emitNew(ctx, tx, assetID, &urlID, map[string]any{"url": url, "status_code": r.Status, "title": r.Title})
 			} else if err != nil {
 				return err
 			}
 			if _, err := tx.Exec(ctx, `UPDATE urls SET asset_id = $2, status_code = $3, title = $4, fingerprint_hash = $5,
-					redirect_to = $6, tech = $7, last_seen = now() WHERE id = $1`,
-				urlID, assetID, r.Status, r.Title, r.Fingerprint, nullIfEmpty(r.Redirect), nonNil(r.Tech)); err != nil {
+					redirect_to = $6, tech = $7, http_headers = $8, favicon_hash = $9, deep_probed_at = now(), last_seen = now() WHERE id = $1`,
+				urlID, assetID, r.Status, r.Title, r.Fingerprint, nullIfEmpty(r.Redirect), nonNil(r.Tech), headerJSON(r.Headers), nullIfEmpty(r.FaviconHash)); err != nil {
 				return err
 			}
 			if err := syncURLComponents(ctx, tx, urlID, r.Tech); err != nil {
+				return err
+			}
+			if err := syncIdentifyComponents(ctx, tx, urlID, matchIdentifyRules(r.Title, r.Headers)); err != nil {
 				return err
 			}
 			changes := map[string]change{}
