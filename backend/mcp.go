@@ -64,6 +64,51 @@ type checkScopeIn struct {
 	Host string `json:"host" jsonschema:"host name to check, e.g. www.example.com"`
 }
 
+type searchComponentsIn struct {
+	Q               string `json:"q,omitempty" jsonschema:"substring of component name (case-insensitive)"`
+	MinAssets       *int   `json:"min_assets,omitempty" jsonschema:"minimum distinct asset count (>= 0)"`
+	MinVendors      *int   `json:"min_vendors,omitempty" jsonschema:"minimum distinct vendor count (>= 0)"`
+	ExcludeCommon   *bool  `json:"exclude_common,omitempty" jsonschema:"exclude common components (default true)"`
+	IncludeWildcard bool   `json:"include_wildcard,omitempty" jsonschema:"include wildcard assets (default false)"`
+	IncludeHosted   bool   `json:"include_customer_hosted,omitempty" jsonschema:"include customer-hosted assets (default false)"`
+	IncludeDead     bool   `json:"include_dead,omitempty" jsonschema:"include inactive assets (default false; default counts only alive)"`
+	Limit           *int   `json:"limit,omitempty" jsonschema:"1..500, default 50"`
+	Cursor          string `json:"cursor,omitempty" jsonschema:"next_cursor from the previous page"`
+}
+
+type listComponentAssetsIn struct {
+	ComponentID     int64  `json:"component_id" jsonschema:"required; component id"`
+	Vendor          *int64 `json:"vendor,omitempty" jsonschema:"only this vendor id (>= 1)"`
+	IncludeWildcard bool   `json:"include_wildcard,omitempty" jsonschema:"include wildcard assets (default false)"`
+	IncludeHosted   bool   `json:"include_customer_hosted,omitempty" jsonschema:"include customer-hosted assets (default false)"`
+	IncludeDead     bool   `json:"include_dead,omitempty" jsonschema:"include inactive assets (default false)"`
+	Limit           *int   `json:"limit,omitempty" jsonschema:"1..500, default 50"`
+	Cursor          string `json:"cursor,omitempty" jsonschema:"next_cursor from the previous page"`
+}
+
+func (in searchComponentsIn) filter() (componentFilter, error) {
+	f := componentFilter{
+		Q: in.Q, IncludeWild: in.IncludeWildcard, IncludeHosted: in.IncludeHosted, IncludeDead: in.IncludeDead,
+		ExcludeCommon: in.ExcludeCommon == nil || *in.ExcludeCommon,
+	}
+	if strings.ContainsRune(f.Q, 0) {
+		return f, errf(400, "NUL character not allowed")
+	}
+	if in.MinAssets != nil {
+		if *in.MinAssets < 0 {
+			return f, errf(400, "min_assets must be an integer >= 0")
+		}
+		f.MinAssets = *in.MinAssets
+	}
+	if in.MinVendors != nil {
+		if *in.MinVendors < 0 {
+			return f, errf(400, "min_vendors must be an integer >= 0")
+		}
+		f.MinVendors = *in.MinVendors
+	}
+	return f, nil
+}
+
 type triggerScanIn struct {
 	RootID int64  `json:"root_id" jsonschema:"root domain id"`
 	Kind   string `json:"kind" jsonschema:"passive | active | expand (active requires the vendor's active_enabled)"`
@@ -257,6 +302,41 @@ func (a *api) mcpServer() *mcp.Server {
 				return toolErr[mapOut](err)
 			}
 			return nil, mapOut{"updated": tag.RowsAffected(), "status": st}, nil
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "search_components", Description: "Search the open-source component inventory (same filters as GET /api/components). Defaults: exclude common components; exclude wildcard, customer-hosted, and inactive assets. Sorted by vendor_count then asset_count descending."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in searchComponentsIn) (*mcp.CallToolResult, pageOut, error) {
+			f, err := in.filter()
+			if err != nil {
+				return toolErr[pageOut](err)
+			}
+			limit, cursor, err := parsePage(in.Limit, in.Cursor)
+			if err != nil {
+				return toolErr[pageOut](err)
+			}
+			f.Limit, f.Cursor = limit, cursor
+			list, err := a.queryComponents(ctx, f)
+			if err != nil {
+				return toolErr[pageOut](err)
+			}
+			list, next := cutPage(list, limit)
+			return nil, pageOut{Items: list, NextCursor: next}, nil
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "list_component_assets", Description: "List assets and URLs linked to a component (same as GET /api/components/{id}/assets). Optional vendor filter. Same default exclusions as search_components (wildcard / customer-hosted / inactive)."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in listComponentAssetsIn) (*mcp.CallToolResult, pageOut, error) {
+			if in.ComponentID < 1 {
+				return toolErr[pageOut](errf(400, "component_id must be >= 1"))
+			}
+			limit, cursor, err := parsePage(in.Limit, in.Cursor)
+			if err != nil {
+				return toolErr[pageOut](err)
+			}
+			f := componentFilter{Vendor: in.Vendor, IncludeWild: in.IncludeWildcard, IncludeHosted: in.IncludeHosted, IncludeDead: in.IncludeDead, Limit: limit, Cursor: cursor}
+			list, err := a.queryComponentAssets(ctx, in.ComponentID, f)
+			if err != nil {
+				return toolErr[pageOut](err)
+			}
+			list, next := cutPage(list, limit)
+			return nil, pageOut{Items: list, NextCursor: next}, nil
 		})
 	return s
 }

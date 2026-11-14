@@ -114,6 +114,14 @@ func (a *api) routes() map[string]http.HandlerFunc {
 		"POST /api/mine/claim":                      a.claimMine,
 		"POST /api/mine/heartbeat":                  a.heartbeatMine,
 		"POST /api/mine/complete":                   a.completeMine,
+		"GET /api/components":                       a.listComponents,
+		"GET /api/components/{id}":                  a.getComponent,
+		"GET /api/components/{id}/assets":           a.listComponentAssets,
+		"GET /api/components/{id}/values":           a.componentValues,
+		"GET /api/common-components":                a.listCommonComponents,
+		"POST /api/common-components":               a.createCommonComponent,
+		"PATCH /api/common-components/{id}":         a.updateCommonComponent,
+		"DELETE /api/common-components/{id}":        a.deleteCommonComponent,
 	}
 }
 

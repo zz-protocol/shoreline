@@ -127,6 +127,9 @@ func main() {
 	if err := a.initHosted(context.Background()); err != nil {
 		log.Fatalf("customer_hosted init: %v", err)
 	}
+	if err := a.initCommon(context.Background()); err != nil {
+		log.Fatalf("common components init: %v", err)
+	}
 	log.Printf("listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, newMux(checks, a)))
 }

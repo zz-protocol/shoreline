@@ -11,6 +11,7 @@ import Tokens from './pages/Tokens'
 import Docs from './pages/Docs'
 import HostedRules from './pages/HostedRules'
 import ProbeKeys from './pages/ProbeKeys'
+import Components from './pages/Components'
 
 function RequireAuth({ children }) {
   if (!getToken()) return <Navigate to="/login" replace />
@@ -32,6 +33,7 @@ export default function App() {
         <Route index element={<Navigate to="/events" replace />} />
         <Route path="vendors" element={<Vendors />} />
         <Route path="assets" element={<Assets />} />
+        <Route path="components" element={<Components />} />
         <Route path="events" element={<Events />} />
         <Route path="scans" element={<Scans />} />
         <Route path="tokens" element={<Tokens />} />

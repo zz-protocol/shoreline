@@ -7,6 +7,7 @@ const { Header, Content } = Layout
 const items = [
   { key: '/events', label: '新增播报' },
   { key: '/assets', label: '资产' },
+  { key: '/components', label: '组件' },
   { key: '/vendors', label: '厂商 / 根域' },
   { key: '/hosted-rules', label: '客户托管规则' },
   { key: '/scans', label: '扫描任务' },
@@ -16,7 +17,7 @@ const items = [
 ]
 
 // T19：顶部导航（窄屏时 Menu 自动折叠为「…」下拉）；资产/播报页表格全宽，其余页限宽 1200
-const WIDE = ['/assets', '/events']
+const WIDE = ['/assets', '/events', '/components']
 
 export default function AppLayout() {
   const nav = useNavigate()

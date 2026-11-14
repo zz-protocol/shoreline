@@ -253,3 +253,16 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 - 扫描记录删除（T35）：`DELETE /api/scan-tasks/{id}` 只删终态（done/failed/cancelled）记录，返回 204；pending/running/retrying 或仍有进行中的下游任务返回 409。只删这一条（下游记录保留，其 parent_id/root_scan_id 置空），不影响 assets/urls/events。页面上非终态的删除按钮置灰，删除需确认。
 - 扫描列表展示 `degraded`/`degraded_reason`；`passive`/`active`/`expand` 可重跑（再 `POST /api/scans`）；`dns`/`http` 无重跑钮，提示从 passive 重跑。
 - 本地：`cd frontend && npm install && npm test && npm run build`；`npm run dev` 反代到 `127.0.0.1:8080`。
+
+## 组件库存（T43）
+
+从已探测 URL 的 `urls.tech`（wappalyzer）聚合开源组件。升级时迁移会回填现有技术栈，不必重扫。名称若带版本（第一个 `:` 之后），版本只作展示，不参与唯一键，也不自动对漏洞库。
+
+默认统计口径与资产列表一致：排除泛解析、客户托管，且只统计仍存活（`alive`）的资产；可切换「含泛解析 / 含客户托管 / 含失活」。列表默认再排除「常见」组件（内置可编辑名单，启动时补种；停用或删除后升级不会加回）。
+
+- Web：导航「组件」（资产之后，全宽）。列：组件名、来源、URL 数、资产数、厂商数、是否常见；默认按厂商数、再按资产数降序。筛选：关键字、最小资产数、最小厂商数、排除常见、含泛解析/客户托管/失活。下钻可按厂商筛，并复制本组件资产主机名或 URL（当前筛选全量、去重，规则与资产页相同）。
+- REST：`GET /api/components`、`GET /api/components/{id}`、`GET /api/components/{id}/assets`、`GET /api/components/{id}/values`；常见名单 `GET/POST /api/common-components`、`PATCH/DELETE /api/common-components/{id}`。
+- MCP：`search_components`、`list_component_assets`，口径与 REST 一致。
+- 后续 HTTP 扫描更新 `urls.tech` 时同步维护关联。
+
+岸线只做识别、聚合、筛选和下钻，不内置代码审计、不按版本自动匹配 CVE。

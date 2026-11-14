@@ -486,13 +486,93 @@ paths:
                 report_url: {type: string}
       responses: {"200": {description: "{updated, status}"}, "400": {$ref: "#/components/responses/Error"}}
 
+
+  /api/components:
+    get:
+      summary: "组件库存列表（默认排除常见、泛解析、客户托管、失活；按厂商数、再按资产数降序）"
+      parameters:
+        - {name: q, in: query, schema: {type: string}, description: "组件名子串（不区分大小写）"}
+        - {name: min_assets, in: query, schema: {type: integer, minimum: 0}, description: "最小资产数"}
+        - {name: min_vendors, in: query, schema: {type: integer, minimum: 0}, description: "最小厂商数"}
+        - {name: exclude_common, in: query, schema: {type: boolean, default: true}, description: "排除常见组件（默认 true）"}
+        - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
+        - {name: include_customer_hosted, in: query, schema: {type: boolean, default: false}}
+        - {name: include_dead, in: query, schema: {type: boolean, default: false}, description: "包含失活资产（默认只统计 alive）"}
+        - {$ref: "#/components/parameters/limit"}
+        - {$ref: "#/components/parameters/cursor"}
+      responses: {"200": {description: "{items: Component[], next_cursor}"}, "400": {$ref: "#/components/responses/Error"}}
+  /api/components/{id}:
+    get:
+      summary: "组件详情（计数口径与列表的 include_* 相同，不因常见而 404）"
+      parameters:
+        - {$ref: "#/components/parameters/id"}
+        - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
+        - {name: include_customer_hosted, in: query, schema: {type: boolean, default: false}}
+        - {name: include_dead, in: query, schema: {type: boolean, default: false}}
+      responses: {"200": {description: "Component"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/components/{id}/assets:
+    get:
+      summary: "组件关联资产与 URL（分页）；可按厂商筛选；统计口径同 include_*"
+      parameters:
+        - {$ref: "#/components/parameters/id"}
+        - {name: vendor, in: query, schema: {type: integer}}
+        - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
+        - {name: include_customer_hosted, in: query, schema: {type: boolean, default: false}}
+        - {name: include_dead, in: query, schema: {type: boolean, default: false}}
+        - {$ref: "#/components/parameters/limit"}
+        - {$ref: "#/components/parameters/cursor"}
+      responses: {"200": {description: "{items: [{id, subdomain, vendor_id, vendor, alive, urls: [{id, url, title, version, source}]}], next_cursor}"}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/components/{id}/values:
+    get:
+      summary: "复制本组件资产主机名或 URL：当前筛选下全部结果，去重排序（上限 100000）"
+      parameters:
+        - {$ref: "#/components/parameters/id"}
+        - {name: field, in: query, required: true, schema: {type: string, enum: [subdomain, url]}}
+        - {name: vendor, in: query, schema: {type: integer}}
+        - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
+        - {name: include_customer_hosted, in: query, schema: {type: boolean, default: false}}
+        - {name: include_dead, in: query, schema: {type: boolean, default: false}}
+      responses: {"200": {description: "{field, items: string[], count, truncated}"}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/common-components:
+    get:
+      summary: "常见组件名单（可编辑；内置项删除后升级不会加回）"
+      responses: {"200": {description: "{items: [{id, name, builtin, enabled, created_at}]}"}}
+    post:
+      summary: "新增常见组件名（同名已删可恢复）"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string}
+      responses: {"201": {description: "created"}, "400": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/common-components/{id}:
+    patch:
+      summary: "停用或启用常见组件名"
+      parameters: [{$ref: "#/components/parameters/id"}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: {type: boolean}
+      responses: {"200": {description: "updated"}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+    delete:
+      summary: "删除常见组件名（软删除墓碑，内置项升级不会加回）"
+      parameters: [{$ref: "#/components/parameters/id"}]
+      responses: {"204": {description: "deleted"}, "404": {$ref: "#/components/responses/Error"}}
+
   /mcp:
     post:
       summary: "MCP server（Streamable HTTP，无状态，JSON 响应；JSON-RPC 2.0）"
       description: |
-        需 Bearer token（同 API）。工具：list_new_assets、search_assets、check_scope、trigger_scan、claim_mine_targets、heartbeat_mine、complete_mine，参数与对应 REST 接口一致
+        需 Bearer token（同 API）。工具：list_new_assets、search_assets、check_scope、trigger_scan、claim_mine_targets、heartbeat_mine、complete_mine、search_components、list_component_assets，参数与对应 REST 接口一致
         （list_new_assets ≈ GET /api/events?level=asset&type=new；search_assets ≈ GET /api/assets；trigger_scan ≈ POST /api/scans；
-        claim_mine_targets ≈ POST /api/mine/claim；heartbeat_mine ≈ POST /api/mine/heartbeat；complete_mine ≈ POST /api/mine/complete）。
+        claim_mine_targets ≈ POST /api/mine/claim；heartbeat_mine ≈ POST /api/mine/heartbeat；complete_mine ≈ POST /api/mine/complete；search_components ≈ GET /api/components；list_component_assets ≈ GET /api/components/{id}/assets）。
         请求头需 `Accept: application/json, text/event-stream`。业务错误以工具结果 isError=true、文本 {"error":"..."} 返回。
       requestBody: {content: {application/json: {schema: {type: object, description: "JSON-RPC 2.0 请求（initialize / tools/list / tools/call）"}}}}
       responses: {"200": {description: "JSON-RPC 响应"}, "401": {$ref: "#/components/responses/Error"}}

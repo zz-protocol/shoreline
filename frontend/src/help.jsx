@@ -22,6 +22,8 @@ export const HELP = {
   alive: '探活：DNS 能解析且 http/https 任一有响应（任何状态码）即「存活」，确认后不再复查；死亡拆成「DNS不解析」（nxdomain）与「解析但HTTP不通」（no_http），按 SCHEDULE_ALIVE（默认 24h）定时复查，恢复时播报一条「恢复」并清空死亡原因；未探测或确认为泛解析为「未知」。',
   mine: '挖掘认领：agent 通过 API/MCP 领取存活且非客户托管的资产（claim），挖掘中可 heartbeat 续锁（默认 24h，MINE_CLAIM_TTL_HOURS），完成后 complete 回写 done/deferred/abandoned。冷却默认 30 天（MINE_COOLDOWN_DAYS；0=完成后不再自动进入可领队列）；abandoned 默认不再入队，除非 claim 时带 include_abandoned。',
   level: '资产级：新出现的子域；URL 级：新出现的 http(s) 站点。资产级事件下会挂上它的 URL 事件。',
+  components: '组件库存：从已探测 URL 的技术栈聚合开源组件。默认排除常见通用栈、泛解析、客户托管和失活资产；可下钻到资产与 URL 并整列复制。岸线只做识别与筛选，不内置代码审计或漏洞扫描。',
+  commonComponents: '常见组件：内置一份可编辑名单（启动时补种）。默认从列表中排除这些人人都在看的通用栈。可停用或删除；删除后升级不会加回，也可自行新增。',
 }
 
 /** 文字 + 问号提示。 */

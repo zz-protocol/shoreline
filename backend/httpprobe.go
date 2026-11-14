@@ -680,6 +680,9 @@ func (p *prober) storeURL(ctx context.Context, d *pgxpool.Pool, assetID int64, r
 				} else if err != nil {
 					return err
 				}
+				if err := syncURLComponents(ctx, tx, urlID, r.Tech); err != nil {
+					return err
+				}
 				return emitNew(ctx, tx, assetID, &urlID, map[string]any{"url": url, "status_code": r.Status, "title": r.Title})
 			} else if err != nil {
 				return err
@@ -687,6 +690,9 @@ func (p *prober) storeURL(ctx context.Context, d *pgxpool.Pool, assetID int64, r
 			if _, err := tx.Exec(ctx, `UPDATE urls SET asset_id = $2, status_code = $3, title = $4, fingerprint_hash = $5,
 					redirect_to = $6, tech = $7, last_seen = now() WHERE id = $1`,
 				urlID, assetID, r.Status, r.Title, r.Fingerprint, nullIfEmpty(r.Redirect), nonNil(r.Tech)); err != nil {
+				return err
+			}
+			if err := syncURLComponents(ctx, tx, urlID, r.Tech); err != nil {
 				return err
 			}
 			changes := map[string]change{}
