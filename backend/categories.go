@@ -166,7 +166,7 @@ func backfillComponentCategories(ctx context.Context, q categoryDB) (int, error)
 			continue
 		}
 		tag, err := q.Exec(ctx, `UPDATE components SET categories = $2, updated_at = now()
-			WHERE id = $1 AND categories IS DISTINCT FROM $2`, r.id, cats)
+			WHERE id = $1 AND cardinality(categories) = 0 AND categories IS DISTINCT FROM $2`, r.id, cats)
 		if err != nil {
 			return n, err
 		}

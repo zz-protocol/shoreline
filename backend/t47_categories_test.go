@@ -148,6 +148,24 @@ func TestT47BackfillIdempotentNoNetwork(t *testing.T) {
 	if n2 != 0 {
 		t.Fatalf("idempotent backfill should update 0, got %d", n2)
 	}
+	// 已有非空分类不得被回填覆盖。
+	if _, err := e.pool.Exec(ctx, `UPDATE components SET categories = ARRAY['CustomKeep'] WHERE name_key = 'jquery'`); err != nil {
+		t.Fatal(err)
+	}
+	n3, err := backfillComponentCategories(ctx, e.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n3 != 0 {
+		t.Fatalf("backfill should not overwrite non-empty categories, updated %d", n3)
+	}
+	var kept []string
+	if err := e.pool.QueryRow(ctx, `SELECT categories FROM components WHERE name_key = 'jquery'`).Scan(&kept); err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != 1 || kept[0] != "CustomKeep" {
+		t.Fatalf("backfill overwrote non-empty categories, got %v", kept)
+	}
 }
 
 func seedT47CategoryFixture(t *testing.T, e *testEnv) (front, srv, cross, empty, other string) {
@@ -318,6 +336,14 @@ func TestT47HTTPScanWritesCategories(t *testing.T) {
 	cfg, _ := httpConfigFromEnv()
 	cfg.RPS, cfg.Schemes, cfg.Timeout = 1000, []string{"http"}, 2*time.Second
 	cfg.Dial = func(string) string { return page.Listener.Addr().String() }
+	// 已有分类可能被迁移回填；先置空，并污染 name 回退表，避免 categoriesForName 冒充 Info 接口。
+	if _, err := e.pool.Exec(ctx, `INSERT INTO components (name, name_key, source, confirmed, categories)
+		VALUES ('Nginx', 'nginx', 'wappalyzer', true, '{}')
+		ON CONFLICT (name_key) DO UPDATE SET categories = '{}'`); err != nil {
+		t.Fatal(err)
+	}
+	poisonCategoryLookup(t, "Nginx", []string{"PoisonedLookup"})
+	poisonCategoryLookup(t, "jQuery", []string{"PoisonedLookup"})
 	p := newProber(cfg)
 	if _, err := httpHandler(e.pool, p)(ctx, 0, []string{host}); err != nil {
 		t.Fatal(err)
@@ -327,7 +353,83 @@ func TestT47HTTPScanWritesCategories(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nginx component missing after scan: %v", err)
 	}
+	if contains(cats, "PoisonedLookup") {
+		t.Fatalf("scan used categoriesForName fallback instead of FingerprintWithInfo, got %v", cats)
+	}
 	if !contains(cats, "Web servers") {
 		t.Fatalf("scan should write Nginx categories, got %v", cats)
 	}
+}
+
+// poisonCategoryLookup 临时覆盖按名回退表。扫描若未走 FingerprintWithInfo，写入会被污染值揭穿。
+func poisonCategoryLookup(t *testing.T, name string, poisoned []string) {
+	t.Helper()
+	m, err := wappalyzerCategoriesByKey()
+	if err != nil || m == nil {
+		t.Fatalf("category map: %v", err)
+	}
+	key := strings.ToLower(name)
+	prev, ok := m[key]
+	saved := append([]string(nil), prev...)
+	m[key] = append([]string(nil), poisoned...)
+	t.Cleanup(func() {
+		if ok {
+			m[key] = saved
+		} else {
+			delete(m, key)
+		}
+	})
+}
+
+func TestT47IdentifyKeepsNonEmptyAndFillsEmptyCategories(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	upsertNginx := func(t *testing.T, cats []string) {
+		t.Helper()
+		if cats == nil {
+			cats = []string{}
+		}
+		if _, err := e.pool.Exec(ctx, `INSERT INTO components (name, name_key, source, confirmed, categories)
+			VALUES ('Nginx', 'nginx', 'wappalyzer', true, $1)
+			ON CONFLICT (name_key) DO UPDATE SET categories = EXCLUDED.categories`, cats); err != nil {
+			t.Fatal(err)
+		}
+	}
+	catsOfNginx := func(t *testing.T) []string {
+		t.Helper()
+		var cats []string
+		if err := e.pool.QueryRow(ctx, `SELECT categories FROM components WHERE name_key = 'nginx'`).Scan(&cats); err != nil {
+			t.Fatal(err)
+		}
+		return cats
+	}
+	identifyNginx := func(t *testing.T, label string) {
+		t.Helper()
+		host := label + "." + strings.ToLower(strings.ReplaceAll(t.Name(), "/", "-")) + ".example.test"
+		_, uid := insertPlainURL(t, e, host)
+		hits := matchIdentifyRules("", map[string]string{"Server": "nginx"})
+		if len(hits) == 0 {
+			t.Fatal("expected Nginx header-rule hit for Server=nginx")
+		}
+		if err := syncIdentifyComponents(ctx, e.pool, uid, hits); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("keep_nonempty", func(t *testing.T) {
+		upsertNginx(t, []string{"CustomKeep"})
+		identifyNginx(t, "keep")
+		cats := catsOfNginx(t)
+		if len(cats) != 1 || cats[0] != "CustomKeep" {
+			t.Fatalf("header-rule ingest should keep [CustomKeep], got %v", cats)
+		}
+	})
+	t.Run("fill_empty", func(t *testing.T) {
+		upsertNginx(t, []string{})
+		identifyNginx(t, "fill")
+		cats := catsOfNginx(t)
+		if !contains(cats, "Web servers") {
+			t.Fatalf("empty Nginx categories should be filled, got %v", cats)
+		}
+	})
 }

@@ -122,7 +122,7 @@ func syncURLComponentsWithCats(ctx context.Context, q dbq, urlID int64, tech []s
 			VALUES ($1, $2, 'wappalyzer', true, $3)
 			ON CONFLICT (name_key) DO UPDATE SET
 				updated_at = now(),
-				categories = CASE WHEN cardinality(EXCLUDED.categories) > 0 THEN EXCLUDED.categories ELSE components.categories END
+				categories = CASE WHEN cardinality(components.categories) > 0 THEN components.categories ELSE EXCLUDED.categories END
 			RETURNING id`, it.name, strings.ToLower(it.name), got).Scan(&id); err != nil {
 			return err
 		}
