@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,6 +22,10 @@ type componentFilter struct {
 	IncludeHosted bool
 	IncludeDead   bool
 	Vendor        *int64
+	MaxStars      *int
+	MaxAdvisories *int
+	MissingRepo   bool
+	Sort          string // "", "stars", "advisories"
 	Limit         int
 	Cursor        int64
 }
@@ -80,6 +85,25 @@ func componentFilterFromQuery(w http.ResponseWriter, r *http.Request, withListEx
 		if f.MinVendors, okV = intQuery(w, r, "min_vendors", 0); !okV {
 			return componentFilter{}, false
 		}
+		var okS, okD bool
+		if f.MaxStars, okS = optIntQuery(w, r, "max_stars"); !okS {
+			return componentFilter{}, false
+		}
+		if f.MaxAdvisories, okD = optIntQuery(w, r, "max_advisories"); !okD {
+			return componentFilter{}, false
+		}
+		miss, okM := boolParam(w, r, "missing_repo")
+		if !okM {
+			return componentFilter{}, false
+		}
+		f.MissingRepo = miss != nil && *miss
+		f.Sort = strings.TrimSpace(r.URL.Query().Get("sort"))
+		switch f.Sort {
+		case "", "stars", "advisories":
+		default:
+			writeErr(w, 400, "sort must be stars, advisories, or empty")
+			return componentFilter{}, false
+		}
 	}
 	return f, true
 }
@@ -97,7 +121,20 @@ func intQuery(w http.ResponseWriter, r *http.Request, name string, def int) (int
 	return n, true
 }
 
-const componentCountSQL = `SELECT c.id, c.name, c.source, c.confirmed, ` + commonExistsSQL + ` AS is_common,
+func optIntQuery(w http.ResponseWriter, r *http.Request, name string) (*int, bool) {
+	s := r.URL.Query().Get(name)
+	if s == "" {
+		return nil, true
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		writeErr(w, 400, name+" must be an integer >= 0")
+		return nil, false
+	}
+	return &n, true
+}
+
+const componentCountSQL = `SELECT c.id, c.name, c.source, c.confirmed, c.github_repo, c.stars, c.advisory_count, c.enrich_error, c.enriched_at, ` + commonExistsSQL + ` AS is_common,
 	count(DISTINCT s.url_id)::bigint AS url_count,
 	count(DISTINCT s.asset_id)::bigint AS asset_count,
 	count(DISTINCT s.vendor_id)::bigint AS vendor_count
@@ -114,6 +151,29 @@ func (f componentFilter) countArgs() []any {
 	return append(f.scopeArgs(), strings.ToLower(strings.TrimSpace(f.Q)))
 }
 
+func componentSortSQL(sort string) (order, cursorPred string) {
+	switch sort {
+	case "stars":
+		return "c.stars ASC NULLS FIRST, c.id ASC",
+			`$C::bigint = 0 OR EXISTS (SELECT 1 FROM counted cc WHERE cc.id = $C AND (
+				(c.stars IS NULL AND cc.stars IS NULL AND c.id > cc.id) OR
+				(cc.stars IS NOT NULL AND c.stars IS NULL) OR
+				(c.stars IS NOT NULL AND cc.stars IS NOT NULL AND (c.stars, c.id) > (cc.stars, cc.id))
+			))`
+	case "advisories":
+		return "c.advisory_count ASC NULLS FIRST, c.id ASC",
+			`$C::bigint = 0 OR EXISTS (SELECT 1 FROM counted cc WHERE cc.id = $C AND (
+				(c.advisory_count IS NULL AND cc.advisory_count IS NULL AND c.id > cc.id) OR
+				(cc.advisory_count IS NOT NULL AND c.advisory_count IS NULL) OR
+				(c.advisory_count IS NOT NULL AND cc.advisory_count IS NOT NULL AND (c.advisory_count, c.id) > (cc.advisory_count, cc.id))
+			))`
+	default:
+		return "c.vendor_count DESC, c.asset_count DESC, c.id DESC",
+			`$C::bigint = 0 OR (c.vendor_count, c.asset_count, c.id) < (
+				SELECT cc.vendor_count, cc.asset_count, cc.id FROM counted cc WHERE cc.id = $C)`
+	}
+}
+
 func (a *api) queryComponents(ctx context.Context, f componentFilter) ([]map[string]any, error) {
 	if err := checkPage(f.Limit, f.Cursor); err != nil {
 		return nil, err
@@ -128,24 +188,41 @@ func (a *api) queryComponents(ctx context.Context, f componentFilter) ([]map[str
 		having += ` AND NOT (` + commonExistsSQL + `)`
 	}
 	args := append(f.countArgs(), f.MinAssets, f.MinVendors)
+	add := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	filters := `WHERE 1=1`
+	if f.MaxStars != nil {
+		filters += ` AND c.stars <= ` + add(*f.MaxStars)
+	}
+	if f.MaxAdvisories != nil {
+		filters += ` AND c.advisory_count <= ` + add(*f.MaxAdvisories)
+	}
+	if f.MissingRepo {
+		filters += ` AND (c.github_repo IS NULL OR c.github_repo = '')`
+	}
+	filterArgs := append([]any{}, args...)
+	order, curPred := componentSortSQL(f.Sort)
+	curP := add(f.Cursor)
+	limP := add(f.Limit + 1)
+	curPred = strings.ReplaceAll(curPred, "$C", curP)
 	q := `WITH counted AS (` + componentCountSQL + ` ` + having + `)
 SELECT * FROM counted c
-WHERE $8::bigint = 0 OR (c.vendor_count, c.asset_count, c.id) < (
-	SELECT cc.vendor_count, cc.asset_count, cc.id FROM counted cc WHERE cc.id = $8
-)
-ORDER BY c.vendor_count DESC, c.asset_count DESC, c.id DESC
-LIMIT $9`
+` + filters + ` AND (` + curPred + `)
+ORDER BY ` + order + `
+LIMIT ` + limP
 	if f.Cursor != 0 {
 		var found bool
-		if err := a.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM (`+componentCountSQL+` `+having+`) x WHERE id = $8)`,
-			append(args, f.Cursor)...).Scan(&found); err != nil {
+		if err := a.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM (`+componentCountSQL+` `+having+`) c `+filters+` AND c.id = `+curP+`)`,
+			append(filterArgs, f.Cursor)...).Scan(&found); err != nil {
 			return nil, err
 		}
 		if !found {
 			return nil, errf(400, "invalid cursor")
 		}
 	}
-	return rowsJSON(a.db.Query(ctx, q, append(args, f.Cursor, f.Limit+1)...))
+	return rowsJSON(a.db.Query(ctx, q, args...))
 }
 
 func (a *api) listComponents(w http.ResponseWriter, r *http.Request) {
@@ -179,7 +256,7 @@ func (a *api) getComponent(w http.ResponseWriter, r *http.Request) {
 	}
 	f.Vendor = nil
 	q := `WITH counted AS (` + componentCountSQL + `)
-SELECT c.id, c.name, c.source, c.confirmed, c.github_repo, c.stars, c.advisory_count,
+SELECT c.id, c.name, c.source, c.confirmed, c.github_repo, c.stars, c.advisory_count, c.enrich_error, c.enriched_at,
 	COALESCE(x.is_common, ` + commonExistsSQL + `) AS is_common,
 	COALESCE(x.url_count, 0) AS url_count,
 	COALESCE(x.asset_count, 0) AS asset_count,
@@ -480,4 +557,43 @@ func (a *api) deleteCommonComponent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(204)
+}
+
+func (a *api) updateComponent(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	var b struct {
+		GitHubRepo *string `json:"github_repo"`
+	}
+	if !decode(w, r, &b) {
+		return
+	}
+	if b.GitHubRepo == nil {
+		writeErr(w, 400, "github_repo is required")
+		return
+	}
+	repo, err := parseGitHubRepo(*b.GitHubRepo)
+	if err != nil {
+		writeAnyErr(w, err)
+		return
+	}
+	var repoArg any
+	if repo != "" {
+		repoArg = repo
+	}
+	tag, err := a.db.Exec(r.Context(), `UPDATE components SET github_repo = $2, stars = NULL, advisory_count = NULL, enrich_error = NULL, enriched_at = NULL, updated_at = now() WHERE id = $1`, id, repoArg)
+	if err != nil {
+		dbErr(w, err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeErr(w, 404, "not found")
+		return
+	}
+	if repo != "" {
+		a.scheduleEnrich(id)
+	}
+	a.getComponent(w, r)
 }

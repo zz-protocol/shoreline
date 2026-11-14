@@ -72,6 +72,10 @@ type searchComponentsIn struct {
 	IncludeWildcard bool   `json:"include_wildcard,omitempty" jsonschema:"include wildcard assets (default false)"`
 	IncludeHosted   bool   `json:"include_customer_hosted,omitempty" jsonschema:"include customer-hosted assets (default false)"`
 	IncludeDead     bool   `json:"include_dead,omitempty" jsonschema:"include inactive assets (default false; default counts only alive)"`
+	MaxStars        *int   `json:"max_stars,omitempty" jsonschema:"maximum GitHub stars (omit for no cap; only rows with a known star count)"`
+	MaxAdvisories   *int   `json:"max_advisories,omitempty" jsonschema:"maximum public advisory count (omit for no cap)"`
+	MissingRepo     bool   `json:"missing_repo,omitempty" jsonschema:"only components with no github_repo"`
+	Sort            string `json:"sort,omitempty" jsonschema:"empty (vendor_count desc), stars, or advisories (both ascending, nulls first)"`
 	Limit           *int   `json:"limit,omitempty" jsonschema:"1..500, default 50"`
 	Cursor          string `json:"cursor,omitempty" jsonschema:"next_cursor from the previous page"`
 }
@@ -105,6 +109,25 @@ func (in searchComponentsIn) filter() (componentFilter, error) {
 			return f, errf(400, "min_vendors must be an integer >= 0")
 		}
 		f.MinVendors = *in.MinVendors
+	}
+	if in.MaxStars != nil {
+		if *in.MaxStars < 0 {
+			return f, errf(400, "max_stars must be an integer >= 0")
+		}
+		f.MaxStars = in.MaxStars
+	}
+	if in.MaxAdvisories != nil {
+		if *in.MaxAdvisories < 0 {
+			return f, errf(400, "max_advisories must be an integer >= 0")
+		}
+		f.MaxAdvisories = in.MaxAdvisories
+	}
+	f.MissingRepo = in.MissingRepo
+	f.Sort = strings.TrimSpace(in.Sort)
+	switch f.Sort {
+	case "", "stars", "advisories":
+	default:
+		return f, errf(400, "sort must be stars, advisories, or empty")
 	}
 	return f, nil
 }
@@ -303,7 +326,7 @@ func (a *api) mcpServer() *mcp.Server {
 			}
 			return nil, mapOut{"updated": tag.RowsAffected(), "status": st}, nil
 		})
-	mcp.AddTool(s, &mcp.Tool{Name: "search_components", Description: "Search the open-source component inventory (same filters as GET /api/components). Defaults: exclude common components; exclude wildcard, customer-hosted, and inactive assets. Sorted by vendor_count then asset_count descending."},
+	mcp.AddTool(s, &mcp.Tool{Name: "search_components", Description: "Search the open-source component inventory (same filters as GET /api/components). Defaults: exclude common components; exclude wildcard, customer-hosted, and inactive assets. Sorted by vendor_count then asset_count descending, or by stars/advisories ascending. Optional max_stars, max_advisories, missing_repo."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in searchComponentsIn) (*mcp.CallToolResult, pageOut, error) {
 			f, err := in.filter()
 			if err != nil {

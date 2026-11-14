@@ -40,8 +40,9 @@ type apiConfig struct {
 	BootstrapToken    string
 	ScopeBatch        int
 	MaxRetry          int
-	MineCooldownDays  int // T32；0=完成后不再自动进入可领队列
-	MineClaimTTLHours int // T32；认领锁小时数，>=1
+	MineCooldownDays  int    // T32；0=完成后不再自动进入可领队列
+	MineClaimTTLHours int    // T32；认领锁小时数，>=1
+	GitHubToken       string // T44 可选；空则走 GitHub 公开接口
 }
 
 func apiConfigFromEnv() (apiConfig, error) {
@@ -56,6 +57,7 @@ func apiConfigFromEnv() (apiConfig, error) {
 	if err := apiConfigFromEnvMine(&c); err != nil {
 		return c, err
 	}
+	c.GitHubToken = strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
 	return c, nil
 }
 
@@ -67,6 +69,11 @@ type api struct {
 	// T30 测试连通可注入（生产为 nil → 默认 Base URL + 15s client）
 	probeHTTP  *http.Client
 	probeBases map[string]string // provider → base URL
+	// T44 富集：测试注入 httptest 基址；生产用公开 API。enrichSync 时 PATCH 同步富集，便于断言。
+	enrichHTTP *http.Client
+	githubBase string
+	osvBase    string
+	enrichSync bool
 }
 
 // apiRoutes 是全部受保护路由；openapi.yaml 必须与之一致（测试校验）。
@@ -116,6 +123,7 @@ func (a *api) routes() map[string]http.HandlerFunc {
 		"POST /api/mine/complete":                   a.completeMine,
 		"GET /api/components":                       a.listComponents,
 		"GET /api/components/{id}":                  a.getComponent,
+		"PATCH /api/components/{id}":                a.updateComponent,
 		"GET /api/components/{id}/assets":           a.listComponentAssets,
 		"GET /api/components/{id}/values":           a.componentValues,
 		"GET /api/common-components":                a.listCommonComponents,

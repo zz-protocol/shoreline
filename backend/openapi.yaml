@@ -498,6 +498,10 @@ paths:
         - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
         - {name: include_customer_hosted, in: query, schema: {type: boolean, default: false}}
         - {name: include_dead, in: query, schema: {type: boolean, default: false}, description: "包含失活资产（默认只统计 alive）"}
+        - {name: max_stars, in: query, schema: {type: integer, minimum: 0}, description: "最多 star（上限；仅已有 star 的组件）"}
+        - {name: max_advisories, in: query, schema: {type: integer, minimum: 0}, description: "最多公开披露数（上限；仅已有计数的组件）"}
+        - {name: missing_repo, in: query, schema: {type: boolean, default: false}, description: "只看未关联 GitHub 仓库的组件"}
+        - {name: sort, in: query, schema: {type: string, enum: [stars, advisories]}, description: "stars 或 advisories 升序（空值在前）；省略则按厂商数、资产数降序"}
         - {$ref: "#/components/parameters/limit"}
         - {$ref: "#/components/parameters/cursor"}
       responses: {"200": {description: "{items: Component[], next_cursor}"}, "400": {$ref: "#/components/responses/Error"}}
@@ -510,6 +514,18 @@ paths:
         - {name: include_customer_hosted, in: query, schema: {type: boolean, default: false}}
         - {name: include_dead, in: query, schema: {type: boolean, default: false}}
       responses: {"200": {description: "Component"}, "404": {$ref: "#/components/responses/Error"}}
+    patch:
+      summary: "填写或修改 github_repo（格式 owner/repo，非法 400）；异步富集 stars 与公开披露数。空字符串清除关联。"
+      parameters: [{$ref: "#/components/parameters/id"}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [github_repo]
+              properties:
+                github_repo: {type: string, description: "owner/repo，空字符串表示清除"}
+      responses: {"200": {description: "Component"}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
   /api/components/{id}/assets:
     get:
       summary: "组件关联资产与 URL（分页）；可按厂商筛选；统计口径同 include_*"

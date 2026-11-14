@@ -27,6 +27,11 @@ export default function Components() {
   const [commonOpen, setCommonOpen] = useState(false)
   const [common, setCommon] = useState([])
   const [newCommon, setNewCommon] = useState('')
+  const [maxStars, setMaxStars] = useState()
+  const [maxAdvisories, setMaxAdvisories] = useState()
+  const [missingRepo, setMissingRepo] = useState(false)
+  const [sort, setSort] = useState('')
+  const [repoDraft, setRepoDraft] = useState('')
 
   useEffect(() => {
     get('/api/vendors').then((d) => setVendors(d.items || [])).catch((e) => message.error(e.message))
@@ -42,6 +47,10 @@ export default function Components() {
     if (q?.trim()) p.set('q', q.trim())
     if (minAssets != null && minAssets !== '') p.set('min_assets', String(minAssets))
     if (minVendors != null && minVendors !== '') p.set('min_vendors', String(minVendors))
+    if (maxStars != null && maxStars !== '') p.set('max_stars', String(maxStars))
+    if (maxAdvisories != null && maxAdvisories !== '') p.set('max_advisories', String(maxAdvisories))
+    if (missingRepo) p.set('missing_repo', 'true')
+    if (sort) p.set('sort', sort)
     return p
   }
 
@@ -70,7 +79,7 @@ export default function Components() {
       setLoading(false)
     }
   }
-  useEffect(() => { load() }, [excludeCommon, wild, hosted, dead, minAssets, minVendors])
+  useEffect(() => { load() }, [excludeCommon, wild, hosted, dead, minAssets, minVendors, maxStars, maxAdvisories, missingRepo, sort])
 
   const loadAssets = async (comp, next, vendorId = vendor) => {
     setAssetLoading(true)
@@ -95,10 +104,24 @@ export default function Components() {
 
   const openDetail = (row) => {
     setDetail(row)
+    setRepoDraft(row.github_repo || '')
     setVendor(undefined)
     setAssets([])
     setAssetCursor(null)
     loadAssets(row, null, undefined)
+  }
+
+  const saveRepo = async () => {
+    if (!detail) return
+    try {
+      const d = await patch(`/api/components/${detail.id}`, { github_repo: repoDraft })
+      setDetail({ ...detail, ...d })
+      setRepoDraft(d.github_repo || '')
+      load()
+      message.success('已保存仓库')
+    } catch (e) {
+      message.error(e.message)
+    }
   }
 
   const copyComp = async (field) => {
@@ -149,8 +172,19 @@ export default function Components() {
         <span>
           <Hint text={HELP.alive}>含失活</Hint> <Switch checked={dead} onChange={setDead} data-testid="comp-dead" />
         </span>
+        <InputNumber min={0} placeholder="最多 star" value={maxStars} onChange={setMaxStars} data-testid="max-stars" />
+        <InputNumber min={0} placeholder="最多公开披露数" value={maxAdvisories} onChange={setMaxAdvisories} data-testid="max-advisories" />
+        <span>
+          未关联仓库 <Switch checked={missingRepo} onChange={setMissingRepo} data-testid="missing-repo" />
+        </span>
+        <select data-testid="comp-sort" value={sort} onChange={(e) => setSort(e.target.value)} style={{ height: 32 }}>
+          <option value="">默认排序（厂商数）</option>
+          <option value="stars">Star 升序</option>
+          <option value="advisories">公开披露数升序</option>
+        </select>
       </Space>
       <Typography.Text type="secondary">{HELP.components}</Typography.Text>
+      <Typography.Text type="secondary" data-testid="advisory-note">{HELP.advisories}</Typography.Text>
       <Table
         rowKey="id"
         loading={loading}
@@ -164,6 +198,9 @@ export default function Components() {
           { title: 'URL 数', dataIndex: 'url_count', width: 100 },
           { title: '资产数', dataIndex: 'asset_count', width: 100 },
           { title: '厂商数', dataIndex: 'vendor_count', width: 100 },
+          { title: 'GitHub 仓库', dataIndex: 'github_repo', width: 160, render: (v) => v || '—' },
+          { title: 'Star', dataIndex: 'stars', width: 80, render: (v) => (v == null ? '—' : v) },
+          { title: '公开披露数', dataIndex: 'advisory_count', width: 120, render: (v) => (v == null ? '—' : v) },
           { title: '是否常见', dataIndex: 'is_common', width: 100, render: (v) => (v ? <Tag data-testid="common-tag">常见</Tag> : '') },
         ]}
       />
@@ -173,6 +210,8 @@ export default function Components() {
         {detail && (
           <Space direction="vertical" style={{ width: '100%' }} size="middle">
             <Space wrap>
+              <Input placeholder="owner/repo" value={repoDraft} onChange={(e) => setRepoDraft(e.target.value)} data-testid="github-repo" style={{ width: 240 }} />
+              <Button type="primary" data-testid="save-repo" onClick={saveRepo}>保存仓库</Button>
               <Button data-testid="copy-comp-subdomain" icon={<CopyOutlined />} onClick={() => copyComp('subdomain')}>复制本组件资产主机名</Button>
               <Button data-testid="copy-comp-url" icon={<CopyOutlined />} onClick={() => copyComp('url')}>复制 URL</Button>
               <select data-testid="comp-vendor" value={vendor || ''} onChange={(e) => {
@@ -184,6 +223,7 @@ export default function Components() {
                 {vendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
               </select>
             </Space>
+            {detail.enrich_error && <Typography.Text type="danger" data-testid="enrich-error">富集失败：{detail.enrich_error}</Typography.Text>}
             <Typography.Text type="secondary">复制覆盖当前筛选下的全部结果（非仅本页），一行一个、去重；HTTP 下自动回退，失败可手动复制。</Typography.Text>
             <Table
               rowKey="id"

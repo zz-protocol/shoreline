@@ -266,3 +266,12 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 - 后续 HTTP 扫描更新 `urls.tech` 时同步维护关联。
 
 岸线只做识别、聚合、筛选和下钻，不内置代码审计、不按版本自动匹配 CVE。
+
+
+## 组件富集（T44）
+
+用户可为组件填写 `github_repo`（格式 `owner/repo`，非法请求 400）。后台异步向 GitHub 公开接口拉取 `stars`、向 OSV 公开接口按仓库 purl（`pkg:github/owner/repo`）拉取公开公告并去重写入 `advisory_count`，结果缓存在组件行上。可选环境变量 `GITHUB_TOKEN`（提高 GitHub 限额；未配置也可访问公开接口）。任一侧失败则该组件标记 `enrich_error`，**不挡住列表**。列表可用 `max_stars` / `max_advisories` 上限筛选，按 `stars` 或 `advisories` 升序（空值在前），或筛 `missing_repo=true` 看未关联仓库的组件。公开披露数仅供筛选，0 条不代表安全。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| GITHUB_TOKEN | 空 | 可选。有值时 GitHub 请求带 `Authorization: Bearer`；为空仍访问公开接口，失败则该组件富集标失败 |
