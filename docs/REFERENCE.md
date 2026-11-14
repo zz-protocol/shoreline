@@ -298,7 +298,7 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 
 ## 组件分类降噪（T47）
 
-`components.categories` 存 Wappalyzer 分类名（可空）。新的 http 扫描用 `FingerprintWithInfo` 把分类随组件写入。升级或启动时按组件名查本地指纹库回填历史分类，不重扫、不访问外网；查不到的留空。
+`components.categories` 存 Wappalyzer 分类名（可空）。新的 http 扫描用 `FingerprintWithInfo` 把分类随组件写入。升级或启动时按组件名查本地指纹库回填历史分类，不重扫、不访问外网；查不到的留空。写入或回填时已有非空分类一律保留，仅当已有分类为空时才用指纹库分类补上。
 
 `GET /api/components` 与 MCP `search_components` 默认 `include_all_categories=false`：仅当一个组件的**全部**分类都落在低价值集合时才隐藏（JavaScript libraries、JavaScript frameworks、UI frameworks、Font scripts、Analytics、Tag managers、Advertising、CDN、PaaS、IaaS、Cookie compliance、CAPTCHAs、WAF、Rich text editors、Maps、Documentation、Static site generator）。分类为空，或含任一非该集合的分类（如 Web servers、Web frameworks，或未列出的 Security 等）仍显示。`include_all_categories=true` 展开全部；`category` 多值按分类名并集精筛（指定后不再套用默认隐藏）。返回项含 `categories`。不删除已识别组件。
 
