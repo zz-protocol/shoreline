@@ -301,3 +301,8 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 `components.categories` 存 Wappalyzer 分类名（可空）。新的 http 扫描用 `FingerprintWithInfo` 把分类随组件写入。升级或启动时按组件名查本地指纹库回填历史分类，不重扫、不访问外网；查不到的留空。
 
 `GET /api/components` 与 MCP `search_components` 默认 `include_all_categories=false`：仅当一个组件的**全部**分类都落在低价值集合时才隐藏（JavaScript libraries、JavaScript frameworks、UI frameworks、Font scripts、Analytics、Tag managers、Advertising、CDN、PaaS、IaaS、Cookie compliance、CAPTCHAs、WAF、Rich text editors、Maps、Documentation、Static site generator）。分类为空，或含任一非该集合的分类（如 Web servers、Web frameworks，或未列出的 Security 等）仍显示。`include_all_categories=true` 展开全部；`category` 多值按分类名并集精筛（指定后不再套用默认隐藏）。返回项含 `categories`。不删除已识别组件。
+
+
+## 组件列表整列复制（T48）
+
+组件列表「复制本列」复制**当前筛选条件下的全部匹配组件名**（非仅本页），一行一个、去重、按名称排序。口径与 `GET /api/components` 相同（关键字、常见排除、泛解析/客户托管/失活、冷门分上限、分类隐藏与 `category` 精筛等）。`GET /api/components/values` 返回 `{field, items, count, truncated}`，`field` 为 `name`（可省略）；上限与资产页相同（100000），超出则截断并 `truncated=true`。HTTP 下自动回退 textarea，失败弹出手动复制框。下钻详情的 `GET /api/components/{id}/values` 不变。
