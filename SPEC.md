@@ -266,3 +266,59 @@
 后端 Go，前端 React + Vite + Ant Design；PostgreSQL 持久化，Valkey + Asynq 做任务队列，被动 / DNS / HTTP 分类限速，大根域按片扫描、重启只重跑未完成分片。列表在 10 万级模拟子域下单次查询低于 1 秒。单机 Docker Compose 即可启动，对外提供 REST（OpenAPI）和 MCP。
 
 非目标：不改功能代码；不部署；不改三张演示图位。
+
+## 第七轮需求（11-14 用户）：开源组件库存与冷门筛选
+
+目的：从已有资产里聚合开源组件，方便筛选「出现多次、公开审计和 CVE 较少」的冷门组件，用户自行做代码审计后再反打对应资产。岸线只做识别、聚合、筛选和下钻，不在产品里做代码审计或攻击。
+
+用户确认分层方案，按任务顺序交付；T43 完成后即可使用，不必等后续任务。开发与验收不部署、不对真实厂商扫描、不写生产地址、不保存 IP。
+
+### 非目标
+- 不内置代码审计、漏洞扫描、目录爆破或任何攻击行为。
+- 不根据版本自动匹配 CVE 并当成「已确认漏洞」（版本识别不准，噪音大）。
+- 不把完整响应体长期入库；不保存 IP。
+- 不在未配置时强制调用 LLM 或 GitHub。
+- 第一版不改 README 宣传结构（文档入口可在 REFERENCE 补一节，非阻塞）。
+
+### 数据模型
+- `components`：规范化名称（大小写不敏感、唯一）、可选 `github_repo`（`owner/repo`）、`stars`、`advisory_count`（CVE/GHSA 一类公开公告的去重计数，来源可先用 OSV 公开接口）、`is_common`（是否常见排除）、`source`（见识别来源）、`confirmed`（人工确认，LLM 候选默认为 false）、时间戳。
+- `url_components`：url_id + component_id 唯一；保存证据摘要（如 header 值、标题片段、favicon hash、规则名），不存全文。
+- 名称规范化：从 `urls.tech` 拆出组件名；若 wappalyzer 带版本，名称与版本分开，版本只作展示字段，不参与唯一键、不自动对漏洞库。
+- 默认统计口径与资产列表一致：排除泛解析与客户托管；可切换「含泛解析 / 含客户托管」。默认只统计仍存活的 URL（有存活 HTTP 记录）；可切换含失活。
+- 聚合字段（查询时计算或物化均可，但必须一致）：`url_count`、`asset_count`、`vendor_count`。
+- 迁移必须可在已有库上执行；T43 升级后从现有 `urls.tech` **回填**，不要求重跑扫描就能看到组件库存。
+
+### 常见排除
+- 内置一份可编辑的常见组件名单（启动时补种；可停用或删除，删除后升级不自动加回；可新增）。用于默认从「待审冷门」视图里拿掉人人都在看的通用栈。
+- 至少包括：Nginx、Apache、IIS、OpenResty、Cloudflare、Akamai、jQuery、Bootstrap、React、Vue.js、Angular、Font Awesome、PHP、OpenSSL、Google Analytics / Tag Manager、Webpack、核心 CDN 标识。具体拼写与 wappalyzer 名称对齐，测试锁定。
+- 列表默认 `exclude_common=true`；用户可关闭或管理名单。
+
+### T43 组件库存（先做，可独立验收）
+- Web 新增导航「组件」（放在「资产」之后），页面全宽。
+- 列表列：组件名、来源、URL 数、资产数、厂商数、是否常见；默认按厂商数、再按资产数降序，并排除常见。
+- 筛选：关键字、最小资产数、最小厂商数、排除常见（默认开）、含泛解析/客户托管/失活。
+- 点进组件可看到关联资产与 URL（分页），支持按厂商筛选；提供「复制本组件资产主机名」和「复制 URL」，规则与资产页相同（当前筛选全量、去重、HTTP 下可回退）。
+- REST：`GET /api/components`（筛选 + 分页 cursor）、`GET /api/components/{id}`、`GET /api/components/{id}/assets`（或等价嵌套）、`GET /api/components/{id}/values`（复制用）。openapi 同步。认证同现有 API。
+- MCP：`search_components`、`list_component_assets`，口径与 REST 一致。
+- 后续 HTTP 扫描更新 `urls.tech` 时同步维护关联，不丢回填结果。
+- 验收：用测试数据（至少 3 个厂商、含常见 Nginx 和两个非常见组件名，部分标记 wildcard/customer_hosted/失活）验证默认统计不含后三类、排除常见后列表只剩非常见、计数与下钻一致、复制内容与筛选一致；迁移在已有 `urls.tech` 上幂等回填；无真实网络。
+
+### T44 冷门分（筛选核心）
+- 用户可给组件填写或修改 `github_repo`（格式 `owner/repo`，非法 400）。
+- 配置可选 `GITHUB_TOKEN`（提高限额；未配置也可访问 GitHub 公开接口，失败则该组件富集标失败、不挡列表）。公开公告计数用 OSV 公开 API，按仓库或已知包名查询，失败同样降级。
+- 后台异步富集 `stars` 与 `advisory_count`，结果缓存；列表可按「最多 star / 最多公告」上限筛选，并可按 star、公告数升序排序（空值排在需补仓或单独可筛「未关联仓库」）。
+- 不把「0 条公告」自动解释为安全；界面注明这是公开披露数量，仅供筛选。
+- 验收：mock GitHub/OSV 下写入 star 与公告数；筛选 max_stars、max_advisories 正确；无 token 时失败不 500；非法 repo 400；不访问真实外网（测试用 httptest）。
+
+### T45 识别面加深（下次 HTTP 扫描生效）
+- 在现有只 GET `/` 的基础上，对已确认要探测的 URL 额外允许：记录 `Server`、`X-Powered-By`、`X-Generator`（及其他明确写入规则的少量响应头）；若页面声明了 favicon 或可请求同主机 `/favicon.ico`，再发 **一次** GET 计算 favicon hash（sha256 即可）。走现有 HTTP 限速，不跟随跳转到站外，不目录爆破，不扫其他路径。
+- 内置少量标题/响应头规则，把命中写成组件来源 `header` 或 `title`（与 wappalyzer 并存）。规则可后续扩展，本任务先做可测试的最小集（例如 Server 值、title 含明确产品名）。
+- 新证据只在新的 http 扫描（含后续复扫）写入；不强制对历史 10 万资产立刻补探测。可提供「对未加深识别的存活 URL 补探测」的可选任务，默认关，避免升级后突然打满外网。
+- 验收：httptest 下 header/title/favicon 规则命中并入库；不额外请求未允许的路径；限速测试仍过；默认不在迁移时对外补扫。
+
+### T46 未识别走 LLM（可选）
+- 环境变量 `LLM_API_URL`、`LLM_API_KEY`、`LLM_MODEL`（OpenAI 兼容 chat completions）。未配置则功能关闭，页面提示未配置，扫描不受影响（与 ICP 相同策略）。
+- 仅对「有 HTTP 响应、且未关联任何非常见组件」的 URL 生成候选；输入只用标题、已记录的少量头、favicon hash、URL 主机与路径，截断后发送，不传完整正文、不传 IP。
+- 模型输出候选组件名、可选 github_repo、理由；入库为 `source=llm`、`confirmed=false`，**不自动进入正式统计**，待用户在页面确认（或忽略）。确认后才计入库存，并可选用其 repo 走 T44 富集。
+- 限速与可关；同一 URL 在证据未变时不重复调用。
+- 验收：mock LLM 下候选可见、未确认不计入默认列表、确认后计入；未配置时完全不发请求；测试不打真实模型。
