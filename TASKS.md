@@ -53,3 +53,11 @@
 | T44 | 冷门分：组件可填 github_repo；异步富集 stars 与 advisory_count（GitHub/OSV，可无 token、失败降级）；按 star/公告上限筛选与升序排序；未关联仓库可筛 | mock 下写入并筛选正确；无 token 失败不 500；非法 repo 400；界面说明公开披露数仅供筛选；测试不访问真实外网 | 完成（e785efd 交付验收：PATCH 校验与清空仓库正确；mock 下 stars/公告写入且失败降级不 500；max_stars/max_advisories/missing_repo 与升序空值在前正确，REST/MCP 一致；界面注明公开披露数仅供筛选；go test -count=2 ok 179.331s，vitest 19 文件 59 测试，build 过；测试未访真实外网） |
 | T45 | 识别面加深：HTTP 探测记录少量响应头，可选一次 favicon GET（走现有限速、不爆破）；标题/响应头规则写入组件；默认不对历史资产立刻补扫 | httptest 命中入库；不请求未允许路径；限速回归过；迁移/升级不自动对外补扫 | 完成（d9a58b7 交付验收：httptest 下头/标题/favicon 命中入库，只请求 / 与 icon；限速回归过；迁移 022 只加列、不补扫不回填；go test -count=2 ok 183.784s，vitest 19 文件 59 测试，build 过；无真实网络） |
 | T46 | 未识别 URL 可选走 OpenAI 兼容 LLM；候选待确认才计入库存；未配置则关闭 | mock 下未确认不计入、确认后计入；未配置零请求；不传正文和 IP；测试不打真实模型 | 完成（b7a08ba 交付验收：未配置零请求且页面提示未配置；mock 下未确认不计入、确认后计入、忽略后消失；不传正文和 IP；go test -count=2 ok 186.835s，vitest 20 文件 61 测试，build 过；测试未打真实模型） |
+
+## 第八轮（用户 11-15）：组件按类别降噪 + 组件列表整列复制
+| 编号 | 任务 | 验收标准 | 状态 |
+|---|---|---|---|
+| T47 | 组件分类识别与默认降噪：components 加 categories；HTTP 扫描用 Wappalyzer 带分类接口写入；迁移/启动按组件名回填历史分类（不重扫）；列表默认隐藏纯前端/托管/统计等低价值类别（全部分类都在隐藏集才隐藏，跨类或空分类仍显示），include_all_categories 展开，category 多值精筛；行显示分类标签；REST/MCP/openapi 同步 | 测试数据下默认只出服务端与跨类、不出纯前端；展开全出；按 category 精筛正确；迁移幂等回填不触外网；计数与下钻随筛选一致；go test -count=2 / vitest / build 过；无真实网络 | 待做 |
+| T48 | 组件列表「复制本列」：复制当前筛选下全部组件名（非仅本页、去重排序），HTTP 下回退，超上限标截断；GET /api/components/values 口径=列表筛选；openapi 同步 | 复制内容与筛选一致、跨页全量、去重；truncated 正确；回退路径有测试；与各筛选叠加正确 | 待做 |
+
+约束：只开发，不部署、不对真实厂商扫描、不写生产地址、不删除已识别组件数据。

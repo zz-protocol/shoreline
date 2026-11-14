@@ -322,3 +322,32 @@
 - 模型输出候选组件名、可选 github_repo、理由；入库为 `source=llm`、`confirmed=false`，**不自动进入正式统计**，待用户在页面确认（或忽略）。确认后才计入库存，并可选用其 repo 走 T44 富集。
 - 限速与可关；同一 URL 在证据未变时不重复调用。
 - 验收：mock LLM 下候选可见、未确认不计入默认列表、确认后计入；未配置时完全不发请求；测试不打真实模型。
+
+## 第八轮需求（11-15 用户）：组件按类别降噪 + 组件列表整列复制
+
+背景：第七轮上线后组件库存里充斥纯前端/托管/统计类噪音（jQuery、Lodash、Vue、UmiJS、CDN、统计分析等），审了也打不到服务端，淹没了真正可审计的服务端组件。Wappalyzer 识别时本就带「分类」，此前只存了名字、丢了分类。本轮把分类用起来做默认降噪，并给组件列表加整列复制。
+
+目的：让「组件」页默认只呈现有代码审计价值的服务端类别，前端噪音默认折叠但不丢；并能像资产页一样一键复制当前筛选下的组件清单。
+
+开发与验收不部署、不对真实厂商扫描、不写生产地址、不保存 IP。
+
+### 非目标
+- 不删除任何已识别组件数据；降噪只是默认隐藏，可一键展开。
+- 不改变「冷门分 / LLM 候选」等既有口径；本轮只加分类维度与复制。
+- 不新增对外网请求；分类来自 Wappalyzer 本地指纹库。
+
+### T47 组件分类识别与默认降噪
+- 数据：`components` 增加 `categories`（文本数组，存 Wappalyzer 分类名，如 `Web servers`、`JavaScript libraries`）。可空（LLM/规则来源可能无分类）。
+- 识别：HTTP 扫描改用 Wappalyzer 带分类的识别接口（`FingerprintWithCats` / `FingerprintWithInfo`），把分类随组件写入/更新。
+- 历史回填：迁移/启动时对已有 `components` 按组件名查 Wappalyzer 本地指纹库补 `categories`，**不要求重扫**；查不到的留空。
+- 默认降噪：列表默认隐藏以下「低价值」分类（与 Wappalyzer 分类名对齐，测试锁定）：JavaScript libraries、JavaScript frameworks、UI frameworks、Font scripts、Analytics、Tag managers、Advertising、CDN、PaaS、IaaS、Cookie compliance、CAPTCHAs、WAF、Rich text editors、Maps、Documentation、Static site generator。其余默认显示（Web servers、Web frameworks、Programming languages、Databases、Message queues、Application server、CMS、Caching、Operating systems 等服务端类别）。
+  - 判定：一个组件只要**全部**分类都落在隐藏集合里才隐藏；只要有一个分类在显示集合（或分类为空）就显示，避免误杀 SSR 框架等跨类组件。
+  - 开关：`include_all_categories=true` 显示全部类别；并可按单个分类筛选（`category=` 多值）。默认 `include_all_categories=false`。
+- 展示：列表每行显示分类标签；筛选区可按分类勾选。与现有「排除常见、泛解析、客户托管、失活」筛选叠加。
+- REST/MCP/openapi 同步：`GET /api/components` 支持 `include_all_categories`、`category`；返回项含 `categories`。MCP `search_components` 同步。
+- 验收：测试数据含纯前端组件（如 jQuery，分类 JavaScript libraries）、服务端组件（如某 Web 框架）、跨类组件（同时含隐藏类与显示类）；默认视图只出服务端与跨类、不出纯前端；`include_all_categories=true` 全出；按 `category` 精筛正确；迁移在已有库上按名字幂等回填分类、不触发外网；计数与下钻口径随筛选一致；go test / vitest / build 通过；无真实网络。
+
+### T48 组件列表整列复制
+- 在「组件」列表（非下钻详情）加「复制本列」，复制当前筛选条件下的**全部**匹配组件名（非仅本页），一行一个、去重、排序，规则与资产页一致（HTTP 下自动回退 textarea，失败弹手动复制框，超上限标注截断）。
+- REST：`GET /api/components/values`（或等价），口径 = 列表筛选（含分类、常见、泛解析、客户托管、失活、关键字等），返回组件名列表与 `truncated`。openapi 同步。
+- 验收：复制内容与当前筛选结果一致、去重排序、跨页全量；超上限 `truncated=true`；HTTP 回退路径有测试；与各筛选叠加正确。
