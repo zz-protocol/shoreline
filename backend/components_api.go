@@ -192,25 +192,21 @@ func componentSortSQL(sort string) (order, cursorPred string) {
 	}
 }
 
-func (a *api) queryComponents(ctx context.Context, f componentFilter) ([]map[string]any, error) {
-	if err := checkPage(f.Limit, f.Cursor); err != nil {
-		return nil, err
-	}
-	if f.Vendor != nil {
-		if err := checkVendor(f.Vendor); err != nil {
-			return nil, err
-		}
-	}
-	having := `HAVING count(DISTINCT s.asset_id) >= $6 AND count(DISTINCT s.vendor_id) >= $7`
+// componentListValuesMax：组件列表整列复制上限，与资产页 assetValuesMax 一致（测试可临时下调）。
+var componentListValuesMax = assetValuesMax
+
+// listFilterSQL：与 GET /api/components 相同的 having + 外层筛选（不含排序与分页）。
+func (f componentFilter) listFilterSQL() (having, filters string, args []any) {
+	having = `HAVING count(DISTINCT s.asset_id) >= $6 AND count(DISTINCT s.vendor_id) >= $7`
 	if f.ExcludeCommon {
 		having += ` AND NOT (` + commonExistsSQL + `)`
 	}
-	args := append(f.countArgs(), f.MinAssets, f.MinVendors)
+	args = append(f.countArgs(), f.MinAssets, f.MinVendors)
 	add := func(v any) string {
 		args = append(args, v)
 		return fmt.Sprintf("$%d", len(args))
 	}
-	filters := `WHERE 1=1`
+	filters = `WHERE 1=1`
 	if f.MaxStars != nil {
 		filters += ` AND c.stars <= ` + add(*f.MaxStars)
 	}
@@ -224,6 +220,23 @@ func (a *api) queryComponents(ctx context.Context, f componentFilter) ([]map[str
 		filters += ` AND c.categories && ` + add(f.Categories) + `::text[]`
 	} else if !f.IncludeAllCategories {
 		filters += ` AND (cardinality(c.categories) = 0 OR NOT (c.categories <@ ` + add(hiddenCategories) + `::text[]))`
+	}
+	return having, filters, args
+}
+
+func (a *api) queryComponents(ctx context.Context, f componentFilter) ([]map[string]any, error) {
+	if err := checkPage(f.Limit, f.Cursor); err != nil {
+		return nil, err
+	}
+	if f.Vendor != nil {
+		if err := checkVendor(f.Vendor); err != nil {
+			return nil, err
+		}
+	}
+	having, filters, args := f.listFilterSQL()
+	add := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
 	}
 	filterArgs := append([]any{}, args...)
 	order, curPred := componentSortSQL(f.Sort)
@@ -266,6 +279,55 @@ func (a *api) listComponents(w http.ResponseWriter, r *http.Request) {
 	}
 	list, next := cutPage(list, limit)
 	writeJSON(w, 200, map[string]any{"items": list, "next_cursor": next})
+}
+
+// listComponentValues：组件列表整列复制（T48）。口径与列表筛选相同，返回去重排序后的全部组件名，上限同资产页。
+func (a *api) listComponentValues(w http.ResponseWriter, r *http.Request) {
+	f, ok := componentFilterFromQuery(w, r, true)
+	if !ok {
+		return
+	}
+	f.Vendor = nil
+	field := r.URL.Query().Get("field")
+	if field != "" && field != "name" {
+		writeErr(w, 400, "field must be name")
+		return
+	}
+	if field == "" {
+		field = "name"
+	}
+	having, filters, args := f.listFilterSQL()
+	args = append(args, componentListValuesMax+1)
+	limP := fmt.Sprintf("$%d", len(args))
+	q := `WITH counted AS (` + componentCountSQL + ` ` + having + `)
+SELECT DISTINCT c.name FROM counted c
+` + filters + `
+ORDER BY 1
+LIMIT ` + limP
+	rows, err := a.db.Query(r.Context(), q, args...)
+	if err != nil {
+		dbErr(w, err)
+		return
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			dbErr(w, err)
+			return
+		}
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		dbErr(w, err)
+		return
+	}
+	truncated := len(out) > componentListValuesMax
+	if truncated {
+		out = out[:componentListValuesMax]
+	}
+	writeJSON(w, 200, map[string]any{"field": field, "items": out, "count": len(out), "truncated": truncated})
 }
 
 func (a *api) getComponent(w http.ResponseWriter, r *http.Request) {

@@ -145,6 +145,22 @@ export default function Components() {
     }
   }
 
+  const copyListNames = async () => {
+    try {
+      const p = filters()
+      p.set('field', 'name')
+      const d = await get(`/api/components/values?${p}`)
+      const text = (d.items || []).join('\n')
+      if (await copyText(text)) {
+        message.success(`已复制 ${d.count} 条${d.truncated ? '（已截断至上限）' : ''}`)
+      } else {
+        setManual({ text, count: d.count, truncated: d.truncated })
+      }
+    } catch (e) {
+      message.error(e.message)
+    }
+  }
+
   const copyComp = async (field) => {
     if (!detail) return
     try {
@@ -233,6 +249,7 @@ export default function Components() {
       </Space>
       <Typography.Text type="secondary">{HELP.components}</Typography.Text>
       <Typography.Text type="secondary" data-testid="advisory-note">{HELP.advisories}</Typography.Text>
+      <Typography.Text type="secondary">「复制本列」覆盖当前筛选条件下的全部组件名（非仅本页），一行一个、去重排序；HTTP 下自动回退，失败可手动复制。</Typography.Text>
       {llmConfigured === false && (
         <Typography.Text type="warning" data-testid="llm-unconfigured">{HELP.llmCandidates}</Typography.Text>
       )}
@@ -271,7 +288,14 @@ export default function Components() {
         onRow={(row) => ({ onClick: () => openDetail(row), style: { cursor: 'pointer' }, 'data-testid': `comp-row-${row.id}` })}
         locale={{ emptyText: <Guide title="没有组件" steps={['先完成 http 扫描，或升级后从已有技术栈回填', '默认会排除常见组件，并隐藏纯前端等低价值类别；可关闭「排除常见」或打开「显示全部类别」']} /> }}
         columns={[
-          { title: '组件名', dataIndex: 'name' },
+          { title: (
+            <Space size={4}>
+              组件名
+              <Button size="small" type="text" icon={<CopyOutlined />} title="复制本列（当前筛选下全部结果）" onClick={(e) => { e.stopPropagation(); copyListNames() }} data-testid="copy-comp-name">
+                复制本列
+              </Button>
+            </Space>
+          ), dataIndex: 'name' },
           { title: '分类', dataIndex: 'categories', render: (cs, row) => (
             <span data-testid={`comp-cats-${row.id}`}>{(cs || []).length ? (cs || []).map((c) => <Tag key={c}>{c}</Tag>) : '—'}</span>
           ) },

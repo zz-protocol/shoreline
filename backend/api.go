@@ -123,6 +123,7 @@ func (a *api) routes() map[string]http.HandlerFunc {
 		"POST /api/mine/heartbeat":                  a.heartbeatMine,
 		"POST /api/mine/complete":                   a.completeMine,
 		"GET /api/components":                       a.listComponents,
+		"GET /api/components/values":                a.listComponentValues,
 		"GET /api/components/{id}":                  a.getComponent,
 		"PATCH /api/components/{id}":                a.updateComponent,
 		"GET /api/components/{id}/assets":           a.listComponentAssets,

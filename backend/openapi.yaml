@@ -507,6 +507,24 @@ paths:
         - {$ref: "#/components/parameters/limit"}
         - {$ref: "#/components/parameters/cursor"}
       responses: {"200": {description: "{items: Component[]（含 categories）, next_cursor}"}, "400": {$ref: "#/components/responses/Error"}}
+  /api/components/values:
+    get:
+      summary: "复制组件列表本列：当前筛选下全部匹配组件名（非仅本页），去重排序；超上限截断"
+      parameters:
+        - {name: q, in: query, schema: {type: string}, description: "组件名子串（不区分大小写）"}
+        - {name: min_assets, in: query, schema: {type: integer, minimum: 0}}
+        - {name: min_vendors, in: query, schema: {type: integer, minimum: 0}}
+        - {name: exclude_common, in: query, schema: {type: boolean, default: true}}
+        - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}
+        - {name: include_customer_hosted, in: query, schema: {type: boolean, default: false}}
+        - {name: include_dead, in: query, schema: {type: boolean, default: false}}
+        - {name: max_stars, in: query, schema: {type: integer, minimum: 0}}
+        - {name: max_advisories, in: query, schema: {type: integer, minimum: 0}}
+        - {name: missing_repo, in: query, schema: {type: boolean, default: false}}
+        - {name: include_all_categories, in: query, schema: {type: boolean, default: false}}
+        - {name: category, in: query, schema: {type: array, items: {type: string}}, style: form, explode: true}
+        - {name: field, in: query, schema: {type: string, enum: [name], default: name}, description: "只支持 name（组件名）"}
+      responses: {"200": {description: "{field, items: string[], count, truncated}"}, "400": {$ref: "#/components/responses/Error"}}
   /api/components/{id}:
     get:
       summary: "组件详情（计数口径与列表的 include_* 相同，不因常见而 404）"
