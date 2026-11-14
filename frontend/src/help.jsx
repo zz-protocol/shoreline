@@ -22,9 +22,10 @@ export const HELP = {
   alive: '探活：DNS 能解析且 http/https 任一有响应（任何状态码）即「存活」，确认后不再复查；死亡拆成「DNS不解析」（nxdomain）与「解析但HTTP不通」（no_http），按 SCHEDULE_ALIVE（默认 24h）定时复查，恢复时播报一条「恢复」并清空死亡原因；未探测或确认为泛解析为「未知」。',
   mine: '挖掘认领：agent 通过 API/MCP 领取存活且非客户托管的资产（claim），挖掘中可 heartbeat 续锁（默认 24h，MINE_CLAIM_TTL_HOURS），完成后 complete 回写 done/deferred/abandoned。冷却默认 30 天（MINE_COOLDOWN_DAYS；0=完成后不再自动进入可领队列）；abandoned 默认不再入队，除非 claim 时带 include_abandoned。',
   level: '资产级：新出现的子域；URL 级：新出现的 http(s) 站点。资产级事件下会挂上它的 URL 事件。',
-  components: '组件库存：从已探测 URL 的技术栈聚合开源组件。默认排除常见通用栈、泛解析、客户托管和失活资产；可下钻到资产与 URL 并整列复制。岸线只做识别与筛选，不内置代码审计或漏洞扫描。',
+  components: '组件库存：从已探测 URL 的技术栈聚合开源组件。默认排除常见通用栈、泛解析、客户托管和失活资产，并隐藏纯前端/托管/统计等低价值类别（全部分类都在隐藏集才隐藏，跨类或空分类仍显示）；可「显示全部类别」或按分类勾选。可下钻到资产与 URL 并整列复制。岸线只做识别与筛选，不内置代码审计或漏洞扫描。',
   commonComponents: '常见组件：内置一份可编辑名单（启动时补种）。默认从列表中排除这些人人都在看的通用栈。可停用或删除；删除后升级不会加回，也可自行新增。',
   llmCandidates: '未识别 URL 可选用 LLM 生成组件候选。未配置 LLM_API_URL 与 LLM_MODEL 时功能关闭，扫描不受影响。候选须确认后才计入正式库存；忽略后证据未变不会再调用模型。',
+  categories: '默认隐藏 JavaScript libraries、CDN、Analytics 等低价值类别；一个组件只要有任一服务端类（或尚未分类）就会显示，避免误杀 SSR 框架。勾选分类即按该分类精筛。',
   advisories: '「公开披露数」是 CVE/GHSA 一类公开公告的去重计数，仅供筛选；0 条不代表该组件安全。',
 }
 

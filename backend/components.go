@@ -105,14 +105,25 @@ func collectTech(tech []string) []parsedTech {
 
 // syncURLComponents：按当前 urls.tech 维护该 URL 的 wappalyzer 关联；不碰其它来源的关联。
 func syncURLComponents(ctx context.Context, q dbq, urlID int64, tech []string) error {
+	return syncURLComponentsWithCats(ctx, q, urlID, tech, nil)
+}
+
+func syncURLComponentsWithCats(ctx context.Context, q dbq, urlID int64, tech []string, cats map[string][]string) error {
 	items := collectTech(tech)
 	keep := make([]int64, 0, len(items))
 	for _, it := range items {
+		got := cats[it.name]
+		if len(got) == 0 {
+			got = categoriesForName(it.name)
+		}
+		got = sortedCats(got)
 		var id int64
-		if err := q.QueryRow(ctx, `INSERT INTO components (name, name_key, source, confirmed)
-			VALUES ($1, $2, 'wappalyzer', true)
-			ON CONFLICT (name_key) DO UPDATE SET updated_at = now()
-			RETURNING id`, it.name, strings.ToLower(it.name)).Scan(&id); err != nil {
+		if err := q.QueryRow(ctx, `INSERT INTO components (name, name_key, source, confirmed, categories)
+			VALUES ($1, $2, 'wappalyzer', true, $3)
+			ON CONFLICT (name_key) DO UPDATE SET
+				updated_at = now(),
+				categories = CASE WHEN cardinality(EXCLUDED.categories) > 0 THEN EXCLUDED.categories ELSE components.categories END
+			RETURNING id`, it.name, strings.ToLower(it.name), got).Scan(&id); err != nil {
 			return err
 		}
 		ev, _ := json.Marshal(map[string]string{"tech": it.raw})

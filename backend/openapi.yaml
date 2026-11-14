@@ -489,7 +489,7 @@ paths:
 
   /api/components:
     get:
-      summary: "组件库存列表（默认排除常见、泛解析、客户托管、失活；按厂商数、再按资产数降序）"
+      summary: "组件库存列表（默认排除常见、泛解析、客户托管、失活，并隐藏纯前端/托管/统计等低价值类别；按厂商数、再按资产数降序）"
       parameters:
         - {name: q, in: query, schema: {type: string}, description: "组件名子串（不区分大小写）"}
         - {name: min_assets, in: query, schema: {type: integer, minimum: 0}, description: "最小资产数"}
@@ -501,10 +501,12 @@ paths:
         - {name: max_stars, in: query, schema: {type: integer, minimum: 0}, description: "最多 star（上限；仅已有 star 的组件）"}
         - {name: max_advisories, in: query, schema: {type: integer, minimum: 0}, description: "最多公开披露数（上限；仅已有计数的组件）"}
         - {name: missing_repo, in: query, schema: {type: boolean, default: false}, description: "只看未关联 GitHub 仓库的组件"}
+        - {name: include_all_categories, in: query, schema: {type: boolean, default: false}, description: "为 true 时展开全部类别；默认隐藏全部分类都落在低价值集合（JavaScript libraries、CDN、Analytics 等）的组件，空分类或跨类仍显示"}
+        - {name: category, in: query, schema: {type: array, items: {type: string}}, style: form, explode: true, description: "按 Wappalyzer 分类名精筛（多值并集）；指定后不再套用默认类别隐藏"}
         - {name: sort, in: query, schema: {type: string, enum: [stars, advisories]}, description: "stars 或 advisories 升序（空值在前）；省略则按厂商数、资产数降序"}
         - {$ref: "#/components/parameters/limit"}
         - {$ref: "#/components/parameters/cursor"}
-      responses: {"200": {description: "{items: Component[], next_cursor}"}, "400": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: "{items: Component[]（含 categories）, next_cursor}"}, "400": {$ref: "#/components/responses/Error"}}
   /api/components/{id}:
     get:
       summary: "组件详情（计数口径与列表的 include_* 相同，不因常见而 404）"

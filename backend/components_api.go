@@ -14,20 +14,22 @@ import (
 // componentFilter：列表/详情计数/下钻/复制共用的统计口径（T43）。
 // 默认排除泛解析、客户托管、失活（只统计 alive），并排除常见组件（仅列表）。
 type componentFilter struct {
-	Q             string
-	MinAssets     int
-	MinVendors    int
-	ExcludeCommon bool
-	IncludeWild   bool
-	IncludeHosted bool
-	IncludeDead   bool
-	Vendor        *int64
-	MaxStars      *int
-	MaxAdvisories *int
-	MissingRepo   bool
-	Sort          string // "", "stars", "advisories"
-	Limit         int
-	Cursor        int64
+	Q                    string
+	MinAssets            int
+	MinVendors           int
+	ExcludeCommon        bool
+	IncludeWild          bool
+	IncludeHosted        bool
+	IncludeDead          bool
+	Vendor               *int64
+	MaxStars             *int
+	MaxAdvisories        *int
+	MissingRepo          bool
+	Sort                 string // "", "stars", "advisories"
+	IncludeAllCategories bool
+	Categories           []string
+	Limit                int
+	Cursor               int64
 }
 
 // scopedURLSQL：符合统计口径的 url_components 行（不含常见排除与关键字，那些在聚合后过滤）。
@@ -104,6 +106,22 @@ func componentFilterFromQuery(w http.ResponseWriter, r *http.Request, withListEx
 			writeErr(w, 400, "sort must be stars, advisories, or empty")
 			return componentFilter{}, false
 		}
+		all, okAll := boolParam(w, r, "include_all_categories")
+		if !okAll {
+			return componentFilter{}, false
+		}
+		f.IncludeAllCategories = all != nil && *all
+		for _, v := range r.URL.Query()["category"] {
+			v = strings.TrimSpace(v)
+			if v == "" {
+				continue
+			}
+			if strings.ContainsRune(v, 0) {
+				writeErr(w, 400, "NUL character not allowed")
+				return componentFilter{}, false
+			}
+			f.Categories = append(f.Categories, v)
+		}
 	}
 	return f, true
 }
@@ -134,7 +152,7 @@ func optIntQuery(w http.ResponseWriter, r *http.Request, name string) (*int, boo
 	return &n, true
 }
 
-const componentCountSQL = `SELECT c.id, c.name, c.source, c.confirmed, c.github_repo, c.stars, c.advisory_count, c.enrich_error, c.enriched_at, ` + commonExistsSQL + ` AS is_common,
+const componentCountSQL = `SELECT c.id, c.name, c.source, c.confirmed, c.github_repo, c.stars, c.advisory_count, c.enrich_error, c.enriched_at, c.categories, ` + commonExistsSQL + ` AS is_common,
 	count(DISTINCT s.url_id)::bigint AS url_count,
 	count(DISTINCT s.asset_id)::bigint AS asset_count,
 	count(DISTINCT s.vendor_id)::bigint AS vendor_count
@@ -202,6 +220,11 @@ func (a *api) queryComponents(ctx context.Context, f componentFilter) ([]map[str
 	if f.MissingRepo {
 		filters += ` AND (c.github_repo IS NULL OR c.github_repo = '')`
 	}
+	if len(f.Categories) > 0 {
+		filters += ` AND c.categories && ` + add(f.Categories) + `::text[]`
+	} else if !f.IncludeAllCategories {
+		filters += ` AND (cardinality(c.categories) = 0 OR NOT (c.categories <@ ` + add(hiddenCategories) + `::text[]))`
+	}
 	filterArgs := append([]any{}, args...)
 	order, curPred := componentSortSQL(f.Sort)
 	curP := add(f.Cursor)
@@ -256,7 +279,7 @@ func (a *api) getComponent(w http.ResponseWriter, r *http.Request) {
 	}
 	f.Vendor = nil
 	q := `WITH counted AS (` + componentCountSQL + `)
-SELECT c.id, c.name, c.source, c.confirmed, c.github_repo, c.stars, c.advisory_count, c.enrich_error, c.enriched_at,
+SELECT c.id, c.name, c.source, c.confirmed, c.github_repo, c.stars, c.advisory_count, c.enrich_error, c.enriched_at, c.categories,
 	COALESCE(x.is_common, ` + commonExistsSQL + `) AS is_common,
 	COALESCE(x.url_count, 0) AS url_count,
 	COALESCE(x.asset_count, 0) AS asset_count,

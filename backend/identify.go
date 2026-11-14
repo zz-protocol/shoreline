@@ -107,10 +107,12 @@ func syncIdentifyComponents(ctx context.Context, q dbq, urlID int64, hits []iden
 	keep := make([]int64, 0, len(hits))
 	for _, hit := range hits {
 		var id int64
-		if err := q.QueryRow(ctx, `INSERT INTO components (name, name_key, source, confirmed)
-			VALUES ($1, $2, $3, true)
-			ON CONFLICT (name_key) DO UPDATE SET updated_at = now()
-			RETURNING id`, hit.Name, strings.ToLower(hit.Name), hit.Source).Scan(&id); err != nil {
+		if err := q.QueryRow(ctx, `INSERT INTO components (name, name_key, source, confirmed, categories)
+			VALUES ($1, $2, $3, true, $4)
+			ON CONFLICT (name_key) DO UPDATE SET
+				updated_at = now(),
+				categories = CASE WHEN cardinality(EXCLUDED.categories) > 0 THEN EXCLUDED.categories ELSE components.categories END
+			RETURNING id`, hit.Name, strings.ToLower(hit.Name), hit.Source, sortedCats(categoriesForName(hit.Name))).Scan(&id); err != nil {
 			return err
 		}
 		ev, _ := json.Marshal(map[string]string{"rule": hit.Name, "header": hit.Header, "value": clipHeader(hit.Value)})

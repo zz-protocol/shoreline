@@ -47,5 +47,8 @@ func migrate(ctx context.Context, conn *pgx.Conn) error {
 			return err
 		}
 	}
+	if _, err := backfillComponentCategories(ctx, conn); err != nil {
+		return err
+	}
 	return nil
 }

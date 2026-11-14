@@ -5,6 +5,20 @@ import { del, get, patch, post } from '../api'
 import { Guide, HELP, Hint } from '../help'
 import { copyText } from '../clipboard'
 
+
+// 与 SPEC 第八轮、后端 hiddenCategories / 显示示例对齐（测试锁定）。
+export const HIDDEN_CATEGORIES = [
+  'JavaScript libraries', 'JavaScript frameworks', 'UI frameworks', 'Font scripts',
+  'Analytics', 'Tag managers', 'Advertising', 'CDN', 'PaaS', 'IaaS',
+  'Cookie compliance', 'CAPTCHAs', 'WAF', 'Rich text editors', 'Maps',
+  'Documentation', 'Static site generator',
+]
+export const SHOWN_CATEGORY_EXAMPLES = [
+  'Web servers', 'Web frameworks', 'Programming languages', 'Databases',
+  'Message queues', 'Application server', 'CMS', 'Caching', 'Operating systems',
+]
+export const CATEGORY_FILTERS = [...SHOWN_CATEGORY_EXAMPLES, ...HIDDEN_CATEGORIES]
+
 export default function Components() {
   const { message } = App.useApp()
   const [q, setQ] = useState('')
@@ -34,6 +48,8 @@ export default function Components() {
   const [repoDraft, setRepoDraft] = useState('')
   const [llmConfigured, setLlmConfigured] = useState(null)
   const [candidates, setCandidates] = useState([])
+  const [includeAllCategories, setIncludeAllCategories] = useState(false)
+  const [selectedCats, setSelectedCats] = useState([])
 
   useEffect(() => {
     get('/api/vendors').then((d) => setVendors(d.items || [])).catch((e) => message.error(e.message))
@@ -54,6 +70,8 @@ export default function Components() {
     if (maxAdvisories != null && maxAdvisories !== '') p.set('max_advisories', String(maxAdvisories))
     if (missingRepo) p.set('missing_repo', 'true')
     if (sort) p.set('sort', sort)
+    p.set('include_all_categories', String(!!includeAllCategories))
+    selectedCats.forEach((c) => p.append('category', c))
     return p
   }
 
@@ -82,7 +100,7 @@ export default function Components() {
       setLoading(false)
     }
   }
-  useEffect(() => { load() }, [excludeCommon, wild, hosted, dead, minAssets, minVendors, maxStars, maxAdvisories, missingRepo, sort])
+  useEffect(() => { load() }, [excludeCommon, wild, hosted, dead, minAssets, minVendors, maxStars, maxAdvisories, missingRepo, sort, includeAllCategories, selectedCats])
 
   const loadAssets = async (comp, next, vendorId = vendor) => {
     setAssetLoading(true)
@@ -195,6 +213,23 @@ export default function Components() {
           <option value="stars">Star 升序</option>
           <option value="advisories">公开披露数升序</option>
         </select>
+        <span>
+          <Hint text={HELP.categories}>显示全部类别</Hint> <Switch checked={includeAllCategories} onChange={setIncludeAllCategories} data-testid="include-all-categories" />
+        </span>
+      </Space>
+      <Space wrap data-testid="category-filters">
+        {CATEGORY_FILTERS.map((name) => (
+          <label key={name} style={{ marginRight: 8 }}>
+            <input
+              type="checkbox"
+              checked={selectedCats.includes(name)}
+              data-testid={`category-${name}`}
+              onChange={(e) => {
+                setSelectedCats(e.target.checked ? [...selectedCats, name] : selectedCats.filter((x) => x !== name))
+              }}
+            /> {name}
+          </label>
+        ))}
       </Space>
       <Typography.Text type="secondary">{HELP.components}</Typography.Text>
       <Typography.Text type="secondary" data-testid="advisory-note">{HELP.advisories}</Typography.Text>
@@ -234,9 +269,12 @@ export default function Components() {
         dataSource={items}
         pagination={false}
         onRow={(row) => ({ onClick: () => openDetail(row), style: { cursor: 'pointer' }, 'data-testid': `comp-row-${row.id}` })}
-        locale={{ emptyText: <Guide title="没有组件" steps={['先完成 http 扫描，或升级后从已有技术栈回填', '默认会排除常见组件，可关闭「排除常见」查看全部']} /> }}
+        locale={{ emptyText: <Guide title="没有组件" steps={['先完成 http 扫描，或升级后从已有技术栈回填', '默认会排除常见组件，并隐藏纯前端等低价值类别；可关闭「排除常见」或打开「显示全部类别」']} /> }}
         columns={[
           { title: '组件名', dataIndex: 'name' },
+          { title: '分类', dataIndex: 'categories', render: (cs, row) => (
+            <span data-testid={`comp-cats-${row.id}`}>{(cs || []).length ? (cs || []).map((c) => <Tag key={c}>{c}</Tag>) : '—'}</span>
+          ) },
           { title: '来源', dataIndex: 'source', width: 140 },
           { title: 'URL 数', dataIndex: 'url_count', width: 100 },
           { title: '资产数', dataIndex: 'asset_count', width: 100 },

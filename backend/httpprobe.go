@@ -134,9 +134,10 @@ type probeResult struct {
 	Title        string
 	Redirect     string
 	Tech         []string
-	Fingerprint  string            // sha256(status|title|tech)
-	Headers      map[string]string // T45：少量响应头（Server / X-Powered-By / X-Generator 等）
-	FaviconHash  string            // T45：同主机 favicon 的 sha256，未取到则为空
+	Fingerprint  string              // sha256(status|title|tech)
+	Headers      map[string]string   // T45：少量响应头（Server / X-Powered-By / X-Generator 等）
+	FaviconHash  string              // T45：同主机 favicon 的 sha256，未取到则为空
+	TechCats     map[string][]string // T47：FingerprintWithInfo 得到的分类名（按组件名）
 	body         []byte
 }
 
@@ -168,8 +169,13 @@ func (p *prober) getWith(ctx context.Context, lim *rate.Limiter, scheme, host st
 		r.Title = strings.Join(strings.Fields(html.UnescapeString(string(m[1]))), " ")
 	}
 	if w, err := wappalyzerClient(); err == nil {
-		for t := range w.Fingerprint(resp.Header, body) {
+		r.TechCats = map[string][]string{}
+		for t, info := range w.FingerprintWithInfo(resp.Header, body) {
 			r.Tech = append(r.Tech, t)
+			name, _ := parseTech(t)
+			if cats := sortedCats(info.Categories); len(cats) > 0 && name != "" {
+				r.TechCats[name] = cats
+			}
 		}
 		sort.Strings(r.Tech)
 	}
@@ -703,7 +709,7 @@ func (p *prober) storeURL(ctx context.Context, d *pgxpool.Pool, assetID int64, r
 				} else if err != nil {
 					return err
 				}
-				if err := syncURLComponents(ctx, tx, urlID, r.Tech); err != nil {
+				if err := syncURLComponentsWithCats(ctx, tx, urlID, r.Tech, r.TechCats); err != nil {
 					return err
 				}
 				if err := syncIdentifyComponents(ctx, tx, urlID, matchIdentifyRules(r.Title, r.Headers)); err != nil {
@@ -718,7 +724,7 @@ func (p *prober) storeURL(ctx context.Context, d *pgxpool.Pool, assetID int64, r
 				urlID, assetID, r.Status, r.Title, r.Fingerprint, nullIfEmpty(r.Redirect), nonNil(r.Tech), headerJSON(r.Headers), nullIfEmpty(r.FaviconHash)); err != nil {
 				return err
 			}
-			if err := syncURLComponents(ctx, tx, urlID, r.Tech); err != nil {
+			if err := syncURLComponentsWithCats(ctx, tx, urlID, r.Tech, r.TechCats); err != nil {
 				return err
 			}
 			if err := syncIdentifyComponents(ctx, tx, urlID, matchIdentifyRules(r.Title, r.Headers)); err != nil {
