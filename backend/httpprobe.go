@@ -99,6 +99,9 @@ type prober struct {
 	client  *http.Client
 	limiter *rate.Limiter
 	verify  *rate.Limiter // 泛解析复核专用
+	llm     llmConfig     // T46：未配置则不调用
+	llmHTTP *http.Client  // 独立 client，不用探测 Dial，避免把模型请求打到目标站
+	llmLim  *rate.Limiter
 }
 
 var wappalyzerClient = sync.OnceValues(wappalyzer.New)
@@ -552,7 +555,9 @@ func httpHandler(d *pgxpool.Pool, p *prober) ScanHandler {
 					storeReason = fmt.Sprintf("%s://%s: %v", r.Scheme, r.Host, err)
 				}
 				mu.Unlock()
+				return
 			}
+			p.suggestLLMLogged(ctx, d, scanID, r)
 		}
 		// 第一阶段：并发取回全部页面（非候选直接入库）；候选页面先收集，供第二阶段判断同父域候选是否稳定。
 		sem := make(chan struct{}, p.cfg.Concurrency)

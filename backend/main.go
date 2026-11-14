@@ -42,6 +42,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	lcfg, err := llmConfigFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
 	dcfg, err := dnsConfigFromEnv()
 	if err != nil {
 		log.Fatal(err)
@@ -58,7 +62,7 @@ func main() {
 	handlers := map[string]ScanHandler{
 		"passive": passiveHandlerFromConfig(pool, pcfg),
 		"dns":     dnsHandler(pool, newResolver(dcfg)),
-		"http":    httpHandler(pool, newProber(hcfg)),
+		"http":    httpHandler(pool, newProber(hcfg).withLLM(lcfg)),
 		"active":  activeHandler(pool, newActiveScanner(acfg, dcfg)),
 		"expand":  expandHandler(pool, icp, dbSubsidiaries{pool}),
 	}
@@ -114,7 +118,7 @@ func main() {
 		log.Printf("API_BOOTSTRAP_TOKEN not set: only tokens in api_tokens are accepted")
 	}
 	asynqClient := asynq.NewClient(asynq.RedisClientOpt{Addr: os.Getenv("REDIS_ADDR")})
-	a := &api{db: pool, client: asynqClient, cfg: apiCfg, bg: context.Background()}
+	a := &api{db: pool, client: asynqClient, cfg: apiCfg, bg: context.Background(), llm: lcfg}
 	if scfg.Passive > 0 || scfg.Active > 0 || scfg.Alive > 0 {
 		go newScheduler(pool, asynqClient, scfg, cfg.MaxRetry).Run(context.Background())
 		log.Printf("scheduler: passive=%v active=%v alive=%v", scfg.Passive, scfg.Active, scfg.Alive)

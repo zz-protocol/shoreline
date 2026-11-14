@@ -582,6 +582,20 @@ paths:
       parameters: [{$ref: "#/components/parameters/id"}]
       responses: {"204": {description: "deleted"}, "404": {$ref: "#/components/responses/Error"}}
 
+  /api/component-candidates:
+    get:
+      summary: "LLM 待确认候选（未配置时 configured=false 且 items 为空；未确认不计入正式库存）"
+      responses: {"200": {description: "{configured, items: [{id, name, source, github_repo, reason, url_count}]}"}}
+  /api/components/{id}/confirm:
+    post:
+      summary: "确认 LLM 候选，计入正式库存；若候选带有合法 github_repo 则写入并走 T44 富集"
+      parameters: [{$ref: "#/components/parameters/id"}]
+      responses: {"200": {description: "Component"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/components/{id}/ignore:
+    post:
+      summary: "忽略该 LLM 候选（不再出现在待确认列表；证据未变时不重复调用模型）"
+      parameters: [{$ref: "#/components/parameters/id"}]
+      responses: {"200": {description: "{ok}"}, "404": {$ref: "#/components/responses/Error"}}
   /mcp:
     post:
       summary: "MCP server（Streamable HTTP，无状态，JSON 响应；JSON-RPC 2.0）"

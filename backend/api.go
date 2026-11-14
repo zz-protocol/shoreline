@@ -74,6 +74,7 @@ type api struct {
 	githubBase string
 	osvBase    string
 	enrichSync bool
+	llm        llmConfig // T46：未配置则页面提示关闭
 }
 
 // apiRoutes 是全部受保护路由；openapi.yaml 必须与之一致（测试校验）。
@@ -130,6 +131,9 @@ func (a *api) routes() map[string]http.HandlerFunc {
 		"POST /api/common-components":               a.createCommonComponent,
 		"PATCH /api/common-components/{id}":         a.updateCommonComponent,
 		"DELETE /api/common-components/{id}":        a.deleteCommonComponent,
+		"GET /api/component-candidates":             a.listComponentCandidates,
+		"POST /api/components/{id}/confirm":         a.confirmComponent,
+		"POST /api/components/{id}/ignore":          a.ignoreComponent,
 	}
 }
 

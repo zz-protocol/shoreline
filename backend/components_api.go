@@ -597,3 +597,85 @@ func (a *api) updateComponent(w http.ResponseWriter, r *http.Request) {
 	}
 	a.getComponent(w, r)
 }
+
+func (a *api) listComponentCandidates(w http.ResponseWriter, r *http.Request) {
+	if !a.llm.enabled() {
+		writeJSON(w, 200, map[string]any{"configured": false, "items": []any{}})
+		return
+	}
+	list, err := rowsJSON(a.db.Query(r.Context(), `SELECT c.id, c.name, c.source, c.confirmed,
+		COALESCE(c.github_repo, MAX(uc.evidence->>'github_repo')) AS github_repo,
+		MAX(uc.evidence->>'reason') AS reason,
+		count(DISTINCT uc.url_id)::bigint AS url_count
+		FROM components c
+		JOIN url_components uc ON uc.component_id = c.id AND uc.source = 'llm' AND uc.ignored_at IS NULL
+		WHERE NOT c.confirmed
+		GROUP BY c.id
+		ORDER BY c.id DESC`))
+	if err != nil {
+		dbErr(w, err)
+		return
+	}
+	if list == nil {
+		list = []map[string]any{}
+	}
+	writeJSON(w, 200, map[string]any{"configured": true, "items": list})
+}
+
+func (a *api) confirmComponent(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	var evRepo string
+	err := a.db.QueryRow(r.Context(), `SELECT COALESCE(c.github_repo, (SELECT uc.evidence->>'github_repo' FROM url_components uc
+			WHERE uc.component_id = c.id AND uc.source = 'llm' AND uc.ignored_at IS NULL
+			AND COALESCE(uc.evidence->>'github_repo','') <> '' LIMIT 1), '')
+		FROM components c WHERE c.id = $1`, id).Scan(&evRepo)
+	if err != nil {
+		dbErr(w, err)
+		return
+	}
+	repo, err := parseGitHubRepo(evRepo)
+	if err != nil {
+		repo = ""
+	}
+	var repoArg any
+	if repo != "" {
+		repoArg = repo
+	}
+	if _, err := a.db.Exec(r.Context(), `UPDATE components SET confirmed = true, github_repo = COALESCE($2, github_repo), updated_at = now() WHERE id = $1`, id, repoArg); err != nil {
+		dbErr(w, err)
+		return
+	}
+	if _, err := a.db.Exec(r.Context(), `UPDATE url_components SET ignored_at = NULL WHERE component_id = $1 AND source = 'llm'`, id); err != nil {
+		dbErr(w, err)
+		return
+	}
+	if repo != "" {
+		a.scheduleEnrich(id)
+	}
+	a.getComponent(w, r)
+}
+
+func (a *api) ignoreComponent(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	var exists bool
+	if err := a.db.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM components WHERE id = $1)`, id).Scan(&exists); err != nil {
+		dbErr(w, err)
+		return
+	}
+	if !exists {
+		writeErr(w, 404, "not found")
+		return
+	}
+	if _, err := a.db.Exec(r.Context(), `UPDATE url_components SET ignored_at = now()
+		WHERE component_id = $1 AND source = 'llm' AND ignored_at IS NULL`, id); err != nil {
+		dbErr(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}

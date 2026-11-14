@@ -27,6 +27,10 @@ services:
       QUAKE_KEY: ${QUAKE_KEY:-}
       HUNTER_KEY: ${HUNTER_KEY:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      LLM_API_URL: ${LLM_API_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_RPS: ${LLM_RPS:-}
     ports: ["127.0.0.1:8080:8080"]
     depends_on: [postgres, redis]
     restart: unless-stopped

@@ -32,9 +32,12 @@ export default function Components() {
   const [missingRepo, setMissingRepo] = useState(false)
   const [sort, setSort] = useState('')
   const [repoDraft, setRepoDraft] = useState('')
+  const [llmConfigured, setLlmConfigured] = useState(null)
+  const [candidates, setCandidates] = useState([])
 
   useEffect(() => {
     get('/api/vendors').then((d) => setVendors(d.items || [])).catch((e) => message.error(e.message))
+    loadCandidates()
   }, [])
 
   const filters = () => {
@@ -141,6 +144,16 @@ export default function Components() {
     }
   }
 
+  const loadCandidates = async () => {
+    try {
+      const d = await get('/api/component-candidates')
+      setLlmConfigured(!!d.configured)
+      setCandidates(d.items || [])
+    } catch (e) {
+      message.error(e.message)
+    }
+  }
+
   const loadCommon = async () => {
     try {
       const d = await get('/api/common-components')
@@ -185,6 +198,36 @@ export default function Components() {
       </Space>
       <Typography.Text type="secondary">{HELP.components}</Typography.Text>
       <Typography.Text type="secondary" data-testid="advisory-note">{HELP.advisories}</Typography.Text>
+      {llmConfigured === false && (
+        <Typography.Text type="warning" data-testid="llm-unconfigured">{HELP.llmCandidates}</Typography.Text>
+      )}
+      {llmConfigured && candidates.length > 0 && (
+        <div data-testid="llm-candidates">
+          <Typography.Title level={5} style={{ marginTop: 8 }}>待确认候选</Typography.Title>
+          <Table
+            rowKey="id"
+            size="small"
+            pagination={false}
+            dataSource={candidates}
+            columns={[
+              { title: '候选组件', dataIndex: 'name' },
+              { title: '理由', dataIndex: 'reason' },
+              { title: 'GitHub 仓库', dataIndex: 'github_repo', render: (v) => v || '—' },
+              { title: 'URL 数', dataIndex: 'url_count', width: 80 },
+              { title: '', width: 180, render: (_, r) => (
+                <Space>
+                  <Button size="small" type="primary" data-testid={`confirm-cand-${r.id}`} onClick={async () => {
+                    try { await post(`/api/components/${r.id}/confirm`); message.success('已确认'); await loadCandidates(); load() } catch (e) { message.error(e.message) }
+                  }}>确认</Button>
+                  <Button size="small" data-testid={`ignore-cand-${r.id}`} onClick={async () => {
+                    try { await post(`/api/components/${r.id}/ignore`); await loadCandidates(); } catch (e) { message.error(e.message) }
+                  }}>忽略</Button>
+                </Space>
+              ) },
+            ]}
+          />
+        </div>
+      )}
       <Table
         rowKey="id"
         loading={loading}
