@@ -13,11 +13,12 @@ import (
 )
 
 // scheduleConfig：定时调度间隔。被动默认 6h，主动默认 24h；0 表示关闭该类定时。
-// 环境变量 SCHEDULE_PASSIVE / SCHEDULE_ACTIVE，Go duration（如 6h、24h、30m）；非法启动退出。
+// SCHEDULE_SERVICE 默认空/0（禁用，只能手动触发）；配了间隔才走计划。非法启动退出。
 type scheduleConfig struct {
 	Passive time.Duration
 	Active  time.Duration
 	Alive   time.Duration // T21：dead 资产复查（DNS+HTTP）
+	Service time.Duration // T51：端口指纹；默认 0（禁用）
 }
 
 func scheduleConfigFromEnv() (scheduleConfig, error) {
@@ -45,6 +46,9 @@ func scheduleConfigFromEnv() (scheduleConfig, error) {
 		return c, err
 	}
 	if err := parse("SCHEDULE_ALIVE", &c.Alive); err != nil {
+		return c, err
+	}
+	if err := parse("SCHEDULE_SERVICE", &c.Service); err != nil {
 		return c, err
 	}
 	return c, nil
@@ -89,10 +93,11 @@ func (s *scheduler) reloadCh() <-chan struct{} {
 
 func (s *scheduler) Run(ctx context.Context) {
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go func() { defer wg.Done(); s.loop(ctx, "passive") }()
 	go func() { defer wg.Done(); s.loop(ctx, "active") }()
 	go func() { defer wg.Done(); s.loop(ctx, "alive") }()
+	go func() { defer wg.Done(); s.loop(ctx, "service") }()
 	wg.Wait()
 }
 
@@ -104,6 +109,8 @@ func (s *scheduler) loop(ctx context.Context, kind string) {
 			d = s.cfg.Active
 		} else if kind == "alive" {
 			d = s.cfg.Alive
+		} else if kind == "service" {
+			d = s.cfg.Service
 		}
 		s.mu.Unlock()
 		if d <= 0 {
@@ -138,7 +145,7 @@ func (s *scheduler) tick(ctx context.Context, kind string) (int, error) {
 	if kind == "alive" {
 		return s.tickAlive(ctx)
 	}
-	if kind != "passive" && kind != "active" {
+	if kind != "passive" && kind != "active" && kind != "service" {
 		return 0, fmt.Errorf("schedule kind %q not supported", kind)
 	}
 	q := `SELECT r.id FROM root_domains r`
@@ -172,7 +179,15 @@ func (s *scheduler) tick(ctx context.Context, kind string) (int, error) {
 		if busy > 0 {
 			continue
 		}
-		if _, err := TriggerScan(ctx, s.db, s.client, rootID, kind, s.maxRetry); err != nil {
+		if kind == "service" {
+			hosts, err := listRootServiceHosts(ctx, s.db, rootID)
+			if err != nil {
+				return n, err
+			}
+			if _, err := enqueueScan(ctx, s.db, s.client, rootID, "service", hosts, 0, s.maxRetry); err != nil {
+				return n, err
+			}
+		} else if _, err := TriggerScan(ctx, s.db, s.client, rootID, kind, s.maxRetry); err != nil {
 			return n, err
 		}
 		n++
