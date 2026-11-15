@@ -177,9 +177,30 @@ function Invoke-T53 {
 
 function Invoke-T54 {
     Write-Host "`nT54 研究价值评分" -ForegroundColor Cyan
-    Invoke-Check "T54" "实现存在" {
-        throw "T54 尚未实现（TASKS 状态：待做）"
+    Invoke-Check "T54" "实现文件存在" {
+        Assert-Exists (Join-Path $backend "research_score.go") "research_score.go"
+        Assert-Exists (Join-Path $backend "migrations\031_research_score.sql") "031 迁移"
+        Assert-Exists (Join-Path $backend "t54_research_score_test.go") "T54 测试"
     }
+    Invoke-Check "T54" "测试通过（T54）" { Invoke-GoTests "T54" }
+    Invoke-Check "T54" "四维等权与 NULL 口径" {
+        Assert-Text (Join-Path $backend "research_score.go") "0\.25" "缺少等权权重"
+        Assert-Text (Join-Path $backend "t54_research_score_test.go") "(?i)null" "缺少 NULL 用例"
+    }
+    Invoke-Check "T54" "API 支持研究价值排序" {
+        Assert-Text (Join-Path $backend "openapi.yaml") "research" "OpenAPI 未暴露研究价值排序"
+    }
+    Invoke-Check "T54" "前端用例与列" {
+        Assert-Exists (Join-Path $frontend "src\t54.test.jsx") "T54 前端测试"
+        Assert-Text (Join-Path $frontend "src\pages\Components.jsx") "research" "组件页未加研究价值列"
+    }
+    Invoke-Check "T54" "服务规则声明 repo" {
+        Assert-Text (Join-Path $backend "fingerprints\services.yaml") "repo:" "YAML 未声明服务官方 repo"
+    }
+    Invoke-Check "T54" "REFERENCE 记录公式与权重" {
+        Assert-Text (Join-Path $repo "docs\REFERENCE.md") "0\.25" "REFERENCE 未记录权重"
+    }
+    Invoke-Check "T54" "前端测试通过" { Invoke-FrontendTests }
 }
 
 switch ($Task) {
