@@ -66,6 +66,10 @@ describe('T49 扫描授权范围', () => {
     }
     expect(validPat('1.example.test')).toBe(true)
     expect(validPat('app.example.test')).toBe(true)
+    // F2：末级不是纯数字的 inet_aton，只能靠 isInetAton 拦住
+    for (const p of ['1.0x7f', '0x7f.1', '0x7f000001']) {
+      expect(validPat(p), p).toBe(false)
+    }
   })
 
   it('前端拦住 127.1，不发起添加请求', async () => {

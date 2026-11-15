@@ -386,3 +386,34 @@ func TestT49VendorInScopeDoesNotBypassServiceScope(t *testing.T) {
 		t.Fatalf("reason %q, want out_of_scope", reason)
 	}
 }
+
+// t49InetAtonNonNumericLast 末级标签不是纯数字，只能靠 parseInetAton 拦住（去函数后本测试必须失败）。
+var t49InetAtonNonNumericLast = []string{"1.0x7f", "0x7f.1", "0x7f000001"}
+
+func TestT49InetAtonNonNumericLastLabel(t *testing.T) {
+	for _, p := range t49InetAtonNonNumericLast {
+		if parseInetAton(p) == nil {
+			t.Errorf("parseInetAton(%q) = nil, want an IPv4", p)
+		}
+		if !isIPHost(p) {
+			t.Errorf("isIPHost(%q) = false, want true (inet_aton)", p)
+		}
+		if hostInServiceScope(p, []string{p, "example.test"}) {
+			t.Errorf("hostInServiceScope(%q) must be false", p)
+		}
+		allow, _ := decideServiceScan(true, []string{p, "example.test"}, p)
+		if allow {
+			t.Errorf("decideServiceScan must deny %q", p)
+		}
+	}
+	// 1.0x7f 末级不是纯数字，hasAllNumericLastLabel 拦不住，validScopePattern 只能靠 inet_aton。
+	if hasAllNumericLastLabel("1.0x7f") {
+		t.Fatal("1.0x7f last label is not all digits")
+	}
+	if validScopePattern("1.0x7f") || validScopePattern("*.1.0x7f") {
+		t.Fatal("validScopePattern must reject 1.0x7f via inet_aton")
+	}
+	if parseInetAton("example.test") != nil || isIPHost("1.example.test") {
+		t.Fatal("legal domains must not look like inet_aton")
+	}
+}
