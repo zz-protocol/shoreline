@@ -13,6 +13,8 @@
 | HOST_CHUNK_SIZE | 2000 | dns/http 单任务 hosts 超过此数则拆成子 scan_task（parent_id）；父状态由子推导；重启只重投未完成分片（T40） |
 | RETRY_BASE_SECONDS | 1 | 指数退避基数（最小 1，asynq 重试调度为秒级精度），第 k 次重试前等待 base × 2^(k-1) 秒，默认即 1s/2s/4s |
 | SERVICE_SCAN_ENABLED | false | 非 Web（端口/服务）探测全局开关，默认关。未在网页/API 写入过时读此变量；一旦 PATCH `/api/service-scan` 则以库为准。关闭时不发起探测，不影响 Web 扫描（T49） |
+| CDN_CNAME_FILE | 空 | 额外 CNAME 后缀库文件（每行 `suffix vendor`，`#` 开头为注释）；与内置后缀合并，供 CDN 判定（T50） |
+| CDN_CIDR_FILE | 空 | 额外 CDN/WAF IP 段库文件（每行 `cidr vendor`）；仅本地匹配，测试用文档保留段。内置仍含 CNAME 后缀与 cdncheck 段（T50） |
 
 ## 被动源配置（环境变量）
 
@@ -77,7 +79,7 @@ passive 任务把 `{sources_ok, sources_failed:[{source,error}], found}` 写入 
 共用泛解析 IP 的真实主机由 T8 页面相似度进一步区分。CDN 先按 CNAME 后缀识别（阿里、腾讯、字节、网宿、Cloudflare、Akamai、CloudFront、Fastly），未命中再用 cdncheck（MIT）内置 IP 段匹配 CDN/WAF（本地匹配，不发 DNS/HTTP 请求；数据随依赖版本更新）。注意：cdncheck 包初始化时会对 [2001:4860:4860::8888]:53 做一次 UDP connect 以探测本机 IPv6（UDP connect 不发包）。
 
 泛解析命中的子域不删除，标记 `wildcard=true`；API/列表默认过滤、不产生新增事件（T9/T12 实现），可用参数查看。
-结果写入 assets 的 cnames / resolved / wildcard / cdn / resolved_at。解析出的 IP 只在内存里用于泛解析、CDN 与存活判断，不入库、不出现在 API/MCP/页面（T28）。
+结果写入 assets 的 cnames / resolved / wildcard / cdn / cdn_fronted / resolved_at。解析出的 IP 只在内存里用于泛解析、CDN 与存活判断，不入库、不出现在 API/MCP/页面（T28 / T50）。CNAME 或 IP 段命中时 `cdn_fronted=true`，端口扫描跳过、仍交给 HTTP 识别（T50）。
 
 ## Certstream
 
@@ -214,7 +216,7 @@ Streamable HTTP（无状态、JSON 响应），地址 `POST /mcp`，认证同 AP
 | search_assets | q, vendor, in_scope, new_since, include_wildcard, limit, cursor | 同 `GET /api/assets` |
 | check_scope | host | 归属厂商/根域（最长匹配）、in_scope、命中规则、已知资产 id；不要求已是资产 |
 | get_service_scan | 无 | 同 `GET /api/service-scan`：非 Web 探测开关与授权范围列表，默认关 |
-| check_service_scan | host | 判定该主机是否会被允许做非 Web 探测（enabled / authorized / allow / reason）；不发起探测 |
+| check_service_scan | host | 判定该主机是否会被允许做非 Web 探测（enabled / authorized / cdn_fronted / allow / reason）；不发起探测。CDN 前置时 allow=false、reason=cdn_fronted（开关关闭时 reason 仍为 service_scan_disabled） |
 | trigger_scan | root_id, kind | kind 只允许 passive/active/expand；active 需厂商开关 |
 | claim_mine_targets | claimed_by, limit, vendor_id, since, q, include_abandoned | 同 `POST /api/mine/claim`；agent 自助领取 |
 | heartbeat_mine | asset_ids | 同 `POST /api/mine/heartbeat`；续认领锁 |
@@ -251,6 +253,7 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 ## Web 端（T14）
 - React + Vite + Ant Design 5（MIT，深色算法主题，不做浅色切换）+ swagger-ui-dist（Apache-2.0）做 `/docs`。
 - 首屏输入 API token，存 `localStorage`；侧栏：新增播报 / 资产 / 厂商·根域 / 客户托管规则 / 扫描任务 / 扫描授权范围 / 测绘 Key / API Key / API 文档。
+- 资产列表可显示 CDN 前置标签（`cdn_fronted` / 厂商名）；任何列表与详情都不展示解析 IP（T28 / T50）。
 - 测绘 Key（T30）：FOFA/Quake/Hunter 可在网页增删改，库内保存；API/页面只返掩码（后 4 位）；「测试连通」只调账户信息接口（mock 测），不耗查询额度。
 - 厂商 `active_enabled` 开关走 `PATCH`；删厂商/根域二次确认；资产 `include_wildcard`；事件 `level` + 每 30s 轮询 `since`。
 - http 扫描标题按 Content-Type/meta 声明的 charset 解码（`golang.org/x/net/html/charset`），无法判定时回退 GB18030；title、redirect、被动子域名入库前清洗为合法 UTF-8；单个 host 的 URL 入库失败只记日志，任务仍为 done，`result` 记 `store_failures` 并标 `degraded:true`（T33）。历史失败任务不自动重跑。
@@ -319,3 +322,13 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 - 授权范围按域登记，与厂商资产「范围规则 / in_scope」相互独立：登记 `example.test` 覆盖该域及其子域（资产集合）；`*.example.test` 只匹配子域。无明确范围视为不在范围内。不接受 IP，API/UI 不返回 IP。
 - 开启但主机不在范围时跳过，并在 `service_scan_skips` 记录原因 `out_of_scope`；关闭时不按主机记跳过。在范围内才执行传入的 `ServiceProbeFunc`。
 - Web「扫描授权范围」页可开关并增删范围；REST 认证同现有 API；MCP：`get_service_scan`、`check_service_scan`。
+
+## CDN 识别门控（T50）
+
+对子域做 CDN/WAF 判定，作为端口扫描（T51）之前的第二道门。本轮不实现端口扫描。
+
+- 判定数据均为本地静态、可扩充，不调用付费接口：内置 CNAME 后缀库（阿里、腾讯、字节、网宿、Cloudflare、Akamai、CloudFront、Fastly 等）；可选文件 `CDN_CNAME_FILE` / `CDN_CIDR_FILE` 追加后缀与 IP 段；未命中时仍可用 cdncheck（MIT）内置段。测试只用文档保留段（`192.0.2.0/24`、`198.51.100.0/24`、`203.0.113.0/24`）与 `*.example.test`，经 mock DNS 注入，不触真实 DNS。
+- 命中则资产标记 `cdn_fronted`（并保留原有 `cdn` 厂商名），**跳过端口扫描**，仍走现有 HTTP 识别（dns 任务照常把解析成功的主机交给 http）。
+- 解析 IP 只在流水线内存中用于泛解析与 CDN 判定，每次 DNS 扫描重解析，不落库。
+- T51 接入点：`planOriginServiceScan` / `runOriginServiceScan`。顺序与 T49 一致：先看 `SERVICE_SCAN_ENABLED`（关闭则完全不入队），再看授权范围（超范围记 `out_of_scope`），然后跳过 `cdn_fronted`（记原因 `cdn_fronted`）；余下源站进入端口扫描队列。不改 T49 的 `runServiceScan` 实现。
+- MCP `check_service_scan` 增加 `cdn_fronted`；开启且在范围内的 CDN 主机会 `allow=false`。API/UI/MCP 响应不含 IP 字段。
