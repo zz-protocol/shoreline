@@ -451,9 +451,10 @@ T49（门控）→ T50（CDN 识别）→ T51（端口/服务指纹）→ T52（
 历史：迁移 034 或回填脚本把现有 175 个 unidentified 重新聚类，合并关联；confirmed/ignored 状态保留；幂等。
 验收：同类 403 合并为一个候选；不同真实响应仍分开；回填幂等；无真实网络。
 
-### T58 no_dial_ip 覆盖诊断
-行为：细分 no_dial_ip 原因（无 A/AAAA、解析超时、CDN 判定缓存空、范围外）；修复可修复项（解析重试/回退、缓存），仍不绕过 CDN 门控。
-验收：skip 原因可区分；抽样资产能拿到 IP；未判定 CDN 仍跳过；不写入 IP；测试无真实网络。
+### T58 no_dial_ip 收口（诊断完成）
+诊断结论（11-15）：77,729 行 = 44,823 资产；99.85% 为 DNS NXDOMAIN 死域（alive=dead, dead_reason=nxdomain）；cdn_fronted 全 false；cdn_unknown 5,235 是从未做 DNS 判定的存量。行数放大来自同根域多轮任务重叠 + skip 裸 INSERT 无去重；可找回覆盖约 0.07%。
+行为：skip 原因细分（dns_nxdomain/dns_nodata/dns_timeout/dns_error/dns_negative_cached）；NXDOMAIN 需第二台 resolver 复核；A/AAAA 分开成功；EDNS0 + TC TCP 回退；`service_scan_skips` 加 scan_task_id 并 upsert 去重；负缓存/预过滤避免每轮重解析；重解析保留 CNAME 并在拨号前复判 CDN，命中即跳过。仍不绕过 T50 门控。
+验收：同类资产不重复计数；NXDOMAIN 不再逐轮重解析；未判定 CDN 仍跳过；不写入 IP；无真实网络。
 
 ### T59 小批复扫与效果对比
 行为：部署配置 SERVICE_SCAN_TIMEOUT=1s；挑 5–10 个根域复扫；重触发 20 个失败根域；对比 open/verified/named/候选数量。
