@@ -54,3 +54,13 @@ Web：`http://127.0.0.1:5173`　·　API：`http://127.0.0.1:8080`
 ## 开发
 
 规格见 [`SPEC.md`](SPEC.md)，任务进度见 [`TASKS.md`](TASKS.md)。欢迎阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md) 与 [`SECURITY.md`](SECURITY.md)。
+
+团队角色与流水线见 [`docs/TEAM.md`](docs/TEAM.md)，agent 入口与红线见 [`AGENTS.md`](AGENTS.md)。
+
+```powershell
+# 后端测试（容器）+ 前端测试 + 构建
+powershell -ExecutionPolicy Bypass -File scripts/check.ps1
+
+# 按任务验收
+powershell -ExecutionPolicy Bypass -File scripts/accept.ps1 -Task T53
+```

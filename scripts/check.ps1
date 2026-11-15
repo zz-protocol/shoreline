@@ -59,6 +59,7 @@ function Invoke-GoCheck {
     if (-not $Fmt) { Write-Host "（跳过 gofmt：Windows checkout 为 CRLF；需要时加 -Fmt，CI 用 LF）" -ForegroundColor DarkGray }
 
     $backendPosix = $backend -replace '\\', '/'
+    $repoPosix = $repo -replace '\\', '/'
     $scriptsPosix = (Join-Path $repo "scripts") -replace '\\', '/'
     $fmtFlag = if ($Fmt) { "0" } else { "1" }
     $vetFlag = if ($SkipVet) { "1" } else { "0" }
@@ -68,6 +69,7 @@ function Invoke-GoCheck {
         "--network", $network,
         "-v", "${backendPosix}:/src",
         "-v", "${scriptsPosix}/check-go.sh:/check.sh:ro",
+        "-v", "${repoPosix}/docs:/docs:ro",
         "-v", "${moduleVolume}:/go/pkg/mod",
         "-w", "/src",
         "-e", "TEST_DATABASE_URL=$dbUrl",
