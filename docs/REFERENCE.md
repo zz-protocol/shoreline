@@ -8,7 +8,7 @@
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| RATE_PASSIVE / RATE_DNS / RATE_HTTP | 1 / 10 / 5 | 每类任务每秒处理数（单实例）；须为有限正数 |
+| RATE_PASSIVE / RATE_DNS / RATE_HTTP / RATE_SERVICE | 1 / 10 / 5 / 1 | 每类任务每秒处理数（单实例）；须为有限正数。`RATE_SERVICE` 为端口指纹任务级限速（T51），与 `SERVICE_SCAN_RPS`（每端口连接）叠加 |
 | MAX_RETRY | 3 | 失败重试次数；重试中状态为 retrying，用尽后为 failed（终态） |
 | HOST_CHUNK_SIZE | 2000 | dns/http 单任务 hosts 超过此数则拆成子 scan_task（parent_id）；父状态由子推导；重启只重投未完成分片（T40） |
 | RETRY_BASE_SECONDS | 1 | 指数退避基数（最小 1，asynq 重试调度为秒级精度），第 k 次重试前等待 base × 2^(k-1) 秒，默认即 1s/2s/4s |
@@ -205,7 +205,7 @@ passive 任务把 `{sources_ok, sources_failed:[{source,error}], found}` 写入 
 - 挖掘认领（T32）：`POST /api/mine/claim`（原子领取，body：`claimed_by` 必填，`limit` 默认 20 上限 100，`vendor_id`/`since`/`q`/`include_abandoned`）；`POST /api/mine/heartbeat`（`asset_ids` 续锁）；`POST /api/mine/complete`（`asset_ids` + `status=done|deferred|abandoned`，可选 `note`/`report_url`）。默认只领 alive 且非客户托管；冷却与认领 TTL 见环境变量。
 - `GET /api/events`：默认资产级（`level=asset`），`level=url|all` 查 URL 事件；不传 `type` 默认 `new,recovered`（显式传 `changed` 才含）；`since`/`until`、`asset_id`、`vendor`、`include_wildcard`、`q`（子域名或 URL 子串，不区分大小写；`/stats` 与 `/values`、MCP `list_new_assets` 同步）。
 - 范围规则挂在厂商下（`/api/vendors/{id}/scopes`，pattern 为 `域名` 或 `*.域名`）；新增/删除返回 202 + `task_id`，`GET /api/scope-tasks/{id}` 查进度；按 id 分批更新、只改有变化的行，不长时间锁表。重算幂等：进程启动时自动重跑 pending/running 的任务（从头重算、计数清零）。
-- 根域格式校验，被任一厂商占用返回 409。`POST /api/scans` 手动触发（kind 只允许 passive/active/expand，dns/http 是链路内部步骤；kind=active 需厂商 `active_enabled`，否则 409）。
+- 根域格式校验，被任一厂商占用返回 409。`POST /api/scans` 手动触发（kind 只允许 passive/active/expand/service，dns/http 是链路内部步骤；kind=active 需厂商 `active_enabled`，否则 409；`service` 走端口指纹，受 T49/T50 门控，关闭开关时任务仍完成但不拨号）。
 - 扫描授权范围（T49）：`GET/PATCH /api/service-scan`（`{enabled, items}`，默认 `enabled=false`）；`POST /api/service-scan/scopes` 登记域（`example.test` 覆盖该域及其子域，`*.example.test` 只匹配子域，不接受 IP）；`DELETE /api/service-scan/scopes/{id}`。认证同现有 API。此范围独立于厂商 `in_scope` 规则，只约束非 Web 探测。
 - 待确认根域：`GET /api/vendors/{id}/root-candidates`，`POST /api/root-candidates/{id}/confirm|ignore|reassign`（仅 pending；确认时域名已是别厂商根域返回 409，候选保持 pending）。`GET /api/events` 里资产级 new 事件嵌套 `url_events`（该资产的 URL 级 new 事件）。子公司导入：`POST /api/vendors/{id}/subsidiaries`（CSV：名称,持股比例）。
 
@@ -220,7 +220,7 @@ Streamable HTTP（无状态、JSON 响应），地址 `POST /mcp`，认证同 AP
 | check_scope | host | 归属厂商/根域（最长匹配）、in_scope、命中规则、已知资产 id；不要求已是资产 |
 | get_service_scan | 无 | 同 `GET /api/service-scan`：非 Web 探测开关与授权范围列表，默认关 |
 | check_service_scan | host | 判定该主机是否会被允许做非 Web 探测（enabled / authorized / cdn_fronted / allow / reason）；不发起探测。CDN 前置时 allow=false、reason=cdn_fronted（开关关闭时 reason 仍为 service_scan_disabled） |
-| trigger_scan | root_id, kind | kind 只允许 passive/active/expand；active 需厂商开关 |
+| trigger_scan | root_id, kind | kind 只允许 passive/active/expand/service；active 需厂商开关；service 为非 CDN 源站端口指纹 |
 | claim_mine_targets | claimed_by, limit, vendor_id, since, q, include_abandoned | 同 `POST /api/mine/claim`；agent 自助领取 |
 | heartbeat_mine | asset_ids | 同 `POST /api/mine/heartbeat`；续认领锁 |
 | complete_mine | asset_ids, status, note, report_url | 同 `POST /api/mine/complete`；回写结果 |
@@ -261,7 +261,7 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 - 厂商 `active_enabled` 开关走 `PATCH`；删厂商/根域二次确认；资产 `include_wildcard`；事件 `level` + 每 30s 轮询 `since`。
 - http 扫描标题按 Content-Type/meta 声明的 charset 解码（`golang.org/x/net/html/charset`），无法判定时回退 GB18030；title、redirect、被动子域名入库前清洗为合法 UTF-8；单个 host 的 URL 入库失败只记日志，任务仍为 done，`result` 记 `store_failures` 并标 `degraded:true`（T33）。历史失败任务不自动重跑。
 - 扫描记录删除（T35）：`DELETE /api/scan-tasks/{id}` 只删终态（done/failed/cancelled）记录，返回 204；pending/running/retrying 或仍有进行中的下游任务返回 409。只删这一条（下游记录保留，其 parent_id/root_scan_id 置空），不影响 assets/urls/events。页面上非终态的删除按钮置灰，删除需确认。
-- 扫描列表展示 `degraded`/`degraded_reason`；`passive`/`active`/`expand` 可重跑（再 `POST /api/scans`）；`dns`/`http` 无重跑钮，提示从 passive 重跑。
+- 扫描列表展示 `degraded`/`degraded_reason`；`passive`/`active`/`expand`/`service` 可重跑（再 `POST /api/scans`）；`dns`/`http` 无重跑钮，提示从 passive 重跑。
 - 本地：`cd frontend && npm install && npm test && npm run build`；`npm run dev` 反代到 `127.0.0.1:8080`。
 
 ## 组件库存（T43）
@@ -339,6 +339,10 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 ## 端口 + 服务指纹（T51）
 
 只对 T49 开关开启、在授权范围内、且未 `cdn_fronted` 的源站执行；入口 `fingerprintOriginServices` 经 `runOriginServiceScan` 走 T49/T50 门控，不改门控实现。主机校验复用 T49 修复（IP、`inet_aton` 简写、全数字末级标签一律不拨号）。
+
+- 扫描类型 `service`（架构 11-15 定）：与 dns/http 一样进入 `scanKinds`、独立 Asynq 队列、`RATE_SERVICE`（默认 1 任务/秒）和 T40 分片（`HOST_CHUNK_SIZE`）。可经 REST `POST /api/scans` 与 MCP `trigger_scan` 手动触发（写入该根域非泛解析资产主机并入队）。**不**自动接在 dns/http 之后。现有定时调度只跑 passive/active（以及探活的 dns），没有按类型配置的通用计划，本轮不加 `SCHEDULE_SERVICE`。无 expand 那样的厂商级 409；并发规则与 passive 相同。
+- 开关关闭时：触发仍返回 202 并产生 `service` 任务，worker 跑完标记 `done`，`planOriginServiceScan` 不入队、不拨号、不写 `asset_services`。
+
 
 - 每端口一次 TCP 连接，读初始 banner；仅两种端口发送最小握手：PostgreSQL SSLRequest（8 字节 `00 00 00 08 04 d2 16 2f`，只问是否支持 TLS，不发 StartupMessage/用户名）与 AMQP 协议头（`AMQP 00 00 09 01`，服务端回 Connection.Start，不发 start-ok/登录）。其余端口只读不写；不发 Redis PING/INFO、Mongo isMaster/hello、ES `GET /`、Memcached version/stats、Kafka ApiVersions。
 - 识别规则是代码内数据表 `builtinServiceFingerprintRules()`（名称、端口、探测字节、banner 正则、版本正则），T53 可整表替换为 YAML。
