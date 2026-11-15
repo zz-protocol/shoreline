@@ -7,8 +7,8 @@ import { del, get, post } from '../api'
 import { Guide, HELP, Hint } from '../help'
 
 const statuses = ['pending', 'running', 'retrying', 'done', 'failed']
-const kinds = ['passive', 'active', 'dns', 'http', 'expand']
-const manual = new Set(['passive', 'active', 'expand'])
+const kinds = ['passive', 'active', 'dns', 'http', 'expand', 'service']
+const manual = new Set(['passive', 'active', 'expand', 'service'])
 const terminal = new Set(['done', 'failed', 'cancelled']) // T35：仅终态可删
 
 export default function Scans() {
@@ -76,7 +76,7 @@ export default function Scans() {
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="large">
       <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
-        <Hint text="扫描链路：passive / active 找子域 → dns 解析 → http 探测；expand 单独找新根域。"><Typography.Title level={3} style={{ margin: 0 }}>扫描任务</Typography.Title></Hint>
+        <Hint text="扫描链路：passive / active 找子域 → dns 解析 → http 探测；expand 单独找新根域；service 单独对非 CDN 源站做端口指纹（需开启扫描授权范围）。"><Typography.Title level={3} style={{ margin: 0 }}>扫描任务</Typography.Title></Hint>
         <Button type="primary" onClick={() => { form.resetFields(); form.setFieldsValue({ kind: 'passive' }); setOpen(true) }}>触发扫描</Button>
       </Space>
       <Space wrap>

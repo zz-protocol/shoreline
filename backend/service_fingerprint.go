@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/time/rate"
 )
 
@@ -340,4 +341,76 @@ func upsertAssetService(ctx context.Context, q serviceScanQ, assetID int64, host
 			probed_at = EXCLUDED.probed_at`,
 		aid, host, port, open, name, version, banner)
 	return err
+}
+
+// serviceScanHandler 是扫描类型 service 的 worker 入口：对根域资产做端口指纹。
+// hosts 为空时从该根域已有资产加载（跳过泛解析）；由 T49/T50 门控，关闭开关时不拨号、任务仍标记 done。
+func serviceScanHandler(d *pgxpool.Pool, cfg serviceFingerprintConfig) ScanHandler {
+	return func(ctx context.Context, scanID int64, hosts []string) ([]string, error) {
+		var rootID int64
+		if err := d.QueryRow(ctx, `SELECT root_id FROM scan_tasks WHERE id = $1`, scanID).Scan(&rootID); err != nil {
+			return nil, err
+		}
+		targets, err := loadServiceScanTargets(ctx, d, rootID, hosts)
+		if err != nil {
+			return nil, err
+		}
+		if err := fingerprintOriginServices(ctx, d, cfg, targets); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+}
+
+// listRootServiceHosts 供手动触发时写入任务 payload，以便 T40 按 HOST_CHUNK_SIZE 分片。
+func listRootServiceHosts(ctx context.Context, q serviceScanQ, rootID int64) ([]string, error) {
+	targets, err := loadServiceScanTargets(ctx, q, rootID, nil)
+	if err != nil {
+		return nil, err
+	}
+	hosts := make([]string, 0, len(targets))
+	for _, t := range targets {
+		hosts = append(hosts, t.Host)
+	}
+	return hosts, nil
+}
+
+func loadServiceScanTargets(ctx context.Context, q serviceScanQ, rootID int64, hosts []string) ([]serviceScanTarget, error) {
+	sql := `SELECT id, subdomain FROM assets WHERE root_id = $1 AND NOT wildcard AND NOT parent_wildcard`
+	var args []any
+	args = append(args, rootID)
+	if len(hosts) > 0 {
+		norm := make([]string, 0, len(hosts))
+		for _, h := range hosts {
+			h = normalizeHost(h)
+			if h == "" || rejectedServiceScanHost(h) {
+				continue
+			}
+			norm = append(norm, h)
+		}
+		if len(norm) == 0 {
+			return nil, nil
+		}
+		sql += ` AND subdomain = ANY($2)`
+		args = append(args, norm)
+	}
+	sql += ` ORDER BY id`
+	rs, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rs.Close()
+	var out []serviceScanTarget
+	for rs.Next() {
+		var t serviceScanTarget
+		if err := rs.Scan(&t.AssetID, &t.Host); err != nil {
+			return nil, err
+		}
+		t.Host = normalizeHost(t.Host)
+		if t.Host == "" || rejectedServiceScanHost(t.Host) {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out, rs.Err()
 }

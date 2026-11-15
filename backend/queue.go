@@ -19,13 +19,13 @@ import (
 )
 
 // 三类扫描，各自一个 Asynq 队列和独立限速。
-var scanKinds = []string{"passive", "active", "dns", "http", "expand"}
+var scanKinds = []string{"passive", "active", "dns", "http", "expand", "service"}
 
 // 自动串联：passive 发现的子域交给 dns，dns 输出（解析成功且非泛解析）交给 http。
 var nextKind = map[string]string{"passive": "dns", "active": "dns", "dns": "http"}
 
-// 默认限速（任务/秒，单实例），可用 RATE_PASSIVE / RATE_ACTIVE / RATE_DNS / RATE_HTTP / RATE_EXPAND 覆盖。
-var defaultRates = map[string]float64{"passive": 1, "active": 1, "dns": 10, "http": 5, "expand": 1}
+// 默认限速（任务/秒，单实例），可用 RATE_PASSIVE / RATE_ACTIVE / RATE_DNS / RATE_HTTP / RATE_EXPAND / RATE_SERVICE 覆盖。
+var defaultRates = map[string]float64{"passive": 1, "active": 1, "dns": 10, "http": 5, "expand": 1, "service": 1}
 
 type scanPayload struct {
 	ScanID int64    `json:"scan_id"`
@@ -43,7 +43,7 @@ type workerConfig struct {
 	RetryBase     time.Duration // RETRY_BASE_SECONDS，默认 1s，最小 1s；第 k 次重试前等待 base*2^(k-1)
 	Concurrent    int
 	PollDelay     time.Duration // 到期重试任务的检查间隔，0 为 Asynq 默认（5s），测试中调小
-	HostChunkSize int           // HOST_CHUNK_SIZE，默认 2000；dns/http hosts 超过则分片（T40）
+	HostChunkSize int           // HOST_CHUNK_SIZE，默认 2000；dns/http/service hosts 超过则分片（T40）
 }
 
 func configFromEnv() (workerConfig, error) {
@@ -203,7 +203,7 @@ func newWorker(redisOpt asynq.RedisClientOpt, d *pgxpool.Pool, cfg workerConfig,
 				return nil
 			}
 			// T40：dns/http hosts 超过 HOST_CHUNK_SIZE 时拆成子任务，父任务保持 running，状态由子推导
-			if (kind == "dns" || kind == "http") && cfg.HostChunkSize > 0 && len(p.Hosts) > cfg.HostChunkSize {
+			if (kind == "dns" || kind == "http" || kind == "service") && cfg.HostChunkSize > 0 && len(p.Hosts) > cfg.HostChunkSize {
 				if err := splitScanIntoChunks(ctx, d, client, p.ScanID, kind, p.Hosts, cfg.HostChunkSize, cfg.MaxRetry); err != nil {
 					d.Exec(ctx, `UPDATE scan_tasks SET status = 'failed', error = $2, finished_at = now() WHERE id = $1`, p.ScanID, err.Error())
 					return fmt.Errorf("%v: %w", err, asynq.SkipRetry)

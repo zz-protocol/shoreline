@@ -1340,10 +1340,10 @@ func (a *api) triggerExpand(ctx context.Context, vendorID, rootID int64) (int64,
 	return id, deliverScan(ctx, a.db, a.client, id, "expand", nil, a.cfg.MaxRetry)
 }
 
-// manualKinds 是可手动触发的扫描类型（dns/http 是链路内部步骤，不对外）。
-var manualKinds = []string{"passive", "active", "expand"}
+// manualKinds 是可手动触发的扫描类型（dns/http 是链路内部步骤，不对外；service 由架构定为手动触发）。
+var manualKinds = []string{"passive", "active", "expand", "service"}
 
-// triggerScan 手动触发：kind 只允许 passive/active/expand；active 需厂商 active_enabled。REST 与 MCP 共用。
+// triggerScan 手动触发：kind 只允许 passive/active/expand/service；active 需厂商 active_enabled。REST 与 MCP 共用。
 func (a *api) triggerScan(ctx context.Context, rootID int64, kind string) (map[string]any, error) {
 	if !slices.Contains(manualKinds, kind) {
 		return nil, errf(400, "kind must be one of %s", strings.Join(manualKinds, "|"))
@@ -1364,6 +1364,13 @@ func (a *api) triggerScan(ctx context.Context, rootID int64, kind string) (map[s
 	var err error
 	if kind == "expand" {
 		id, err = a.triggerExpand(ctx, vendorID, rootID)
+	} else if kind == "service" {
+		var hosts []string
+		hosts, err = listRootServiceHosts(ctx, a.db, rootID)
+		if err != nil {
+			return nil, err
+		}
+		id, err = enqueueScan(ctx, a.db, a.client, rootID, "service", hosts, 0, a.cfg.MaxRetry)
 	} else {
 		id, err = TriggerScan(ctx, a.db, a.client, rootID, kind, a.cfg.MaxRetry)
 	}

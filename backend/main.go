@@ -50,6 +50,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	svcfp, err := serviceFingerprintConfigFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
 	if err := loadCDNLibraryFromEnv(); err != nil {
 		log.Fatal(err)
 	}
@@ -68,6 +72,7 @@ func main() {
 		"http":    httpHandler(pool, newProber(hcfg).withLLM(lcfg)),
 		"active":  activeHandler(pool, newActiveScanner(acfg, dcfg)),
 		"expand":  expandHandler(pool, icp, dbSubsidiaries{pool}),
+		"service": serviceScanHandler(pool, svcfp),
 	}
 	// 分片重投与孤儿清理必须在 worker/scheduler 启动前（T40/T23）。
 	startedAt := time.Now()

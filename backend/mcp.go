@@ -151,7 +151,7 @@ func (in searchComponentsIn) filter() (componentFilter, error) {
 
 type triggerScanIn struct {
 	RootID int64  `json:"root_id" jsonschema:"root domain id"`
-	Kind   string `json:"kind" jsonschema:"passive | active | expand (active requires the vendor's active_enabled)"`
+	Kind   string `json:"kind" jsonschema:"passive | active | expand | service (active requires the vendor's active_enabled)"`
 }
 
 type pageOut struct {
@@ -282,7 +282,7 @@ func (a *api) mcpServer() *mcp.Server {
 			}
 			return nil, mapOut{"enabled": enabled, "items": items}, nil
 		})
-	mcp.AddTool(s, &mcp.Tool{Name: "trigger_scan", Description: "Manually trigger a scan for a root domain: passive | active | expand. active requires the vendor's active_enabled."},
+	mcp.AddTool(s, &mcp.Tool{Name: "trigger_scan", Description: "Manually trigger a scan for a root domain: passive | active | expand | service. active requires the vendor's active_enabled. service is a port-fingerprint scan of non-CDN origins (T49/T50 gated)."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in triggerScanIn) (*mcp.CallToolResult, mapOut, error) {
 			out, err := a.triggerScan(ctx, in.RootID, in.Kind)
 			if err != nil {
