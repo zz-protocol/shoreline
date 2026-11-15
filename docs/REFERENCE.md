@@ -319,7 +319,7 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 非 Web（端口/服务）探测的安全地基，供后续 T51 接入，本轮不实现端口扫描，也不做 CDN 判定。
 
 - 全局开关默认关闭。关闭时 `runServiceScan` 完全不调用探测器（测试用计数假探测断言零外连），现有 Web 扫描不受影响。未在库中写入过时可读环境变量 `SERVICE_SCAN_ENABLED`；一旦经 `PATCH /api/service-scan` 写入则以库为准。
-- 授权范围按域登记，与厂商资产「范围规则 / in_scope」相互独立：登记 `example.test` 覆盖该域及其子域（资产集合）；`*.example.test` 只匹配子域。无明确范围视为不在范围内。不接受 IP，API/UI 不返回 IP。
+- 授权范围按域登记，与厂商资产「范围规则 / in_scope」相互独立：登记 `example.test` 覆盖该域及其子域（资产集合）；`*.example.test` 只匹配子域。无明确范围视为不在范围内。厂商 `in_scope=true` 不能绕过本范围。不接受 IP（含规范点分四段、libc `inet_aton` 可解析的简写/八进制/十六进制，以及末级标签全是数字的写法如 `127.1`、`1.2.3.4.5`）；REST/前端/MCP 一律拒绝，API/UI 不返回 IP。
 - 开启但主机不在范围时跳过，并在 `service_scan_skips` 记录原因 `out_of_scope`；关闭时不按主机记跳过。在范围内才执行传入的 `ServiceProbeFunc`。
 - Web「扫描授权范围」页可开关并增删范围；REST 认证同现有 API；MCP：`get_service_scan`、`check_service_scan`。
 

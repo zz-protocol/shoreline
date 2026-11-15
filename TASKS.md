@@ -68,7 +68,7 @@
 
 | 编号 | 任务 | 验收标准 | 状态 |
 |---|---|---|---|
-| T49 | 授权范围门控（先做）：登记允许探测的域/资产范围；非 Web 探测只对范围内执行，超范围跳过记原因；全局开关 SERVICE_SCAN_ENABLED 默认关；范围/开关可配 + REST 管理（认证同现有） | 默认关时零外连（断言）；超范围跳过记录；范围内才执行；go test 过；无真实网络 | 打回（527867f：非规范 IPv4 写法被当域名接受——POST /api/service-scan/scopes {"pattern":"127.1"}/"10.1"/"192.168.1"/"0177.0.0.1"/"*.0.1" 均 201 且 GET/页面原样返回，Web 页输入 127.1 直接添加；开关开时 check_service_scan host=127.1 allow=true，runServiceScan 计数假探测器 dials=2。期望：一律 400/判定拒绝/不调用探测器（拒全数字末级标签及 inet_aton 可解析形式），并补测试。其余：go test -count=2 183.8s 过、vitest 67 过、build 过、真后端+真构建无头打开过、无真实网络） |
+| T49 | 授权范围门控（先做）：登记允许探测的域/资产范围；非 Web 探测只对范围内执行，超范围跳过记原因；全局开关 SERVICE_SCAN_ENABLED 默认关；范围/开关可配 + REST 管理（认证同现有） | 默认关时零外连（断言）；超范围跳过记录；范围内才执行；go test 过；无真实网络 | 待验收 |
 | T50 | CDN 识别门控：解析子域名，CNAME 后缀库 + IP 段库（本地静态可配）判断是否挂 CDN；命中标 cdn_fronted 跳过端口扫描只走 HTTP；IP 仅流水线内部临时用，API/UI 不返回不展示，优先每次重解析 | mock DNS/静态库下 CDN 命中标记且不进端口扫描，非 CDN 进队列；任何 API/UI 响应不含 IP（断言）；无真实网络 | 待验收 |
 | T51 | 端口+服务指纹（仅非 CDN 源站）：扫常见端口集（可配，默认 MySQL/PG/Redis/Mongo/ES/Kafka/etcd/Nacos/RabbitMQ/Memcached 等，非全端口）；开放端口轻量 banner 抓取识别服务类型/版本，不认证不读写数据；低速、随 T49 开关可关 | 假服务下端口与服务类型识别正确；默认关不发起；限速生效；探测字节不含认证/数据读写（断言）；无真实厂商网络 | 待做 |
 | T52 | 非 Web 服务并入组件库存：识别服务写入 components（source=service，带 Databases/Caching/MQ 等分类），复用 T43–T48 库存/降噪/复制/冷门分；未识别 banner 归档+聚类（confirmed=false 不进默认统计，补指纹可确认）；下钻关联不含 IP | 假服务入库存分类正确、可富集与整列复制；未识别进归档/聚类、补指纹后可确认；关联不含 IP；go test/vitest/build 过；无真实网络 | 待做 |
