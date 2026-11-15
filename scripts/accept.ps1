@@ -217,6 +217,7 @@ function Invoke-T57 {
     Write-Host "`nT57 未识别聚类归一化" -ForegroundColor Cyan
     Invoke-Check "T57" "实现与迁移存在" {
         Assert-Exists (Join-Path $backend "migrations\034_unidentified_recluster.sql") "034 迁移"
+        Assert-Exists (Join-Path $backend "migrations\035_unidentified_orphan_cleanup.sql") "035 孤儿清理迁移"
         Assert-Exists (Join-Path $backend "t57_unidentified_recluster_test.go") "T57 测试"
     }
     Invoke-Check "T57" "测试通过（T57）" { Invoke-GoTests "T57" }
