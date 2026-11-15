@@ -15,6 +15,9 @@
 | SERVICE_SCAN_ENABLED | false | 非 Web（端口/服务）探测全局开关，默认关。未在网页/API 写入过时读此变量；一旦 PATCH `/api/service-scan` 则以库为准。关闭时不发起探测，不影响 Web 扫描（T49） |
 | CDN_CNAME_FILE | 空 | 额外 CNAME 后缀库文件（每行 `suffix vendor`，`#` 开头为注释）；与内置后缀合并，供 CDN 判定（T50） |
 | CDN_CIDR_FILE | 空 | 额外 CDN/WAF IP 段库文件（每行 `cidr vendor`）；仅本地匹配，测试用文档保留段。内置仍含 CNAME 后缀与 cdncheck 段（T50） |
+| SERVICE_SCAN_PORTS | 3306,5432,6379,27017,9200,9092,2379,8848,5672,11211 | 端口指纹扫描端口（逗号分隔，不接受范围；T51） |
+| SERVICE_SCAN_RPS | 2 | 端口指纹每秒连接上限（全局，burst 1；T51） |
+| SERVICE_SCAN_TIMEOUT | 2s | 单端口连接 + banner 读取超时；拨号超时/拒绝记端口关闭，不重试（T51） |
 
 ## 被动源配置（环境变量）
 
@@ -332,3 +335,13 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 - 解析 IP 只在流水线内存中用于泛解析与 CDN 判定，每次 DNS 扫描重解析，不落库。
 - T51 接入点：`planOriginServiceScan` / `runOriginServiceScan`。顺序与 T49 一致：先看 `SERVICE_SCAN_ENABLED`（关闭则完全不入队），再看授权范围（超范围记 `out_of_scope`），然后跳过 `cdn_fronted`（记原因 `cdn_fronted`）；余下源站进入端口扫描队列。不改 T49 的 `runServiceScan` 实现。
 - MCP `check_service_scan` 增加 `cdn_fronted`；开启且在范围内的 CDN 主机会 `allow=false`。API/UI/MCP 响应不含 IP 字段。
+
+## 端口 + 服务指纹（T51）
+
+只对 T49 开关开启、在授权范围内、且未 `cdn_fronted` 的源站执行；入口 `fingerprintOriginServices` 经 `runOriginServiceScan` 走 T49/T50 门控，不改门控实现。主机校验复用 T49 修复（IP、`inet_aton` 简写、全数字末级标签一律不拨号）。
+
+- 每端口一次 TCP 连接，读初始 banner；仅两种端口发送最小握手：PostgreSQL SSLRequest（8 字节 `00 00 00 08 04 d2 16 2f`，只问是否支持 TLS，不发 StartupMessage/用户名）与 AMQP 协议头（`AMQP 00 00 09 01`，服务端回 Connection.Start，不发 start-ok/登录）。其余端口只读不写；不发 Redis PING/INFO、Mongo isMaster/hello、ES `GET /`、Memcached version/stats、Kafka ApiVersions。
+- 识别规则是代码内数据表 `builtinServiceFingerprintRules()`（名称、端口、探测字节、banner 正则、版本正则），T53 可整表替换为 YAML。
+- 结果存 `asset_services`（主机名 + 端口唯一；open/name/version/banner 摘要），不含 IP 列，banner 中的 IP 文本替换为 `[ip]`。本轮不写 components（T52），不新增 REST/MCP。
+- 局限：Redis/Mongo/ES/Kafka/etcd/Nacos/Memcached 在未收到客户端报文时通常不主动发 banner，此时记为开放但 name 为空；需更强识别时另行确认探测口径。
+
