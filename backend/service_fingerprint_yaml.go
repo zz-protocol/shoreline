@@ -42,6 +42,7 @@ type serviceFingerprintYAMLRule struct {
 	Component  string                        `yaml:"component"`
 	Category   string                        `yaml:"category"`
 	Confidence string                        `yaml:"confidence"`
+	Repo       string                        `yaml:"repo"`
 	Ports      []int                         `yaml:"ports"`
 	Banner     string                        `yaml:"banner"`
 	Version    string                        `yaml:"version"`
@@ -60,6 +61,7 @@ type serviceFingerprintRule struct {
 	Component  string
 	Category   string
 	Confidence string
+	Repo       string
 	Ports      []int
 	Probes     []serviceFingerprintProbe
 	BannerRE   *regexp.Regexp
@@ -147,6 +149,13 @@ func compileServiceFingerprintRule(raw serviceFingerprintYAMLRule) (serviceFinge
 	default:
 		return serviceFingerprintRule{}, fmt.Errorf("rule %q: invalid confidence %q", name, raw.Confidence)
 	}
+	// 官方仓库仅用于「源码可得性」评分；非法 owner/repo 视为规则错误，启动即拒绝。
+	repo := strings.TrimSpace(raw.Repo)
+	if repo != "" {
+		if _, err := parseGitHubRepo(repo); err != nil {
+			return serviceFingerprintRule{}, fmt.Errorf("rule %q: repo must be owner/repo", name)
+		}
+	}
 	if len(raw.Ports) == 0 {
 		return serviceFingerprintRule{}, fmt.Errorf("rule %q: ports required", name)
 	}
@@ -193,6 +202,7 @@ func compileServiceFingerprintRule(raw serviceFingerprintYAMLRule) (serviceFinge
 		Component:  component,
 		Category:   category,
 		Confidence: confidence,
+		Repo:       repo,
 		Ports:      ports,
 		Probes:     probes,
 		BannerRE:   bannerRE,
@@ -310,6 +320,14 @@ func (rs *serviceFingerprintRuleSet) componentName(name string) string {
 func (rs *serviceFingerprintRuleSet) category(name string) string {
 	if r, ok := rs.ruleByName(name); ok {
 		return r.Category
+	}
+	return ""
+}
+
+// repo 返回规则声明的官方仓库（owner/repo）；未声明时为空。
+func (rs *serviceFingerprintRuleSet) repo(name string) string {
+	if r, ok := rs.ruleByName(name); ok {
+		return r.Repo
 	}
 	return ""
 }

@@ -501,13 +501,14 @@ paths:
         - {name: include_dead, in: query, schema: {type: boolean, default: false}, description: "包含失活资产（默认只统计 alive）"}
         - {name: max_stars, in: query, schema: {type: integer, minimum: 0}, description: "最多 star（上限；仅已有 star 的组件）"}
         - {name: max_advisories, in: query, schema: {type: integer, minimum: 0}, description: "最多公开披露数（上限；仅已有计数的组件）"}
+        - {name: min_score, in: query, schema: {type: integer, minimum: 0, maximum: 100}, description: "研究价值最低分（0–100，含端点）；分数为全局口径，不随 vendor 或 include_* 切换变化"}
         - {name: missing_repo, in: query, schema: {type: boolean, default: false}, description: "只看未关联 GitHub 仓库的组件"}
         - {name: include_all_categories, in: query, schema: {type: boolean, default: false}, description: "为 true 时展开全部类别；默认隐藏全部分类都落在低价值集合（JavaScript libraries、CDN、Analytics 等）的组件，空分类或跨类仍显示"}
         - {name: category, in: query, schema: {type: array, items: {type: string}}, style: form, explode: true, description: "按 Wappalyzer 分类名精筛（多值并集）；指定后不再套用默认类别隐藏"}
-        - {name: sort, in: query, schema: {type: string, enum: [stars, advisories]}, description: "stars 或 advisories 升序（空值在前）；省略则按厂商数、资产数降序"}
+        - {name: sort, in: query, schema: {type: string, enum: [stars, advisories, research]}, description: "stars 或 advisories 升序（空值在前）；research 按 research_score、再按 id 降序；省略则按厂商数、资产数降序"}
         - {$ref: "#/components/parameters/limit"}
         - {$ref: "#/components/parameters/cursor"}
-      responses: {"200": {description: "{items: Component[]（含 categories）, next_cursor}"}, "400": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: "{items: Component[]（含 categories、research_score、research_score_parts）, next_cursor}"}, "400": {$ref: "#/components/responses/Error"}}
   /api/components/values:
     get:
       summary: "复制组件列表本列：当前筛选下全部匹配组件名（非仅本页），去重排序；超上限截断"
@@ -521,6 +522,7 @@ paths:
         - {name: include_dead, in: query, schema: {type: boolean, default: false}}
         - {name: max_stars, in: query, schema: {type: integer, minimum: 0}}
         - {name: max_advisories, in: query, schema: {type: integer, minimum: 0}}
+        - {name: min_score, in: query, schema: {type: integer, minimum: 0, maximum: 100}}
         - {name: missing_repo, in: query, schema: {type: boolean, default: false}}
         - {name: include_all_categories, in: query, schema: {type: boolean, default: false}}
         - {name: category, in: query, schema: {type: array, items: {type: string}}, style: form, explode: true}
@@ -528,7 +530,7 @@ paths:
       responses: {"200": {description: "{field, items: string[], count, truncated}"}, "400": {$ref: "#/components/responses/Error"}}
   /api/components/{id}:
     get:
-      summary: "组件详情（计数口径与列表的 include_* 相同，不因常见而 404）"
+      summary: "组件详情（计数口径与列表的 include_* 相同，不因常见而 404；含 research_score 与 research_score_parts）"
       parameters:
         - {$ref: "#/components/parameters/id"}
         - {name: include_wildcard, in: query, schema: {type: boolean, default: false}}

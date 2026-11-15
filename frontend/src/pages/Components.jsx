@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { App, Button, Drawer, Input, InputNumber, Modal, Space, Switch, Table, Tag, Typography } from 'antd'
+import { App, Button, Drawer, Input, InputNumber, Modal, Space, Switch, Table, Tag, Tooltip, Typography } from 'antd'
 import { CopyOutlined } from '@ant-design/icons'
 import { del, get, patch, post } from '../api'
 import { Guide, HELP, Hint } from '../help'
@@ -18,6 +18,19 @@ export const SHOWN_CATEGORY_EXAMPLES = [
   'Message queues', 'Application server', 'CMS', 'Caching', 'Operating systems',
 ]
 export const CATEGORY_FILTERS = [...SHOWN_CATEGORY_EXAMPLES, ...HIDDEN_CATEGORIES]
+
+// 研究价值分项（0–1）只做展示，不在前端算分。
+const RESEARCH_PART_LABELS = [
+  ['attack', '攻击面'],
+  ['source', '源码可得性'],
+  ['advisory', '披露稀缺'],
+  ['usage', '本 SRC 频度'],
+]
+
+function researchPartText(parts, key) {
+  const v = parts?.[key]
+  return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(2) : '—'
+}
 
 export default function Components() {
   const { message } = App.useApp()
@@ -50,6 +63,7 @@ export default function Components() {
   const [candidates, setCandidates] = useState([])
   const [includeAllCategories, setIncludeAllCategories] = useState(false)
   const [selectedCats, setSelectedCats] = useState([])
+  const [minScore, setMinScore] = useState()
 
   useEffect(() => {
     get('/api/vendors').then((d) => setVendors(d.items || [])).catch((e) => message.error(e.message))
@@ -68,6 +82,7 @@ export default function Components() {
     if (minVendors != null && minVendors !== '') p.set('min_vendors', String(minVendors))
     if (maxStars != null && maxStars !== '') p.set('max_stars', String(maxStars))
     if (maxAdvisories != null && maxAdvisories !== '') p.set('max_advisories', String(maxAdvisories))
+    if (minScore != null && minScore !== '') p.set('min_score', String(minScore))
     if (missingRepo) p.set('missing_repo', 'true')
     if (sort) p.set('sort', sort)
     p.set('include_all_categories', String(!!includeAllCategories))
@@ -100,7 +115,7 @@ export default function Components() {
       setLoading(false)
     }
   }
-  useEffect(() => { load() }, [excludeCommon, wild, hosted, dead, minAssets, minVendors, maxStars, maxAdvisories, missingRepo, sort, includeAllCategories, selectedCats])
+  useEffect(() => { load() }, [excludeCommon, wild, hosted, dead, minAssets, minVendors, maxStars, maxAdvisories, minScore, missingRepo, sort, includeAllCategories, selectedCats])
 
   const loadAssets = async (comp, next, vendorId = vendor) => {
     setAssetLoading(true)
@@ -222,12 +237,17 @@ export default function Components() {
         <InputNumber min={0} placeholder="最多 star" value={maxStars} onChange={setMaxStars} data-testid="max-stars" />
         <InputNumber min={0} placeholder="最多公开披露数" value={maxAdvisories} onChange={setMaxAdvisories} data-testid="max-advisories" />
         <span>
+          <Hint text={HELP.researchScore}>最低研究价值</Hint>
+          <InputNumber min={0} max={100} placeholder="最低研究价值" value={minScore} onChange={setMinScore} data-testid="min-score" />
+        </span>
+        <span>
           未关联仓库 <Switch checked={missingRepo} onChange={setMissingRepo} data-testid="missing-repo" />
         </span>
         <select data-testid="comp-sort" value={sort} onChange={(e) => setSort(e.target.value)} style={{ height: 32 }}>
           <option value="">默认排序（厂商数）</option>
           <option value="stars">Star 升序</option>
           <option value="advisories">公开披露数升序</option>
+          <option value="research">研究价值降序</option>
         </select>
         <span>
           <Hint text={HELP.categories}>显示全部类别</Hint> <Switch checked={includeAllCategories} onChange={setIncludeAllCategories} data-testid="include-all-categories" />
@@ -303,6 +323,21 @@ export default function Components() {
           { title: 'URL 数', dataIndex: 'url_count', width: 100 },
           { title: '资产数', dataIndex: 'asset_count', width: 100 },
           { title: '厂商数', dataIndex: 'vendor_count', width: 100 },
+          {
+            title: <Hint text={HELP.researchScore}>研究价值</Hint>,
+            dataIndex: 'research_score',
+            width: 130,
+            render: (v, row) => {
+              if (v == null) return '—'
+              const parts = row.research_score_parts || {}
+              const tip = RESEARCH_PART_LABELS.map(([key, label]) => `${label}：${researchPartText(parts, key)}`).join('\n')
+              return (
+                <Tooltip title={<span style={{ whiteSpace: 'pre-line' }}>{tip}</span>}>
+                  <span data-testid={`research-score-${row.id}`}>{Number(v).toFixed(1)}</span>
+                </Tooltip>
+              )
+            },
+          },
           { title: 'GitHub 仓库', dataIndex: 'github_repo', width: 160, render: (v) => v || '—' },
           { title: 'Star', dataIndex: 'stars', width: 80, render: (v) => (v == null ? '—' : v) },
           { title: '公开披露数', dataIndex: 'advisory_count', width: 120, render: (v) => (v == null ? '—' : v) },

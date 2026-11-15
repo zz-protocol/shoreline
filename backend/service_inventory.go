@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"os"
 	"strings"
 )
@@ -88,21 +89,29 @@ func syncAssetServicesToComponents(ctx context.Context, q serviceScanQ, targets 
 		var confirmed bool
 		var cats []string
 		var fp string
+		var repo string
 		if n := rules.componentName(r.name); n != "" {
 			display, confirmed, fp = n, true, strings.ToLower(r.name)
 			cats = serviceComponentCategories(display, fp, rules)
+			// T54：YAML 声明的官方 repo 只在组件尚无 repo 时写入，不覆盖用户已填值，也不触发外网富集。
+			repo = rules.repo(fp)
 		} else if strings.TrimSpace(r.ban) != "" {
 			display, confirmed = unidentifiedServiceName(r.ban), false
 		} else {
 			continue
 		}
+		var repoArg any
+		if repo != "" {
+			repoArg = repo
+		}
 		var id int64
-		if err := q.QueryRow(ctx, `INSERT INTO components (name, name_key, source, confirmed, categories)
-			VALUES ($1, $2, 'service', $3, $4)
+		if err := q.QueryRow(ctx, `INSERT INTO components (name, name_key, source, confirmed, categories, github_repo)
+			VALUES ($1, $2, 'service', $3, $4, $5)
 			ON CONFLICT (name_key) DO UPDATE SET
 				updated_at = now(),
+				github_repo = CASE WHEN components.github_repo IS NULL OR components.github_repo = '' THEN EXCLUDED.github_repo ELSE components.github_repo END,
 				categories = CASE WHEN cardinality(components.categories) > 0 THEN components.categories ELSE EXCLUDED.categories END
-			RETURNING id`, display, strings.ToLower(display), confirmed, sortedCats(cats)).Scan(&id); err != nil {
+			RETURNING id`, display, strings.ToLower(display), confirmed, sortedCats(cats), repoArg).Scan(&id); err != nil {
 			return err
 		}
 		ev := map[string]any{"host": r.host, "port": r.port, "banner": r.ban}
@@ -119,6 +128,10 @@ func syncAssetServicesToComponents(ctx context.Context, q serviceScanQ, targets 
 			*r.assetID, id, r.port, r.ver, raw); err != nil {
 			return err
 		}
+	}
+	// T54：服务组件关联写入后重算研究价值分；失败只记日志，不影响 T52 同步结果。
+	if _, err := recomputeResearchScores(ctx, q); err != nil {
+		log.Printf("research score after service sync: %v", err)
 	}
 	return nil
 }

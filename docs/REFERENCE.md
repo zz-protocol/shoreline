@@ -367,10 +367,27 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 
 服务指纹规则集中在 `backend/fingerprints/services.yaml`，经 `go:embed` 编入二进制；识别、版本提取、探测报文都只读这份规则，新增服务只改 YAML，不改扫描代码。
 
-- 规则字段：顶层 `version: 1`；每条规则含 `name`（小写短名，写入 `asset_services.name`）、`component`（库存展示名，省略时用 `name`）、`category`（Wappalyzer 分类名，Wappalyzer 查不到时作为组件分类）、`confidence`（`high` / `medium` / `low`）、`ports`（1–65535）、`banner`（必须命中的正则）、`version`（可选，需带捕获组）、`probes`（可空；每项 `text` 或 `hex` 二选一，加 `expect` 响应正则）。
+- 规则字段：顶层 `version: 1`；每条规则含 `name`（小写短名，写入 `asset_services.name`）、`component`（库存展示名，省略时用 `name`）、`category`（Wappalyzer 分类名，Wappalyzer 查不到时作为组件分类）、`confidence`（`high` / `medium` / `low`）、`repo`（可选，官方开源仓库 `owner/repo`，仅供 T54 评分）、`ports`（1–65535）、`banner`（必须命中的正则）、`version`（可选，需带捕获组）、`probes`（可空；每项 `text` 或 `hex` 二选一，加 `expect` 响应正则）。
 - `probes` 只允许无认证、不读写业务数据的只读识别报文，单条不超过 256 字节。未声明 `probes` 的端口只读初始 banner、不写；声明后每个 probe 用一次连接，响应同时匹配 `expect` 与规则 `banner` 时停止并采用，否则保留最后一段 banner 供 T52 归档。默认扫描端口等于全部规则声明的端口，`SERVICE_SCAN_PORTS` 可覆盖。
 - `SERVICE_FINGERPRINT_RULES` 指向额外 YAML，与内置规则合并：**同名规则整条覆盖**，其余追加；不接受删除内置规则。加载在启动时完成，正则预编译，扫描热路径不再编译；改规则需重启（随发布更新，不做热加载）。
-- 启动校验失败即拒绝启动（`main` 中 `log.Fatal`）：Banner/version/expect 正则不可编译、端口不在 1–65535、`confidence` 不是三个枚举值、同一文件内 `name` 重复或非法、`category` 为空、probe 同时给 `text` 与 `hex` 或都为空、probe 超过 256 字节、YAML 出现未知字段。
+- 启动校验失败即拒绝启动（`main` 中 `log.Fatal`）：Banner/version/expect 正则不可编译、端口不在 1–65535、`confidence` 不是三个枚举值、同一文件内 `name` 重复或非法、`category` 为空、`repo` 不是合法 `owner/repo`、probe 同时给 `text` 与 `hex` 或都为空、probe 超过 256 字节、YAML 出现未知字段。
 - 置信度随规则写入 `asset_components.evidence.confidence`（不改表结构），例如 `{"host":"...","port":6379,"banner":"...","confidence":"high"}`。
+- 内置 10 条规则声明官方 `repo`（`mysql/mysql-server`、`postgres/postgres`、`redis/redis`、`mongodb/mongo`、`elastic/elasticsearch`、`apache/kafka`、`etcd-io/etcd`、`alibaba/nacos`、`rabbitmq/rabbitmq-server`、`memcached/memcached`）。识别写入组件时，仅当 `components.github_repo` 为空才填入，不覆盖用户已填值，也**不**自动发起外网富集（`stars` / `advisory_count` 仍由用户在组件页填 repo 或后续富集写入）。
 - 启动时 `reidentifyStoredServices` 用当前规则重匹配 `asset_services` 中 `open=true`、`banner` 非空且 `name` 为空或以 `unidentified-service-` 开头的记录；命中则回填 `name` / `version` 并同步 T52 组件。新建的识别组件按一次新扫描的口径 `confirmed=true`（已存在组件的 `confirmed` 仍按 T52 冲突口径不覆盖）；同资产同端口旧的 `unidentified-service-*` 关联置 `ignored_at`，避免同一端口同时出现在正式列表和待确认候选。无资产关联（`asset_id` 为空）的历史行只回填 name/version，不进组件库存。重识别失败只记日志，不阻塞服务启动。
 - 不新增 REST/MCP 路由。
+
+## 研究价值评分（T54）
+
+`components.research_score` / `research_score_parts` / `research_scored_at` 由 `recomputeResearchScores` 批量重算，列表只按落库列排序/筛选，不在查询时动态计算。**四维等权，各 0.25；总分 0–100，落库两位小数**：`score = round((attack + source + advisory + usage) × 0.25 × 100, 2)`，`research_score_parts` 存四维原始分（0–1）。
+
+| 维度 | 映射 | 说明 |
+|---|---|---|
+| 攻击面 attack | `source=service` 且分类含 `Databases` / `Caching` / `Message queues` → 1.0；其它 `service` → 0.75；Web 组件 → 0.4；无分类 → 0.3 | T52 写入的 service 组件一定带分类，空分类档只出现在 Web 组件 |
+| 源码可得性 source | `github_repo` 非空且富集成功（`enriched_at` 非空、`enrich_error` 空）→ 1.0；repo 为空或尚未富集 → 0.5；repo 非空但富集失败 → 0.3 | 闭源/找不到 repo 无法白盒，降权 |
+| 公开披露稀缺 advisory | `advisory_count IS NULL` → 0.5；`0` → 1.0；`n>0` → `1/(1+n)` | **0 披露只用于排序，不代表安全**；API 不输出任何「安全」结论字段 |
+| 本 SRC 使用频度 usage | 该组件在单一厂商内出现的最大去重资产数 `n`（`url_components` 与 `asset_components` 两条来源合并去重），`n/(n+5)` | 全局口径，与当前 vendor 筛选无关；覆盖厂商数只展示、不参与评分 |
+
+- 默认统计口径与组件列表一致：排除泛解析（`wildcard`）、客户托管（`customer_hosted`）、非 alive 资产，只统计 `confirmed` 组件的关联。列表切换 `include_wildcard` / `include_customer_hosted` / `include_dead` **不触发重算**，分数仍是默认口径的全局分。
+- 重算时机：启动时、T44 富集完成写入 `stars` / `advisory_count` 后、T52 `syncAssetServicesToComponents` 写完服务关联后。三处重算失败都只记日志，不阻塞启动、不影响富集与扫描结果。一次聚合查询 + 分批（1000 行）`UPDATE`，不逐组件查询；重复执行幂等（`research_scored_at` 会刷新）。
+- 列表：`GET /api/components` 支持 `sort=research`（`research_score DESC, id DESC`，游标规则与其它排序一致）与 `min_score`（0–100，含端点，越界 400）；返回项含 `research_score` 与 `research_score_parts`。`GET /api/components/values` 沿用同一 `min_score` 筛选。MCP `search_components` 同步 `sort=research` 与 `min_score`。前端「研究价值」列显示 1 位小数，tooltip 展示四分项。
+- 新识别的组件在下一次重算（默认是下一次启动/富集完成/服务同步）时获得分数；未重算前为默认 0 分与空分项。

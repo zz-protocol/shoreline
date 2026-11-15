@@ -74,6 +74,12 @@ func main() {
 	} else if n > 0 {
 		log.Printf("reidentified %d stored services", n)
 	}
+	// T54：启动时重算研究价值分；失败只记日志，不阻塞启动。
+	if n, err := recomputeResearchScores(context.Background(), pool); err != nil {
+		log.Printf("research score: %v", err)
+	} else if n > 0 {
+		log.Printf("scored %d components", n)
+	}
 	handlers := map[string]ScanHandler{
 		"passive": passiveHandlerFromConfig(pool, pcfg),
 		"dns":     dnsHandler(pool, dnsRes),

@@ -1,6 +1,7 @@
 # T53 服务指纹规则。识别逻辑只使用本文件声明的内容：
 #   - banner/version 是正则；probes 只允许无认证、不读写业务数据的只读识别报文。
 #   - 未声明 probes 的规则只读初始 banner，不发送任何字节。
+#   - repo 可选，写官方开源仓库 owner/repo，仅供 T54「源码可得性」评分；不在扫描时联网富集。
 #   - SERVICE_FINGERPRINT_RULES 指向的额外 YAML 与本文件合并：同名规则整条覆盖，其余追加。
 version: 1
 rules:
@@ -8,6 +9,7 @@ rules:
     component: MySQL
     category: Databases
     confidence: high
+    repo: mysql/mysql-server
     ports: [3306]
     banner: '(?i)mysql_native_password|mariadb|\x00mysql'
     version: '([0-9]+\.[0-9]+\.[0-9]+)'
@@ -18,6 +20,7 @@ rules:
     component: PostgreSQL
     category: Databases
     confidence: high
+    repo: postgres/postgres
     ports: [5432]
     banner: '^[SN]$'
     # 8 字节 SSLRequest，只询问是否支持 TLS，不是 StartupMessage。
@@ -29,6 +32,7 @@ rules:
     component: Redis
     category: Caching
     confidence: high
+    repo: redis/redis
     ports: [6379]
     banner: '(?im)-NOAUTH|redis_version|^\+PONG|^-DENIED|^-ERR .+redis'
     version: 'redis_version:([0-9]+\.[0-9]+\.[0-9]+)'
@@ -41,6 +45,7 @@ rules:
     component: MongoDB
     category: Databases
     confidence: medium
+    repo: mongodb/mongo
     ports: [27017]
     banner: '(?i)mongodb|ismaster|hellook|maxwireversion'
     # OP_MSG hello（{hello:1, $db:"admin"}），只做握手，不查询集合。
@@ -52,6 +57,7 @@ rules:
     component: Elasticsearch
     category: Search engines
     confidence: high
+    repo: elastic/elasticsearch
     ports: [9200]
     banner: '(?i)elasticsearch|cluster_name|you know, for search'
     version: '([0-9]+\.[0-9]+\.[0-9]+)'
@@ -64,6 +70,7 @@ rules:
     component: Kafka
     category: Message queues
     confidence: medium
+    repo: apache/kafka
     ports: [9092]
     banner: '(?s)^.{4}\x00\x00\x00\x01\x00\x00|(?i)kafka'
     # ApiVersions v0（client_id 为 "-"），只协商协议版本，不生产/消费。
@@ -75,6 +82,7 @@ rules:
     component: etcd
     category: Application server
     confidence: high
+    repo: etcd-io/etcd
     ports: [2379]
     banner: '(?i)etcd'
     version: '([0-9]+\.[0-9]+)'
@@ -89,6 +97,7 @@ rules:
     component: Nacos
     category: Application server
     confidence: medium
+    repo: alibaba/nacos
     ports: [8848]
     banner: '(?i)nacos'
     # 控制台首页，只读 HTML，不调用配置/命名空间 API。
@@ -100,6 +109,7 @@ rules:
     component: RabbitMQ
     category: Message queues
     confidence: high
+    repo: rabbitmq/rabbitmq-server
     ports: [5672]
     banner: '(?i)AMQP|rabbitmq'
     # AMQP 协议头（客户端前言），不是 start-ok/登录/publish/consume。
@@ -111,6 +121,7 @@ rules:
     component: Memcached
     category: Caching
     confidence: high
+    repo: memcached/memcached
     ports: [11211]
     banner: '(?i)memcached|^VERSION [0-9]'
     version: '^VERSION ([0-9]+\.[0-9]+\.[0-9]+)'

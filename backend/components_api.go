@@ -24,8 +24,9 @@ type componentFilter struct {
 	Vendor               *int64
 	MaxStars             *int
 	MaxAdvisories        *int
+	MinScore             *int // 研究价值最低分（0–100）
 	MissingRepo          bool
-	Sort                 string // "", "stars", "advisories"
+	Sort                 string // "", "stars", "advisories", "research"
 	IncludeAllCategories bool
 	Categories           []string
 	Limit                int
@@ -106,6 +107,9 @@ func componentFilterFromQuery(w http.ResponseWriter, r *http.Request, withListEx
 		if f.MaxAdvisories, okD = optIntQuery(w, r, "max_advisories"); !okD {
 			return componentFilter{}, false
 		}
+		if f.MinScore, okS = optScoreQuery(w, r, "min_score"); !okS {
+			return componentFilter{}, false
+		}
 		miss, okM := boolParam(w, r, "missing_repo")
 		if !okM {
 			return componentFilter{}, false
@@ -113,9 +117,9 @@ func componentFilterFromQuery(w http.ResponseWriter, r *http.Request, withListEx
 		f.MissingRepo = miss != nil && *miss
 		f.Sort = strings.TrimSpace(r.URL.Query().Get("sort"))
 		switch f.Sort {
-		case "", "stars", "advisories":
+		case "", "stars", "advisories", "research":
 		default:
-			writeErr(w, 400, "sort must be stars, advisories, or empty")
+			writeErr(w, 400, "sort must be stars, advisories, research, or empty")
 			return componentFilter{}, false
 		}
 		all, okAll := boolParam(w, r, "include_all_categories")
@@ -164,7 +168,22 @@ func optIntQuery(w http.ResponseWriter, r *http.Request, name string) (*int, boo
 	return &n, true
 }
 
-const componentCountSQL = `SELECT c.id, c.name, c.source, c.confirmed, c.github_repo, c.stars, c.advisory_count, c.enrich_error, c.enriched_at, c.categories, ` + commonExistsSQL + ` AS is_common,
+// optScoreQuery 解析 0–100 分（research_score 的筛选阈值）。
+func optScoreQuery(w http.ResponseWriter, r *http.Request, name string) (*int, bool) {
+	s := r.URL.Query().Get(name)
+	if s == "" {
+		return nil, true
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 || n > 100 {
+		writeErr(w, 400, name+" must be an integer between 0 and 100")
+		return nil, false
+	}
+	return &n, true
+}
+
+const componentCountSQL = `SELECT c.id, c.name, c.source, c.confirmed, c.github_repo, c.stars, c.advisory_count, c.enrich_error, c.enriched_at, c.categories,
+	c.research_score::float8 AS research_score, c.research_score_parts, ` + commonExistsSQL + ` AS is_common,
 	count(DISTINCT s.url_id)::bigint AS url_count,
 	count(DISTINCT s.asset_id)::bigint AS asset_count,
 	count(DISTINCT s.vendor_id)::bigint AS vendor_count
@@ -200,6 +219,10 @@ func componentSortSQL(sort string) (order, cursorPred string) {
 				(cc.advisory_count IS NOT NULL AND c.advisory_count IS NULL) OR
 				(c.advisory_count IS NOT NULL AND cc.advisory_count IS NOT NULL AND (c.advisory_count, c.id) > (cc.advisory_count, cc.id))
 			))`
+	case "research":
+		return "c.research_score DESC, c.id DESC",
+			`$C::bigint = 0 OR (c.research_score, c.id) < (
+				SELECT cc.research_score, cc.id FROM counted cc WHERE cc.id = $C)`
 	default:
 		return "c.vendor_count DESC, c.asset_count DESC, c.id DESC",
 			`$C::bigint = 0 OR (c.vendor_count, c.asset_count, c.id) < (
@@ -227,6 +250,9 @@ func (f componentFilter) listFilterSQL() (having, filters string, args []any) {
 	}
 	if f.MaxAdvisories != nil {
 		filters += ` AND c.advisory_count <= ` + add(*f.MaxAdvisories)
+	}
+	if f.MinScore != nil {
+		filters += ` AND c.research_score >= ` + add(*f.MinScore)
 	}
 	if f.MissingRepo {
 		filters += ` AND (c.github_repo IS NULL OR c.github_repo = '')`
@@ -273,7 +299,12 @@ LIMIT ` + limP
 			return nil, errf(400, "invalid cursor")
 		}
 	}
-	return rowsJSON(a.db.Query(ctx, q, args...))
+	list, err := rowsJSON(a.db.Query(ctx, q, args...))
+	if err != nil {
+		return nil, err
+	}
+	normalizeResearchScoreParts(list)
+	return list, nil
 }
 
 func (a *api) listComponents(w http.ResponseWriter, r *http.Request) {
@@ -357,6 +388,7 @@ func (a *api) getComponent(w http.ResponseWriter, r *http.Request) {
 	f.Vendor = nil
 	q := `WITH counted AS (` + componentCountSQL + `)
 SELECT c.id, c.name, c.source, c.confirmed, c.github_repo, c.stars, c.advisory_count, c.enrich_error, c.enriched_at, c.categories,
+	c.research_score::float8 AS research_score, c.research_score_parts,
 	COALESCE(x.is_common, ` + commonExistsSQL + `) AS is_common,
 	COALESCE(x.url_count, 0) AS url_count,
 	COALESCE(x.asset_count, 0) AS asset_count,
@@ -373,6 +405,7 @@ WHERE c.id = $6`
 		writeErr(w, 404, "not found")
 		return
 	}
+	normalizeResearchScoreParts(list)
 	writeJSON(w, 200, list[0])
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -84,6 +85,7 @@ func (a *api) enrichComponent(ctx context.Context, id int64) error {
 	}
 	stars, errGH := a.fetchGitHubStars(ctx, repo)
 	advisories, errOSV := a.fetchOSVAdvisories(ctx, repo)
+	var fetchErr error
 	switch {
 	case errGH != nil && errOSV != nil:
 		_, err := a.db.Exec(ctx, `UPDATE components SET enrich_error = $2, enriched_at = now(), updated_at = now() WHERE id = $1`,
@@ -91,26 +93,33 @@ func (a *api) enrichComponent(ctx context.Context, id int64) error {
 		if err != nil {
 			return err
 		}
-		return errGH
+		fetchErr = errGH
 	case errGH != nil:
 		_, err := a.db.Exec(ctx, `UPDATE components SET advisory_count = $2, enrich_error = $3, enriched_at = now(), updated_at = now() WHERE id = $1`,
 			id, advisories, clipErr(errGH.Error()))
 		if err != nil {
 			return err
 		}
-		return errGH
+		fetchErr = errGH
 	case errOSV != nil:
 		_, err := a.db.Exec(ctx, `UPDATE components SET stars = $2, enrich_error = $3, enriched_at = now(), updated_at = now() WHERE id = $1`,
 			id, stars, clipErr(errOSV.Error()))
 		if err != nil {
 			return err
 		}
-		return errOSV
+		fetchErr = errOSV
 	default:
 		_, err := a.db.Exec(ctx, `UPDATE components SET stars = $2, advisory_count = $3, enrich_error = NULL, enriched_at = now(), updated_at = now() WHERE id = $1`,
 			id, stars, advisories)
-		return err
+		if err != nil {
+			return err
+		}
 	}
+	// T54：stars / advisory_count 写入后重算研究价值分；重算失败不影响富集结果。
+	if _, err := recomputeResearchScores(ctx, a.db); err != nil {
+		log.Printf("research score after enrich %d: %v", id, err)
+	}
+	return fetchErr
 }
 
 func (a *api) fetchGitHubStars(ctx context.Context, repo string) (int, error) {

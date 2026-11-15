@@ -78,8 +78,9 @@ type searchComponentsIn struct {
 	IncludeDead          bool     `json:"include_dead,omitempty" jsonschema:"include inactive assets (default false; default counts only alive)"`
 	MaxStars             *int     `json:"max_stars,omitempty" jsonschema:"maximum GitHub stars (omit for no cap; only rows with a known star count)"`
 	MaxAdvisories        *int     `json:"max_advisories,omitempty" jsonschema:"maximum public advisory count (omit for no cap)"`
+	MinScore             *int     `json:"min_score,omitempty" jsonschema:"minimum research score 0-100 (omit for no cap)"`
 	MissingRepo          bool     `json:"missing_repo,omitempty" jsonschema:"only components with no github_repo"`
-	Sort                 string   `json:"sort,omitempty" jsonschema:"empty (vendor_count desc), stars, or advisories (both ascending, nulls first)"`
+	Sort                 string   `json:"sort,omitempty" jsonschema:"empty (vendor_count desc), stars, advisories (both ascending, nulls first), or research (research_score desc)"`
 	IncludeAllCategories bool     `json:"include_all_categories,omitempty" jsonschema:"include low-value categories hidden by default (JavaScript libraries, CDN, Analytics, etc.)"`
 	Category             []string `json:"category,omitempty" jsonschema:"only components that have at least one of these Wappalyzer category names"`
 	Limit                *int     `json:"limit,omitempty" jsonschema:"1..500, default 50"`
@@ -128,6 +129,12 @@ func (in searchComponentsIn) filter() (componentFilter, error) {
 		}
 		f.MaxAdvisories = in.MaxAdvisories
 	}
+	if in.MinScore != nil {
+		if *in.MinScore < 0 || *in.MinScore > 100 {
+			return f, errf(400, "min_score must be an integer between 0 and 100")
+		}
+		f.MinScore = in.MinScore
+	}
 	f.MissingRepo = in.MissingRepo
 	f.IncludeAllCategories = in.IncludeAllCategories
 	for _, v := range in.Category {
@@ -142,9 +149,9 @@ func (in searchComponentsIn) filter() (componentFilter, error) {
 	}
 	f.Sort = strings.TrimSpace(in.Sort)
 	switch f.Sort {
-	case "", "stars", "advisories":
+	case "", "stars", "advisories", "research":
 	default:
-		return f, errf(400, "sort must be stars, advisories, or empty")
+		return f, errf(400, "sort must be stars, advisories, research, or empty")
 	}
 	return f, nil
 }
@@ -366,7 +373,7 @@ func (a *api) mcpServer() *mcp.Server {
 			}
 			return nil, mapOut{"updated": tag.RowsAffected(), "status": st}, nil
 		})
-	mcp.AddTool(s, &mcp.Tool{Name: "search_components", Description: "Search the open-source component inventory (same filters as GET /api/components). Defaults: exclude common components; exclude wildcard, customer-hosted, and inactive assets; hide components whose categories are all low-value (JavaScript libraries, CDN, Analytics, etc.). include_all_categories=true shows all; category filters by Wappalyzer category names. Sorted by vendor_count then asset_count descending, or by stars/advisories ascending. Optional max_stars, max_advisories, missing_repo."},
+	mcp.AddTool(s, &mcp.Tool{Name: "search_components", Description: "Search the open-source component inventory (same filters as GET /api/components). Defaults: exclude common components; exclude wildcard, customer-hosted, and inactive assets; hide components whose categories are all low-value (JavaScript libraries, CDN, Analytics, etc.). include_all_categories=true shows all; category filters by Wappalyzer category names. Sorted by vendor_count then asset_count descending, or by stars/advisories ascending, or research (research_score desc). Optional max_stars, max_advisories, min_score (0-100), missing_repo. Items include research_score and research_score_parts (attack/source/advisory/usage, each 0-1)."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in searchComponentsIn) (*mcp.CallToolResult, pageOut, error) {
 			f, err := in.filter()
 			if err != nil {

@@ -61,6 +61,24 @@ func TestT53BuiltinRulesLoadAndKeepMySQLHandshake(t *testing.T) {
 			t.Errorf("rule %q must declare at least one read-only probe", name)
 		}
 	}
+	// T54：内置服务声明官方 repo，供「源码可得性」评分；不在扫描时联网富集。
+	wantRepos := map[string]string{
+		"mysql":         "mysql/mysql-server",
+		"postgresql":    "postgres/postgres",
+		"redis":         "redis/redis",
+		"mongodb":       "mongodb/mongo",
+		"elasticsearch": "elastic/elasticsearch",
+		"kafka":         "apache/kafka",
+		"etcd":          "etcd-io/etcd",
+		"nacos":         "alibaba/nacos",
+		"rabbitmq":      "rabbitmq/rabbitmq-server",
+		"memcached":     "memcached/memcached",
+	}
+	for name, repo := range wantRepos {
+		if got := rules.repo(name); got != repo {
+			t.Errorf("rule %q repo=%q want %q", name, got, repo)
+		}
+	}
 	if got := rules.ports(); len(got) != 10 {
 		t.Fatalf("default ports = %v, want 10", got)
 	}
@@ -270,6 +288,28 @@ rules:
     probes:
       - text: "PING\r\n"
 `,
+		"repo is url": `
+version: 1
+rules:
+  - name: badrepo
+    component: BadRepo
+    category: Databases
+    confidence: high
+    repo: 'https://github.com/redis/redis'
+    ports: [9000]
+    banner: 'x'
+`,
+		"repo missing owner": `
+version: 1
+rules:
+  - name: badrepo2
+    component: BadRepo2
+    category: Databases
+    confidence: high
+    repo: 'redis'
+    ports: [9000]
+    banner: 'x'
+`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -473,6 +513,58 @@ rules:
 	if !hasInt(cfg.Ports, 19002) || !hasInt(cfg.Ports, 6379) {
 		t.Fatalf("SERVICE_FINGERPRINT_RULES ports not merged: %v", cfg.Ports)
 	}
+}
+
+func TestT53RepoWrittenOnlyWhenEmpty(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	domain := t51RootDomain(t, e)
+	t51Enable(t, e, domain)
+	host := "repo." + domain
+	aid := t51InsertAsset(t, e, host, false)
+	if _, err := e.pool.Exec(ctx, `INSERT INTO asset_services (asset_id, host, port, open, name, version, banner)
+		VALUES ($1, $2, 6379, true, 'redis', '', '+PONG')`, aid, host); err != nil {
+		t.Fatal(err)
+	}
+	rules := t53MustLoad(t, "")
+	targets := []serviceScanTarget{{AssetID: aid, Host: host}}
+	if err := syncAssetServicesToComponents(ctx, e.pool, targets, rules); err != nil {
+		t.Fatal(err)
+	}
+	var repo, enrichErr string
+	var enrichedAt *time.Time
+	if err := e.pool.QueryRow(ctx, `SELECT COALESCE(github_repo, ''), COALESCE(enrich_error, ''), enriched_at
+		FROM components WHERE name_key = 'redis'`).Scan(&repo, &enrichErr, &enrichedAt); err != nil {
+		t.Fatal(err)
+	}
+	if repo != "redis/redis" {
+		t.Fatalf("YAML repo not written: %q", repo)
+	}
+	if enrichErr != "" || enrichedAt != nil {
+		t.Fatalf("YAML repo must not trigger enrichment: err=%q enriched=%v", enrichErr, enrichedAt)
+	}
+
+	// 用户已填写的 repo 不被识别同步覆盖。
+	if _, err := e.pool.Exec(ctx, `UPDATE components SET github_repo = 'acme/custom-redis' WHERE name_key = 'redis'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncAssetServicesToComponents(ctx, e.pool, targets, rules); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.pool.QueryRow(ctx, `SELECT COALESCE(github_repo, '') FROM components WHERE name_key = 'redis'`).Scan(&repo); err != nil {
+		t.Fatal(err)
+	}
+	if repo != "acme/custom-redis" {
+		t.Fatalf("user repo overwritten: %q", repo)
+	}
+
+	t.Cleanup(func() {
+		e.pool.Exec(context.Background(), `DELETE FROM asset_services WHERE host = $1`, host)
+		e.pool.Exec(context.Background(), `DELETE FROM asset_components WHERE asset_id = $1`, aid)
+		e.pool.Exec(context.Background(), `DELETE FROM components c WHERE c.name_key = 'redis'
+			AND NOT EXISTS (SELECT 1 FROM asset_components ac WHERE ac.component_id = c.id)
+			AND NOT EXISTS (SELECT 1 FROM url_components uc WHERE uc.component_id = c.id)`)
+	})
 }
 
 func TestT53ReidentifyStoredServices(t *testing.T) {
