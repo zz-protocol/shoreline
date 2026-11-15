@@ -82,6 +82,7 @@ components:
         vendor_id: {type: integer}
         cnames: {type: array, items: {type: string}}
         cdn: {type: string, nullable: true}
+        cdn_fronted: {type: boolean, description: "命中 CDN/WAF（CNAME 后缀或 IP 段库）。跳过端口扫描，仍走 HTTP 识别；API 不返回解析 IP"}
         resolved: {type: boolean, nullable: true}
         wildcard: {type: boolean}
         customer_hosted: {type: boolean, description: "子域名命中客户托管规则（云厂商分配给客户的默认域名），默认在列表与播报中隐藏"}

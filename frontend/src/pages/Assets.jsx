@@ -208,6 +208,7 @@ export default function Assets() {
           { title: <Hint text={HELP.scope}>范围内</Hint>, dataIndex: 'in_scope', render: (v) => (v ? '是' : '否') },
           { title: <Hint text={HELP.wildcard}>泛解析</Hint>, dataIndex: 'wildcard', width: 90, render: (v) => (v ? <Tag data-testid="wildcard-tag">泛解析</Tag> : '') },
           { title: <Hint text={HELP.hosted}>客户托管</Hint>, dataIndex: 'customer_hosted', render: (v) => (v ? <Tag>客户托管</Tag> : '') },
+          { title: <Hint text={HELP.cdnFronted}>CDN</Hint>, dataIndex: 'cdn_fronted', width: 80, render: (v, r) => (v ? <Tag data-testid="cdn-fronted-tag">{r.cdn || 'CDN'}</Tag> : '') },
           { title: <Hint text={HELP.mine}>挖掘</Hint>, dataIndex: 'mine_status', width: 100, render: (v) => {
             const m = MINE_STATUS[v] || MINE_STATUS.unset
             return <Tag color={m.color} data-testid="mine-tag">{m.label}</Tag>

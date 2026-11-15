@@ -259,10 +259,13 @@ func (a *api) mcpServer() *mcp.Server {
 			}
 			return nil, out, nil
 		})
-	mcp.AddTool(s, &mcp.Tool{Name: "check_service_scan", Description: "Check whether a non-Web (port/service) probe would be allowed for a host: global switch, authorization scope, allow, and skip reason. Does not probe."},
+	mcp.AddTool(s, &mcp.Tool{Name: "check_service_scan", Description: "Check whether a non-Web (port/service) probe would be allowed for a host: global switch, authorization scope, CDN fronted, allow, and skip reason. Does not probe."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in checkServiceScanIn) (*mcp.CallToolResult, mapOut, error) {
 			out, err := a.serviceScanDecision(ctx, in.Host)
 			if err != nil {
+				return toolErr[mapOut](err)
+			}
+			if err := enrichOriginServiceScanDecision(ctx, a.db, out); err != nil {
 				return toolErr[mapOut](err)
 			}
 			return nil, out, nil

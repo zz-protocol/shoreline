@@ -305,6 +305,9 @@ func (r *resolver) resolveHosts(ctx context.Context, root string, hosts []string
 				if hd.CDN = cdnOf(res.CNAMEs); hd.CDN == "" {
 					hd.CDN = cdnOfIPs(res.IPs)
 				}
+				if hd.CDN == "" {
+					hd.CDN = cdnFromStaticLibrary(res.CNAMEs, res.IPs)
+				}
 			}
 			out[i] = hd
 		}(i, h)
@@ -378,8 +381,9 @@ func (r *resolver) storeDNS(ctx context.Context, tx pgx.Tx, host string, hd host
 		quiet = wild // 解析结果回落到泛解析：v1 不报
 		wild, parentWild = false, false
 	}
+	fronted := cdn != nil && *cdn != ""
 	if _, err := tx.Exec(ctx, `UPDATE assets SET cnames = $2, resolved = true, wildcard = $3, cdn = $4,
-			parent_wildcard = $5, resolved_at = now() WHERE id = $1`, assetID, cnames, wild, cdn, parentWild); err != nil {
+			parent_wildcard = $5, cdn_fronted = $6, resolved_at = now() WHERE id = $1`, assetID, cnames, wild, cdn, parentWild, fronted); err != nil {
 		return false, err
 	}
 	// wildcard=true 不生成事件；父域有泛解析的等 HTTP 页面复核为真实后再生成

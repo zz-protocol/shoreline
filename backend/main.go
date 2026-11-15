@@ -50,6 +50,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if err := loadCDNLibraryFromEnv(); err != nil {
+		log.Fatal(err)
+	}
 	dbURL := os.Getenv("DATABASE_URL")
 	if err := runMigrations(dbURL); err != nil {
 		log.Fatalf("migrate: %v", err)

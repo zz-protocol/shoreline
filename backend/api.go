@@ -768,7 +768,7 @@ func int64Param(w http.ResponseWriter, r *http.Request, name string) (*int64, bo
 	return &n, true
 }
 
-const assetCols = `a.id, a.subdomain, a.root_id, r.domain AS root_domain, r.vendor_id, a.cnames, a.cdn, a.resolved,
+const assetCols = `a.id, a.subdomain, a.root_id, r.domain AS root_domain, r.vendor_id, a.cnames, a.cdn, a.cdn_fronted, a.resolved,
 	a.wildcard, a.customer_hosted, a.in_scope, a.sources, a.first_seen, a.last_seen, a.alive, a.last_alive_at, a.dead_reason,
 	a.mine_status, a.mine_claimed_by, a.mine_claimed_at, a.mine_claim_expires_at,
 	a.mine_completed_at, a.mine_cooldown_until, a.mine_note, a.mine_report_url`
