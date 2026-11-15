@@ -61,5 +61,27 @@ describe('T49 扫描授权范围', () => {
     expect(validPat('*.example.test')).toBe(true)
     expect(validPat('not a host')).toBe(false)
     expect(validPat('127.0.0.1')).toBe(false)
+    for (const p of ['127.1', '10.1', '192.168.1', '127.0.1', '0177.0.0.1', '0x7f.0.0.1', '1.2.3.4.5', '*.127.1', '*.0.1']) {
+      expect(validPat(p), p).toBe(false)
+    }
+    expect(validPat('1.example.test')).toBe(true)
+    expect(validPat('app.example.test')).toBe(true)
+  })
+
+  it('前端拦住 127.1，不发起添加请求', async () => {
+    const calls = []
+    global.fetch = vi.fn(async (url, opts) => {
+      const u = String(url)
+      const method = (opts?.method || 'GET').toUpperCase()
+      calls.push(method + ' ' + u)
+      return { ok: true, status: 200, text: async () => JSON.stringify({ enabled: false, items: [] }) }
+    })
+    render(<AntApp><ServiceScan /></AntApp>)
+    await waitFor(() => expect(screen.getByTestId('service-scan-enabled')).toBeTruthy())
+    fireEvent.click(screen.getByText('添加范围'))
+    fireEvent.change(screen.getByTestId('service-scan-pattern'), { target: { value: '127.1' } })
+    fireEvent.click(screen.getByText('OK'))
+    await waitFor(() => expect(screen.getByText(/不能是 IP|example\.test/)).toBeTruthy())
+    expect(calls.some((c) => c.startsWith('POST /api/service-scan/scopes'))).toBe(false)
   })
 })

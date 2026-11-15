@@ -101,7 +101,7 @@ func TestT49EnabledOutOfScopeSkipsAndInScopeProbes(t *testing.T) {
 	if err := e.pool.QueryRow(ctx, `SELECT host, reason FROM service_scan_skips`).Scan(&host, &reason); err != nil {
 		t.Fatal(err)
 	}
-	if host != outHost || reason != skipServiceScanOutOfScope {
+	if host != outHost || reason != "out_of_scope" {
 		t.Fatalf("skip got host=%s reason=%s", host, reason)
 	}
 	var n int
@@ -135,7 +135,7 @@ func TestT49EmptyScopeDeniesWhenEnabled(t *testing.T) {
 	if err := e.pool.QueryRow(ctx, `SELECT reason FROM service_scan_skips WHERE host = $1`, host).Scan(&reason); err != nil {
 		t.Fatal(err)
 	}
-	if reason != skipServiceScanOutOfScope {
+	if reason != "out_of_scope" {
 		t.Fatalf("reason %s", reason)
 	}
 }
@@ -232,7 +232,7 @@ func TestT49ServiceScanRESTAndMCP(t *testing.T) {
 		t.Fatalf("in-scope decision %v", dec)
 	}
 	dec, isErr = callTool(t, s, "check_service_scan", map[string]any{"host": outHost})
-	if isErr || dec["allow"] != false || dec["reason"] != skipServiceScanOutOfScope {
+	if isErr || dec["allow"] != false || dec["reason"] != "out_of_scope" {
 		t.Fatalf("out-of-scope decision %v", dec)
 	}
 	if _, isErr = callTool(t, s, "check_service_scan", map[string]any{"host": net.IPv4(127, 0, 0, 1).String()}); !isErr {
@@ -245,5 +245,144 @@ func TestT49ServiceScanRESTAndMCP(t *testing.T) {
 	off, isErr := callTool(t, s, "check_service_scan", map[string]any{"host": inHost})
 	if isErr || off["allow"] != false || off["reason"] != skipServiceScanDisabled {
 		t.Fatalf("disabled decision %v", off)
+	}
+}
+
+// t49RejectedIPPatterns 是打回列出的非规范 IPv4 / 全数字末级标签写法，必须一律拒绝。
+var t49RejectedIPPatterns = []string{
+	"127.1", "10.1", "192.168.1", "127.0.1",
+	"0177.0.0.1", "0x7f.0.0.1", "1.2.3.4.5",
+	"*.127.1", "*.0.1",
+}
+
+func TestT49RejectsIPShorthandAndNumericTLD(t *testing.T) {
+	for _, p := range t49RejectedIPPatterns {
+		if validScopePattern(normalizeHost(p)) {
+			t.Errorf("validScopePattern(%q) = true, want false", p)
+		}
+		if hostInServiceScope(p, []string{p, "example.test"}) {
+			t.Errorf("hostInServiceScope(%q) must be false even if the same pattern is listed", p)
+		}
+		allow, _ := decideServiceScan(true, []string{p, "example.test"}, p)
+		if allow {
+			t.Errorf("decideServiceScan must deny %q", p)
+		}
+	}
+	// 规范点分四段仍拒；正规域名仍接受。
+	if validScopePattern("127.0.0.1") || hostInServiceScope("127.0.0.1", []string{"example.test"}) {
+		t.Fatal("dotted-quad IPv4 must stay rejected")
+	}
+	for _, p := range []string{"example.test", "*.example.test", "app.example.test", "1.example.test"} {
+		if !validScopePattern(p) {
+			t.Errorf("validScopePattern(%q) = false, want true", p)
+		}
+	}
+	if !hostInServiceScope("1.example.test", []string{"example.test"}) {
+		t.Fatal("numeric non-TLD label must still be in scope")
+	}
+}
+
+func TestT49RESTAndMCPRejectIPShorthand(t *testing.T) {
+	e, c, _ := newAPITest(t, 500)
+	resetServiceScan(t, e)
+	c.want(200, "PATCH", "/api/service-scan", map[string]any{"enabled": true})
+	for _, p := range append([]string{net.IPv4(127, 0, 0, 1).String()}, t49RejectedIPPatterns...) {
+		c.want(400, "POST", "/api/service-scan/scopes", map[string]any{"pattern": p})
+	}
+	out := c.want(200, "GET", "/api/service-scan", nil)
+	if len(items(out)) != 0 {
+		t.Fatalf("no shorthand pattern may be stored, got %v", items(out))
+	}
+
+	// 正规域仍可登记
+	pat := strings.ToLower(t.Name()) + ".example.test"
+	created := c.want(201, "POST", "/api/service-scan/scopes", map[string]any{"pattern": pat})
+	if created["pattern"] != pat {
+		t.Fatalf("legal domain rejected: %v", created)
+	}
+
+	s, err := mcpSession(t, c.srv.URL, testBootstrap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, h := range []string{"127.1", "10.1", "192.168.1", "127.0.1", "0177.0.0.1", "0x7f.0.0.1", "1.2.3.4.5", net.IPv4(127, 0, 0, 1).String()} {
+		dec, isErr := callTool(t, s, "check_service_scan", map[string]any{"host": h})
+		if !isErr {
+			t.Fatalf("check_service_scan host=%q must be rejected, got %v", h, dec)
+		}
+		if allow, _ := dec["allow"].(bool); allow {
+			t.Fatalf("check_service_scan host=%q allow=true", h)
+		}
+	}
+	dec, isErr := callTool(t, s, "check_service_scan", map[string]any{"host": "app." + pat})
+	if isErr || dec["allow"] != true {
+		t.Fatalf("legal in-scope host should be allowed, got %v err=%v", dec, isErr)
+	}
+}
+
+func TestT49RunServiceScanIgnoresIPShorthandEvenIfStored(t *testing.T) {
+	e := newTestEnv(t)
+	resetServiceScan(t, e)
+	ctx := context.Background()
+	if _, err := e.pool.Exec(ctx, `INSERT INTO service_scan_settings (id, enabled) VALUES (1, true)`); err != nil {
+		t.Fatal(err)
+	}
+	// 绕过 REST，模拟库里已有简写（打回复现路径）。
+	if _, err := e.pool.Exec(ctx, `INSERT INTO service_scan_scopes (pattern) VALUES ('127.1'), ('10.1')`); err != nil {
+		t.Fatal(err)
+	}
+	var dials atomic.Int32
+	var seen []string
+	targets := []serviceScanTarget{{Host: "127.1"}, {Host: "10.1"}}
+	if err := runServiceScan(ctx, e.pool, targets, func(_ context.Context, h string) error {
+		dials.Add(1)
+		seen = append(seen, h)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if dials.Load() != 0 {
+		t.Fatalf("IP shorthand reached probe: dials=%d seen=%v", dials.Load(), seen)
+	}
+}
+
+func TestT49VendorInScopeDoesNotBypassServiceScope(t *testing.T) {
+	e := newTestEnv(t)
+	resetServiceScan(t, e)
+	ctx := context.Background()
+	if _, err := e.pool.Exec(ctx, `INSERT INTO service_scan_settings (id, enabled) VALUES (1, true)`); err != nil {
+		t.Fatal(err)
+	}
+	// 授权范围是另一个域；本资产虽 in_scope=true，仍不得探测。
+	if _, err := e.pool.Exec(ctx, `INSERT INTO service_scan_scopes (pattern) VALUES ('other.example.test')`); err != nil {
+		t.Fatal(err)
+	}
+	host := "vend." + strings.ToLower(t.Name()) + ".example.test"
+	var id int64
+	if err := e.pool.QueryRow(ctx, `INSERT INTO assets (root_id, subdomain, sources, in_scope) VALUES ($1, $2, '{dns}', true) RETURNING id`,
+		e.rootID, host).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	var flag bool
+	if err := e.pool.QueryRow(ctx, `SELECT in_scope FROM assets WHERE id = $1`, id).Scan(&flag); err != nil || !flag {
+		t.Fatalf("setup in_scope: %v %v", flag, err)
+	}
+	var dials atomic.Int32
+	if err := runServiceScan(ctx, e.pool, []serviceScanTarget{{AssetID: id, Host: host}}, func(context.Context, string) error {
+		dials.Add(1)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if dials.Load() != 0 {
+		t.Fatalf("vendor in_scope=true must not union into service-scan scope, dials=%d", dials.Load())
+	}
+	var reason string
+	if err := e.pool.QueryRow(ctx, `SELECT reason FROM service_scan_skips WHERE host = $1`, host).Scan(&reason); err != nil {
+		t.Fatal(err)
+	}
+	if reason != "out_of_scope" {
+		t.Fatalf("reason %q, want out_of_scope", reason)
 	}
 }

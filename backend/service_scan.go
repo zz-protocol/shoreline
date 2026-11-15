@@ -70,6 +70,7 @@ func loadServiceScanPatterns(ctx context.Context, q serviceScanQ) ([]string, err
 	return out, rows.Err()
 }
 
+// isIPHost 识别规范 IP（net.ParseIP）以及 libc inet_aton 能解析的 IPv4 简写/八进制/十六进制。
 func isIPHost(s string) bool {
 	s = normalizeHost(s)
 	s = strings.TrimPrefix(s, "*.")
@@ -77,13 +78,108 @@ func isIPHost(s string) bool {
 	if h, _, err := net.SplitHostPort(s); err == nil {
 		s = h
 	}
-	return net.ParseIP(s) != nil
+	if net.ParseIP(s) != nil {
+		return true
+	}
+	return parseInetAton(s) != nil
+}
+
+// hasAllNumericLastLabel 拒绝末级标签全是数字的写法（如 127.1、1.2.3.4.5）。合法域名末级不会是纯数字。
+func hasAllNumericLastLabel(s string) bool {
+	s = normalizeHost(s)
+	s = strings.TrimPrefix(s, "*.")
+	if s == "" {
+		return false
+	}
+	last := s
+	if i := strings.LastIndex(s, "."); i >= 0 {
+		last = s[i+1:]
+	}
+	if last == "" {
+		return false
+	}
+	for _, r := range last {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func rejectedServiceScanHost(s string) bool {
+	return isIPHost(s) || hasAllNumericLastLabel(s)
+}
+
+// parseInetAton 按 inet_aton(3) 解析 1–4 段十进制/八进制/十六进制 IPv4，无法解析时返回 nil。
+func parseInetAton(s string) net.IP {
+	if s == "" || strings.ContainsAny(s, ":[]/%") {
+		return nil
+	}
+	parts := strings.Split(s, ".")
+	if len(parts) < 1 || len(parts) > 4 {
+		return nil
+	}
+	nums := make([]uint64, len(parts))
+	for i, p := range parts {
+		n, ok := parseInetAtonPart(p)
+		if !ok {
+			return nil
+		}
+		nums[i] = n
+	}
+	var a, b, c, d uint64
+	switch len(nums) {
+	case 1:
+		if nums[0] > 0xffffffff {
+			return nil
+		}
+		a, b, c, d = nums[0]>>24, (nums[0]>>16)&0xff, (nums[0]>>8)&0xff, nums[0]&0xff
+	case 2:
+		if nums[0] > 0xff || nums[1] > 0xffffff {
+			return nil
+		}
+		a = nums[0]
+		b, c, d = (nums[1]>>16)&0xff, (nums[1]>>8)&0xff, nums[1]&0xff
+	case 3:
+		if nums[0] > 0xff || nums[1] > 0xff || nums[2] > 0xffff {
+			return nil
+		}
+		a, b = nums[0], nums[1]
+		c, d = (nums[2]>>8)&0xff, nums[2]&0xff
+	default:
+		for _, n := range nums {
+			if n > 0xff {
+				return nil
+			}
+		}
+		a, b, c, d = nums[0], nums[1], nums[2], nums[3]
+	}
+	return net.IPv4(byte(a), byte(b), byte(c), byte(d))
+}
+
+func parseInetAtonPart(p string) (uint64, bool) {
+	if p == "" {
+		return 0, false
+	}
+	if len(p) >= 2 && p[0] == '0' && (p[1] == 'x' || p[1] == 'X') {
+		if len(p) == 2 {
+			return 0, false
+		}
+		n, err := strconv.ParseUint(p[2:], 16, 32)
+		return n, err == nil
+	}
+	if p[0] == '0' && len(p) > 1 {
+		n, err := strconv.ParseUint(p, 8, 32)
+		return n, err == nil
+	}
+	n, err := strconv.ParseUint(p, 10, 32)
+	return n, err == nil
 }
 
 // hostInServiceScope：登记域本身及其子域视为范围内的资产集合；*.domain 只匹配子域。
 func hostInServiceScope(host string, patterns []string) bool {
 	host = normalizeHost(host)
-	if host == "" || isIPHost(host) {
+	if host == "" || rejectedServiceScanHost(host) {
 		return false
 	}
 	for _, p := range patterns {
@@ -196,7 +292,7 @@ func (a *api) createServiceScanScope(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pat := normalizeHost(b.Pattern)
-	if isIPHost(pat) || !validScopePattern(pat) {
+	if rejectedServiceScanHost(pat) || !validScopePattern(pat) {
 		writeErr(w, 400, "invalid pattern: use domain or *.domain")
 		return
 	}
@@ -229,7 +325,7 @@ func (a *api) deleteServiceScanScope(w http.ResponseWriter, r *http.Request) {
 
 func (a *api) serviceScanDecision(ctx context.Context, host string) (map[string]any, error) {
 	host = normalizeHost(host)
-	if host == "" || !validDomain(host) || isIPHost(host) {
+	if host == "" || !validDomain(host) || rejectedServiceScanHost(host) {
 		return nil, errf(400, "invalid host")
 	}
 	enabled, err := loadServiceScanEnabled(ctx, a.db)

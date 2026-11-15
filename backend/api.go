@@ -395,9 +395,10 @@ func validDomain(d string) bool {
 	return true
 }
 
-// validScopePattern：域名，或 "*." + 域名。
+// validScopePattern：域名，或 "*." + 域名。拒绝 IP（含 inet_aton 简写）与全数字末级标签。
 func validScopePattern(p string) bool {
-	return validDomain(strings.TrimPrefix(p, "*."))
+	d := strings.TrimPrefix(p, "*.")
+	return validDomain(d) && !rejectedServiceScanHost(d)
 }
 
 func (a *api) listRoots(w http.ResponseWriter, r *http.Request) {

@@ -3,13 +3,44 @@ import { Alert, App, Button, Form, Input, Modal, Popconfirm, Space, Switch, Tabl
 import { del, get, patch, post } from '../api'
 import { HELP, Hint } from '../help'
 
+function parseInetAtonPart(p) {
+  if (!p) return null
+  if (/^0[xX][0-9a-fA-F]+$/.test(p)) {
+    const n = parseInt(p.slice(2), 16)
+    return Number.isFinite(n) ? n : null
+  }
+  if (p.length > 1 && p.startsWith('0')) {
+    if (!/^[0-7]+$/.test(p)) return null
+    const n = parseInt(p, 8)
+    return Number.isFinite(n) ? n : null
+  }
+  if (!/^\d+$/.test(p)) return null
+  const n = parseInt(p, 10)
+  return Number.isFinite(n) ? n : null
+}
+
+function isInetAton(host) {
+  const parts = host.split('.')
+  if (parts.length < 1 || parts.length > 4) return false
+  const nums = parts.map(parseInetAtonPart)
+  if (nums.some((n) => n === null)) return false
+  const [a, b, c, d] = nums
+  if (parts.length === 1) return a <= 0xffffffff
+  if (parts.length === 2) return a <= 0xff && b <= 0xffffff
+  if (parts.length === 3) return a <= 0xff && b <= 0xff && c <= 0xffff
+  return nums.every((n) => n <= 0xff)
+}
+
 export function validServiceScanPattern(p) {
   const v = (p || '').trim().toLowerCase()
   if (!v || v.length > 253) return false
   const host = v.startsWith('*.') ? v.slice(2) : v
   if (!host.includes('.') || host.includes('*') || host.includes(':')) return false
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return false
-  return host.split('.').every((l) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(l))
+  const labels = host.split('.')
+  if (!labels.every((l) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(l))) return false
+  if (/^\d+$/.test(labels[labels.length - 1])) return false
+  if (isInetAton(host)) return false
+  return true
 }
 
 // T49 扫描授权范围：全局开关默认关；仅对登记域及其子域允许非 Web 探测。
