@@ -358,4 +358,4 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 - 关联：服务指纹通常没有 HTTP URL，新增 `asset_components`（资产 + 组件 + 端口，证据 JSON 只含 host/port/banner 摘要）。现有组件统计、下钻、整列复制 SQL 对 `url_components` 与 `asset_components` 做 UNION，筛选/降噪/alive 口径与 T43 一致。不新增 REST/MCP 路由，OpenAPI 仍与 `routes()` 对齐。
 - 分类：先走 Wappalyzer `categoriesForName`（MySQL/PostgreSQL/Redis/MongoDB/Elasticsearch 等）。库中没有的名字按 SPEC 回退：Kafka/RabbitMQ → Message queues，Memcached → Caching，etcd/Nacos → Application server。已有组件的非空 `categories` 仍走 T47 `CASE`，不覆盖；`name_key` 冲突时不改已有 `source` / `confirmed`，也不删除已识别组件行或其它来源的关联。
 - 未识别：端口开放且 banner 非空、又没有指纹短名时，按脱敏 banner 的 SHA-256 聚类，名称 `unidentified-service-<12 hex>`，`confirmed=false`，不进默认正式列表。可在「待确认候选」中确认或忽略（LLM 未配置时也展示 service 候选；忽略写 `asset_components.ignored_at`）。关闭端口或开放但无 banner 的不归档。补 YAML 指纹后的自动重识别留给 T53。
-- 默认正式列表仍按 T43 过滤 `alive='alive'`；仅有服务指纹、alive 仍为 unknown 的主机会被默认列表隐藏。
+- 服务扫描拿到 banner 或识别成功时，把该主机标为 `alive`（写 `last_alive_at`、清空 `dead_reason`；已 alive 不再改；从不因端口关闭或无 banner 改成 dead）。默认正式列表仍按 T43 过滤 `alive='alive'`，因此这类主机不会被默认列表隐藏。
