@@ -174,6 +174,7 @@ func scanHostServices(ctx context.Context, q serviceScanQ, cfg serviceFingerprin
 		return nil
 	}
 	rules := builtinServiceFingerprintRules()
+	reached := false
 	for _, port := range cfg.Ports {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -188,8 +189,26 @@ func scanHostServices(ctx context.Context, q serviceScanQ, cfg serviceFingerprin
 		if err := upsertAssetService(ctx, q, assetID, host, port, open, name, version, sanitizeServiceBanner(banner)); err != nil {
 			return err
 		}
+		// 服务有 banner 或识别成功说明可达：标 alive，避免默认组件列表把 unknown 主机藏掉（架构 11-15 定）。
+		// 端口关闭或开放但无 banner 时不改 alive。
+		if len(banner) > 0 || name != "" {
+			reached = true
+		}
+	}
+	if reached && assetID != 0 {
+		if err := markAssetAliveFromService(ctx, q, assetID); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// markAssetAliveFromService 只把主机提升为 alive（写 last_alive_at、清空 dead_reason），从不因服务扫描改为 dead。
+// 已 alive 不再改。不产生 recovered 事件（未要求服务扫描改 T21 事件流）。
+func markAssetAliveFromService(ctx context.Context, q serviceScanQ, assetID int64) error {
+	_, err := q.Exec(ctx, `UPDATE assets SET alive = 'alive', last_alive_at = now(), dead_reason = NULL
+		WHERE id = $1 AND alive IS DISTINCT FROM 'alive'`, assetID)
+	return err
 }
 
 func ruleForPort(rules []serviceFingerprintRule, port int) serviceFingerprintRule {
