@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("T49", "T50", "T51", "T52", "T53", "T54", "All")]
+    [ValidateSet("T49", "T50", "T51", "T52", "T53", "T54", "T55", "T56", "T57", "All")]
     [string]$Task = "All",
     [int]$Count = 1,
     [switch]$SkipFrontend
@@ -175,6 +175,61 @@ function Invoke-T53 {
     }
 }
 
+function Invoke-T55 {
+    Write-Host "`nT55 探测结果三态" -ForegroundColor Cyan
+    Invoke-Check "T55" "实现与迁移存在" {
+        Assert-Exists (Join-Path $backend "migrations\032_service_response_kind.sql") "032 迁移"
+        Assert-Exists (Join-Path $backend "t55_service_response_kind_test.go") "T55 测试"
+    }
+    Invoke-Check "T55" "测试通过（T55）" { Invoke-GoTests "T55" }
+    Invoke-Check "T55" "空 banner 不生成候选" {
+        Assert-Text (Join-Path $backend "t55_service_response_kind_test.go") "(?i)empty|空" "缺少空 banner 用例"
+    }
+    Invoke-Check "T55" "迁移可重跑" {
+        Assert-Text (Join-Path $backend "migrations\032_service_response_kind.sql") "IF NOT EXISTS" "迁移不可重跑"
+    }
+    Invoke-Check "T55" "API 与前端展示 verified" {
+        Assert-Text (Join-Path $backend "openapi.yaml") "verified" "OpenAPI 未暴露 verified"
+        Assert-Text (Join-Path $frontend "src\pages\ServiceScan.jsx") "verified" "服务扫描页未展示 verified"
+    }
+}
+
+function Invoke-T56 {
+    Write-Host "`nT56 反代/CDN 边缘识别" -ForegroundColor Cyan
+    Invoke-Check "T56" "实现与迁移存在" {
+        Assert-Exists (Join-Path $backend "migrations\033_reverse_proxy_backfill.sql") "033 迁移"
+        Assert-Exists (Join-Path $backend "t56_reverse_proxy_test.go") "T56 测试"
+    }
+    Invoke-Check "T56" "测试通过（T56）" { Invoke-GoTests "T56" }
+    Invoke-Check "T56" "反代特征覆盖 openresty/nginx/Tengine" {
+        Assert-Text (Join-Path $backend "migrations\033_reverse_proxy_backfill.sql") "openresty|nginx|Tengine" "迁移缺少反代特征"
+    }
+    Invoke-Check "T56" "400/403 与 200 对照用例" {
+        Assert-Text (Join-Path $backend "t56_reverse_proxy_test.go") "403" "缺少 403 用例"
+        Assert-Text (Join-Path $backend "t56_reverse_proxy_test.go") "200" "缺少 200 不误伤用例"
+    }
+    Invoke-Check "T56" "记 reverse_proxy 跳过原因" {
+        Assert-Text (Join-Path $backend "service_fingerprint.go") "reverse_proxy" "未写 reverse_proxy 分类"
+    }
+}
+
+function Invoke-T57 {
+    Write-Host "`nT57 未识别聚类归一化" -ForegroundColor Cyan
+    Invoke-Check "T57" "实现与迁移存在" {
+        Assert-Exists (Join-Path $backend "migrations\034_unidentified_recluster.sql") "034 迁移"
+        Assert-Exists (Join-Path $backend "t57_unidentified_recluster_test.go") "T57 测试"
+    }
+    Invoke-Check "T57" "测试通过（T57）" { Invoke-GoTests "T57" }
+    Invoke-Check "T57" "动态字段归一化" {
+        Assert-Text (Join-Path $backend "service_inventory.go") "normalizeServiceBannerForHash" "缺少归一化函数"
+        Assert-Text (Join-Path $backend "service_inventory.go") "(?i)Date|Request_id|Client_ip" "归一化未覆盖动态字段"
+    }
+    Invoke-Check "T57" "回填可重跑且保留状态" {
+        Assert-Text (Join-Path $backend "migrations\034_unidentified_recluster.sql") "ON CONFLICT|IF NOT EXISTS|DROP TABLE IF EXISTS" "迁移不可重跑"
+        Assert-Text (Join-Path $backend "migrations\034_unidentified_recluster.sql") "confirmed" "回填未保留 confirmed"
+    }
+}
+
 function Invoke-T54 {
     Write-Host "`nT54 研究价值评分" -ForegroundColor Cyan
     Invoke-Check "T54" "实现文件存在" {
@@ -210,6 +265,9 @@ switch ($Task) {
     "T52" { Invoke-T52 }
     "T53" { Invoke-T53 }
     "T54" { Invoke-T54 }
+    "T55" { Invoke-T55 }
+    "T56" { Invoke-T56 }
+    "T57" { Invoke-T57 }
     "All" {
         Invoke-T49
         Invoke-T50
@@ -217,6 +275,9 @@ switch ($Task) {
         Invoke-T52
         Invoke-T53
         Invoke-T54
+        Invoke-T55
+        Invoke-T56
+        Invoke-T57
     }
 }
 
