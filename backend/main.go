@@ -66,9 +66,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	dnsRes := newResolver(dcfg)
+	svcfp.Resolve = resolverFromDNS(dnsRes)
 	handlers := map[string]ScanHandler{
 		"passive": passiveHandlerFromConfig(pool, pcfg),
-		"dns":     dnsHandler(pool, newResolver(dcfg)),
+		"dns":     dnsHandler(pool, dnsRes),
 		"http":    httpHandler(pool, newProber(hcfg).withLLM(lcfg)),
 		"active":  activeHandler(pool, newActiveScanner(acfg, dcfg)),
 		"expand":  expandHandler(pool, icp, dbSubsidiaries{pool}),

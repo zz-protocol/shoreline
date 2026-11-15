@@ -227,6 +227,9 @@ func TestT49ServiceScanRESTAndMCP(t *testing.T) {
 	}
 	inHost := "app." + pat
 	outHost := "other.example.test"
+	if _, err := e.pool.Exec(context.Background(), `INSERT INTO assets (root_id, subdomain, sources, resolved, cdn_fronted) VALUES ($1, $2, '{dns}', true, false)`, e.rootID, inHost); err != nil {
+		t.Fatal(err)
+	}
 	dec, isErr := callTool(t, s, "check_service_scan", map[string]any{"host": inHost})
 	if isErr || dec["allow"] != true || dec["authorized"] != true || dec["enabled"] != true {
 		t.Fatalf("in-scope decision %v", dec)
@@ -315,7 +318,11 @@ func TestT49RESTAndMCPRejectIPShorthand(t *testing.T) {
 			t.Fatalf("check_service_scan host=%q allow=true", h)
 		}
 	}
-	dec, isErr := callTool(t, s, "check_service_scan", map[string]any{"host": "app." + pat})
+	legal := "app." + pat
+	if _, err := e.pool.Exec(context.Background(), `INSERT INTO assets (root_id, subdomain, sources, resolved, cdn_fronted) VALUES ($1, $2, '{dns}', true, false)`, e.rootID, legal); err != nil {
+		t.Fatal(err)
+	}
+	dec, isErr := callTool(t, s, "check_service_scan", map[string]any{"host": legal})
 	if isErr || dec["allow"] != true {
 		t.Fatalf("legal in-scope host should be allowed, got %v err=%v", dec, isErr)
 	}

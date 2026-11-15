@@ -130,24 +130,38 @@ func cdnFromStaticLibrary(cnames, ips []string) string {
 	return ""
 }
 
-func lookupCDNFronted(ctx context.Context, q serviceScanQ, t serviceScanTarget) (bool, error) {
-	var fronted bool
+type cdnFrontedState int
+
+const (
+	cdnFrontedUnknown cdnFrontedState = iota
+	cdnFrontedNo
+	cdnFrontedYes
+)
+
+func lookupCDNFronted(ctx context.Context, q serviceScanQ, t serviceScanTarget) (cdnFrontedState, error) {
+	var fronted *bool
 	var err error
 	if t.AssetID > 0 {
 		err = q.QueryRow(ctx, `SELECT cdn_fronted FROM assets WHERE id = $1`, t.AssetID).Scan(&fronted)
 	} else if h := normalizeHost(t.Host); h != "" {
 		err = q.QueryRow(ctx, `SELECT cdn_fronted FROM assets WHERE subdomain = $1`, h).Scan(&fronted)
 	} else {
-		return false, nil
+		return cdnFrontedUnknown, nil
 	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && fronted == nil) {
+		return cdnFrontedUnknown, nil
 	}
-	return fronted, err
+	if err != nil {
+		return cdnFrontedUnknown, err
+	}
+	if *fronted {
+		return cdnFrontedYes, nil
+	}
+	return cdnFrontedNo, nil
 }
 
-// planOriginServiceScan 是 T51 的队列接入点：先走 T49 开关与授权范围，再跳过 cdn_fronted，返回可进端口扫描的源站。
-// 关闭时不记录逐主机跳过、不入队；超范围或 CDN 前置会记原因。不发起探测。
+// planOriginServiceScan 是 T51 的队列接入点：先走 T49 开关与授权范围，再跳过未判定（cdn_unknown）与 cdn_fronted，返回已判定为源站的目标。
+// 关闭时不记录逐主机跳过、不入队；超范围、未判定或 CDN 前置会记原因。不发起探测。
 func planOriginServiceScan(ctx context.Context, q serviceScanQ, targets []serviceScanTarget) ([]serviceScanTarget, error) {
 	enabled, err := loadServiceScanEnabled(ctx, q)
 	if err != nil {
@@ -169,11 +183,17 @@ func planOriginServiceScan(ctx context.Context, q serviceScanQ, targets []servic
 			}
 			continue
 		}
-		fronted, err := lookupCDNFronted(ctx, q, t)
+		st, err := lookupCDNFronted(ctx, q, t)
 		if err != nil {
 			return nil, err
 		}
-		if fronted {
+		if st == cdnFrontedUnknown {
+			if err := recordServiceScanSkip(ctx, q, t, skipServiceScanCDNUnknown); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if st == cdnFrontedYes {
 			if err := recordServiceScanSkip(ctx, q, t, skipServiceScanCDN); err != nil {
 				return nil, err
 			}
@@ -202,15 +222,24 @@ func runOriginServiceScan(ctx context.Context, q serviceScanQ, targets []service
 
 func enrichOriginServiceScanDecision(ctx context.Context, q serviceScanQ, out map[string]any) error {
 	host, _ := out["host"].(string)
-	fronted, err := lookupCDNFronted(ctx, q, serviceScanTarget{Host: host})
+	st, err := lookupCDNFronted(ctx, q, serviceScanTarget{Host: host})
 	if err != nil {
 		return err
 	}
-	out["cdn_fronted"] = fronted
-	if fronted {
+	switch st {
+	case cdnFrontedYes:
+		out["cdn_fronted"] = true
 		if allow, _ := out["allow"].(bool); allow {
 			out["allow"] = false
 			out["reason"] = skipServiceScanCDN
+		}
+	case cdnFrontedNo:
+		out["cdn_fronted"] = false
+	default:
+		out["cdn_fronted"] = nil
+		if allow, _ := out["allow"].(bool); allow {
+			out["allow"] = false
+			out["reason"] = skipServiceScanCDNUnknown
 		}
 	}
 	return nil

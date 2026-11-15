@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/time/rate"
@@ -75,17 +74,24 @@ type serviceFingerprintConfig struct {
 	Ports   []int
 	RPS     float64
 	Timeout time.Duration
-	Dialer  serviceDialer
+	Dialer  serviceDialer // 测试注入：按主机名转到假服务。生产路径保持为 nil，只拨判定所得 IP。
+	Resolve serviceIPResolver
+	DialIP  serviceIPDialer // 测试注入生产拨号路径；默认 defaultServiceDialer，只接受字面 IP。
 	limiter *rate.Limiter
 }
 
+// defaultServiceDialer 只拨字面 IP，自己不再解析 DNS。传入主机名则拒绝。
 func defaultServiceDialer(timeout time.Duration) serviceDialer {
 	d := &net.Dialer{Timeout: timeout}
-	return func(ctx context.Context, network, host string, port int) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string, port int) (net.Conn, error) {
 		if network == "" {
 			network = "tcp"
 		}
-		return d.DialContext(ctx, network, net.JoinHostPort(host, strconv.Itoa(port)))
+		ip := net.ParseIP(addr)
+		if ip == nil {
+			return nil, errServiceDialNotIP
+		}
+		return d.DialContext(ctx, network, net.JoinHostPort(ip.String(), strconv.Itoa(port)))
 	}
 }
 
@@ -139,11 +145,9 @@ func (c *serviceFingerprintConfig) ready() error {
 	if c.Timeout <= 0 {
 		c.Timeout = 2 * time.Second
 	}
-	if c.Dialer == nil {
-		c.Dialer = defaultServiceDialer(c.Timeout)
-	}
+	// 生产不在这里填默认拨号器：无注入 Dialer 时只拨 CDN 判定解析到的 IP。
 	if c.limiter == nil {
-		c.limiter = rate.NewLimiter(rate.Limit(c.RPS), 1)
+		c.limiter = sharedServiceLimiter(c.RPS)
 	}
 	return nil
 }
@@ -173,6 +177,13 @@ func scanHostServices(ctx context.Context, q serviceScanQ, cfg serviceFingerprin
 	if host == "" || rejectedServiceScanHost(host) {
 		return nil
 	}
+	dialIPs, err := prepareServiceDialIPs(ctx, q, cfg, serviceScanTarget{AssetID: assetID, Host: host})
+	if err != nil {
+		return err
+	}
+	if cfg.Dialer == nil && len(dialIPs) == 0 {
+		return nil
+	}
 	rules := builtinServiceFingerprintRules()
 	reached := false
 	for _, port := range cfg.Ports {
@@ -184,7 +195,7 @@ func scanHostServices(ctx context.Context, q serviceScanQ, cfg serviceFingerprin
 				return err
 			}
 		}
-		open, banner := probeServicePort(ctx, cfg, host, port, ruleForPort(rules, port))
+		open, banner := probeServicePort(ctx, cfg, host, port, ruleForPort(rules, port), dialIPs)
 		name, version := matchServiceFingerprint(rules, port, banner)
 		if err := upsertAssetService(ctx, q, assetID, host, port, open, name, version, sanitizeServiceBanner(banner)); err != nil {
 			return err
@@ -222,10 +233,10 @@ func ruleForPort(rules []serviceFingerprintRule, port int) serviceFingerprintRul
 	return serviceFingerprintRule{}
 }
 
-func probeServicePort(ctx context.Context, cfg serviceFingerprintConfig, host string, port int, rule serviceFingerprintRule) (bool, []byte) {
+func probeServicePort(ctx context.Context, cfg serviceFingerprintConfig, host string, port int, rule serviceFingerprintRule, ips []net.IP) (bool, []byte) {
 	dialCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
-	conn, err := cfg.Dialer(dialCtx, "tcp", host, port)
+	conn, err := dialServicePort(dialCtx, cfg, host, port, ips)
 	if err != nil {
 		return false, nil
 	}
@@ -260,6 +271,9 @@ func probeServicePort(ctx context.Context, cfg serviceFingerprintConfig, host st
 func matchServiceFingerprint(rules []serviceFingerprintRule, port int, banner []byte) (name, version string) {
 	if len(banner) == 0 {
 		return "", ""
+	}
+	if n, v, ok := parseMySQLHandshake(banner); ok {
+		return n, v
 	}
 	text := bannerText(banner)
 	var fallbackName, fallbackVer string
@@ -309,40 +323,6 @@ func bannerText(b []byte) string {
 	}
 	return s.String()
 }
-
-func sanitizeServiceBanner(b []byte) string {
-	if len(b) == 0 {
-		return ""
-	}
-	const max = 512
-	if len(b) > max {
-		b = b[:max]
-	}
-	var s strings.Builder
-	for i := 0; i < len(b); {
-		r, sz := utf8.DecodeRune(b[i:])
-		if r == utf8.RuneError && sz == 1 {
-			s.WriteByte('.')
-			i++
-			continue
-		}
-		i += sz
-		if r < 32 || r == 127 {
-			s.WriteByte('.')
-			continue
-		}
-		s.WriteRune(r)
-	}
-	out := s.String()
-	out = ipv4Pattern.ReplaceAllString(out, "[ip]")
-	out = ipv6Pattern.ReplaceAllString(out, "[ip]")
-	return out
-}
-
-var (
-	ipv4Pattern = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
-	ipv6Pattern = regexp.MustCompile(`(?i)\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{1,4}\b`)
-)
 
 func upsertAssetService(ctx context.Context, q serviceScanQ, assetID int64, host string, port int, open bool, name, version, banner string) error {
 	var aid any

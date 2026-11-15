@@ -84,7 +84,7 @@ func TestT50Migration026Backfill(t *testing.T) {
 	if _, err := conn.Exec(ctx, `ALTER TABLE assets DROP COLUMN IF EXISTS cdn_fronted`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := conn.Exec(ctx, `DELETE FROM schema_migrations WHERE version = '026_cdn_fronted.sql'`); err != nil {
+	if _, err := conn.Exec(ctx, `DELETE FROM schema_migrations WHERE version IN ('026_cdn_fronted.sql', '030_cdn_fronted_nullable.sql')`); err != nil {
 		t.Fatal(err)
 	}
 	host := "m6." + strings.ToLower(t.Name()) + ".example.test"
@@ -96,14 +96,16 @@ func TestT50Migration026Backfill(t *testing.T) {
 	if err := migrate(ctx, conn.Conn()); err != nil {
 		t.Fatal(err)
 	}
-	var fronted, plainFronted bool
+	var fronted bool
+	var plainFronted *bool
 	if err := conn.QueryRow(ctx, `SELECT cdn_fronted FROM assets WHERE subdomain = $1`, host).Scan(&fronted); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.QueryRow(ctx, `SELECT cdn_fronted FROM assets WHERE subdomain = $1`, plain).Scan(&plainFronted); err != nil {
 		t.Fatal(err)
 	}
-	if !fronted || plainFronted {
-		t.Fatalf("026 backfill: cdn asset fronted=%v, plain fronted=%v", fronted, plainFronted)
+	// 026 把已有 cdn 标为前置；030 把从未判定（resolved_at 为空）的默认 false 改回 NULL。
+	if !fronted || plainFronted != nil {
+		t.Fatalf("026+030 backfill: cdn asset fronted=%v, unjudged plain=%v", fronted, plainFronted)
 	}
 }
