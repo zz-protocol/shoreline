@@ -11,6 +11,7 @@ import Tokens from './pages/Tokens'
 import Docs from './pages/Docs'
 import HostedRules from './pages/HostedRules'
 import ProbeKeys from './pages/ProbeKeys'
+import ServiceScan from './pages/ServiceScan'
 import Components from './pages/Components'
 
 function RequireAuth({ children }) {
@@ -40,6 +41,7 @@ export default function App() {
         <Route path="docs" element={<Docs />} />
         <Route path="hosted-rules" element={<HostedRules />} />
         <Route path="probe-keys" element={<ProbeKeys />} />
+        <Route path="service-scan" element={<ServiceScan />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

@@ -135,6 +135,10 @@ func (a *api) routes() map[string]http.HandlerFunc {
 		"GET /api/component-candidates":             a.listComponentCandidates,
 		"POST /api/components/{id}/confirm":         a.confirmComponent,
 		"POST /api/components/{id}/ignore":          a.ignoreComponent,
+		"GET /api/service-scan":                     a.getServiceScan,
+		"PATCH /api/service-scan":                   a.patchServiceScan,
+		"POST /api/service-scan/scopes":             a.createServiceScanScope,
+		"DELETE /api/service-scan/scopes/{id}":      a.deleteServiceScanScope,
 	}
 }
 

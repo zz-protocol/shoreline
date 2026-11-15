@@ -616,13 +616,45 @@ paths:
       summary: "忽略该 LLM 候选（不再出现在待确认列表；证据未变时不重复调用模型）"
       parameters: [{$ref: "#/components/parameters/id"}]
       responses: {"200": {description: "{ok}"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/service-scan:
+    get:
+      summary: "非 Web 探测授权：全局开关与范围列表（默认关闭）"
+      responses: {"200": {description: "{enabled, items: [{id, pattern, created_at}]}"}}
+    patch:
+      summary: "设置 SERVICE_SCAN_ENABLED 等价开关（写入后以库为准；默认关。关闭时不发起端口/服务探测，不影响 Web 扫描）"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: {type: boolean}
+      responses: {"200": {description: "{enabled, items}"}, "400": {$ref: "#/components/responses/Error"}}
+  /api/service-scan/scopes:
+    post:
+      summary: "登记允许非 Web 探测的域（domain 或其子域；*.domain 只匹配子域）。不接受 IP。"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pattern]
+              properties:
+                pattern: {type: string}
+      responses: {"201": {description: "{id, pattern, created_at}"}, "400": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/service-scan/scopes/{id}:
+    delete:
+      summary: "删除一条授权范围"
+      parameters: [{$ref: "#/components/parameters/id"}]
+      responses: {"204": {description: "deleted"}, "404": {$ref: "#/components/responses/Error"}}
   /mcp:
     post:
       summary: "MCP server（Streamable HTTP，无状态，JSON 响应；JSON-RPC 2.0）"
       description: |
-        需 Bearer token（同 API）。工具：list_new_assets、search_assets、check_scope、trigger_scan、claim_mine_targets、heartbeat_mine、complete_mine、search_components、list_component_assets，参数与对应 REST 接口一致
+        需 Bearer token（同 API）。工具：list_new_assets、search_assets、check_scope、check_service_scan、trigger_scan、claim_mine_targets、heartbeat_mine、complete_mine、search_components、list_component_assets、get_service_scan，参数与对应 REST 接口一致
         （list_new_assets ≈ GET /api/events?level=asset&type=new；search_assets ≈ GET /api/assets；trigger_scan ≈ POST /api/scans；
-        claim_mine_targets ≈ POST /api/mine/claim；heartbeat_mine ≈ POST /api/mine/heartbeat；complete_mine ≈ POST /api/mine/complete；search_components ≈ GET /api/components；list_component_assets ≈ GET /api/components/{id}/assets）。
+        claim_mine_targets ≈ POST /api/mine/claim；heartbeat_mine ≈ POST /api/mine/heartbeat；complete_mine ≈ POST /api/mine/complete；search_components ≈ GET /api/components；list_component_assets ≈ GET /api/components/{id}/assets；get_service_scan ≈ GET /api/service-scan；check_service_scan 判定开关与授权范围，不发起探测）。
         请求头需 `Accept: application/json, text/event-stream`。业务错误以工具结果 isError=true、文本 {"error":"..."} 返回。
       requestBody: {content: {application/json: {schema: {type: object, description: "JSON-RPC 2.0 请求（initialize / tools/list / tools/call）"}}}}
       responses: {"200": {description: "JSON-RPC 响应"}, "401": {$ref: "#/components/responses/Error"}}

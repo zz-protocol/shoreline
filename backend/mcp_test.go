@@ -83,7 +83,7 @@ func TestMCPTools(t *testing.T) {
 		names = append(names, tl.Name)
 	}
 	sort.Strings(names)
-	if strings.Join(names, ",") != "check_scope,claim_mine_targets,complete_mine,get_agent_guide,heartbeat_mine,list_component_assets,list_new_assets,search_assets,search_components,trigger_scan" {
+	if strings.Join(names, ",") != "check_scope,check_service_scan,claim_mine_targets,complete_mine,get_agent_guide,get_service_scan,heartbeat_mine,list_component_assets,list_new_assets,search_assets,search_components,trigger_scan" {
 		t.Fatalf("tools %v", names)
 	}
 	t.Logf("tools/list：%v", names)

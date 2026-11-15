@@ -1,0 +1,252 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"net"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+)
+
+// T49 跳过原因（稳定字符串，测试锁定）。
+const (
+	skipServiceScanDisabled   = "service_scan_disabled"
+	skipServiceScanOutOfScope = "out_of_scope"
+)
+
+// ServiceProbeFunc 是 T51 的接入点：仅在开关开启且主机落在授权范围时被调用。不得在此实现端口扫描。
+type ServiceProbeFunc func(ctx context.Context, host string) error
+
+// serviceScanTarget 是一次非 Web 探测的候选（host 为域名，不含 IP）。
+type serviceScanTarget struct {
+	AssetID int64
+	Host    string
+}
+
+type serviceScanQ interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+func envServiceScanEnabled() bool {
+	s := strings.TrimSpace(os.Getenv("SERVICE_SCAN_ENABLED"))
+	if s == "" {
+		return false
+	}
+	on, err := strconv.ParseBool(s)
+	return err == nil && on
+}
+
+// loadServiceScanEnabled：已通过 REST/Web 写入则以库为准；否则读环境变量，默认关。
+func loadServiceScanEnabled(ctx context.Context, q serviceScanQ) (bool, error) {
+	var enabled bool
+	err := q.QueryRow(ctx, `SELECT enabled FROM service_scan_settings WHERE id = 1`).Scan(&enabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return envServiceScanEnabled(), nil
+	}
+	return enabled, err
+}
+
+func loadServiceScanPatterns(ctx context.Context, q serviceScanQ) ([]string, error) {
+	rows, err := q.Query(ctx, `SELECT pattern FROM service_scan_scopes ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func isIPHost(s string) bool {
+	s = normalizeHost(s)
+	s = strings.TrimPrefix(s, "*.")
+	s = strings.Trim(s, "[]")
+	if h, _, err := net.SplitHostPort(s); err == nil {
+		s = h
+	}
+	return net.ParseIP(s) != nil
+}
+
+// hostInServiceScope：登记域本身及其子域视为范围内的资产集合；*.domain 只匹配子域。
+func hostInServiceScope(host string, patterns []string) bool {
+	host = normalizeHost(host)
+	if host == "" || isIPHost(host) {
+		return false
+	}
+	for _, p := range patterns {
+		p = normalizeHost(p)
+		if p == "" {
+			continue
+		}
+		if suffix, ok := strings.CutPrefix(p, "*."); ok {
+			if strings.HasSuffix(host, "."+suffix) {
+				return true
+			}
+			continue
+		}
+		if host == p || strings.HasSuffix(host, "."+p) {
+			return true
+		}
+	}
+	return false
+}
+
+func decideServiceScan(enabled bool, patterns []string, host string) (allow bool, reason string) {
+	if !enabled {
+		return false, skipServiceScanDisabled
+	}
+	if !hostInServiceScope(host, patterns) {
+		return false, skipServiceScanOutOfScope
+	}
+	return true, ""
+}
+
+func recordServiceScanSkip(ctx context.Context, q serviceScanQ, t serviceScanTarget, reason string) error {
+	var aid any
+	if t.AssetID > 0 {
+		aid = t.AssetID
+	}
+	_, err := q.Exec(ctx, `INSERT INTO service_scan_skips (host, asset_id, reason) VALUES ($1, $2, $3)`,
+		normalizeHost(t.Host), aid, reason)
+	return err
+}
+
+// runServiceScan 是供 T51 调用的唯一门控入口：关闭则完全不发起探测；超范围跳过并记录原因；在范围内才调用 probe。
+func runServiceScan(ctx context.Context, q serviceScanQ, targets []serviceScanTarget, probe ServiceProbeFunc) error {
+	enabled, err := loadServiceScanEnabled(ctx, q)
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return nil
+	}
+	patterns, err := loadServiceScanPatterns(ctx, q)
+	if err != nil {
+		return err
+	}
+	for _, t := range targets {
+		allow, reason := decideServiceScan(true, patterns, t.Host)
+		if !allow {
+			if err := recordServiceScanSkip(ctx, q, t, reason); err != nil {
+				return err
+			}
+			continue
+		}
+		if probe != nil {
+			if err := probe(ctx, normalizeHost(t.Host)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (a *api) getServiceScan(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	enabled, err := loadServiceScanEnabled(ctx, a.db)
+	if err != nil {
+		dbErr(w, err)
+		return
+	}
+	items, err := rowsJSON(a.db.Query(ctx, `SELECT id, pattern, created_at FROM service_scan_scopes ORDER BY id`))
+	if err != nil {
+		dbErr(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"enabled": enabled, "items": items})
+}
+
+func (a *api) patchServiceScan(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if !decode(w, r, &b) {
+		return
+	}
+	if b.Enabled == nil {
+		writeErr(w, 400, "enabled required")
+		return
+	}
+	if _, err := a.db.Exec(r.Context(), `INSERT INTO service_scan_settings (id, enabled, updated_at) VALUES (1, $1, now())
+		ON CONFLICT (id) DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = now()`, *b.Enabled); err != nil {
+		dbErr(w, err)
+		return
+	}
+	a.getServiceScan(w, r)
+}
+
+func (a *api) createServiceScanScope(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		Pattern string `json:"pattern"`
+	}
+	if !decode(w, r, &b) {
+		return
+	}
+	pat := normalizeHost(b.Pattern)
+	if isIPHost(pat) || !validScopePattern(pat) {
+		writeErr(w, 400, "invalid pattern: use domain or *.domain")
+		return
+	}
+	var id int64
+	var created any
+	if err := a.db.QueryRow(r.Context(), `INSERT INTO service_scan_scopes (pattern) VALUES ($1) RETURNING id, created_at`, pat).
+		Scan(&id, &created); err != nil {
+		dbErr(w, err)
+		return
+	}
+	writeJSON(w, 201, map[string]any{"id": id, "pattern": pat, "created_at": created})
+}
+
+func (a *api) deleteServiceScanScope(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	tag, err := a.db.Exec(r.Context(), `DELETE FROM service_scan_scopes WHERE id = $1`, id)
+	if err != nil {
+		dbErr(w, err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeErr(w, 404, "not found")
+		return
+	}
+	w.WriteHeader(204)
+}
+
+func (a *api) serviceScanDecision(ctx context.Context, host string) (map[string]any, error) {
+	host = normalizeHost(host)
+	if host == "" || !validDomain(host) || isIPHost(host) {
+		return nil, errf(400, "invalid host")
+	}
+	enabled, err := loadServiceScanEnabled(ctx, a.db)
+	if err != nil {
+		return nil, err
+	}
+	patterns, err := loadServiceScanPatterns(ctx, a.db)
+	if err != nil {
+		return nil, err
+	}
+	authorized := hostInServiceScope(host, patterns)
+	allow, reason := decideServiceScan(enabled, patterns, host)
+	return map[string]any{
+		"host":       host,
+		"enabled":    enabled,
+		"authorized": authorized,
+		"allow":      allow,
+		"reason":     reason,
+	}, nil
+}

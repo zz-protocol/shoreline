@@ -64,6 +64,10 @@ type checkScopeIn struct {
 	Host string `json:"host" jsonschema:"host name to check, e.g. www.example.com"`
 }
 
+type checkServiceScanIn struct {
+	Host string `json:"host" jsonschema:"host name to check against service-scan authorization scope"`
+}
+
 type searchComponentsIn struct {
 	Q                    string   `json:"q,omitempty" jsonschema:"substring of component name (case-insensitive)"`
 	MinAssets            *int     `json:"min_assets,omitempty" jsonschema:"minimum distinct asset count (>= 0)"`
@@ -254,6 +258,26 @@ func (a *api) mcpServer() *mcp.Server {
 				return toolErr[mapOut](err)
 			}
 			return nil, out, nil
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "check_service_scan", Description: "Check whether a non-Web (port/service) probe would be allowed for a host: global switch, authorization scope, allow, and skip reason. Does not probe."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in checkServiceScanIn) (*mcp.CallToolResult, mapOut, error) {
+			out, err := a.serviceScanDecision(ctx, in.Host)
+			if err != nil {
+				return toolErr[mapOut](err)
+			}
+			return nil, out, nil
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "get_service_scan", Description: "Return the non-Web probe authorization switch and registered domain scopes (same as GET /api/service-scan). Default disabled."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, mapOut, error) {
+			enabled, err := loadServiceScanEnabled(ctx, a.db)
+			if err != nil {
+				return toolErr[mapOut](err)
+			}
+			items, err := rowsJSON(a.db.Query(ctx, `SELECT id, pattern, created_at FROM service_scan_scopes ORDER BY id`))
+			if err != nil {
+				return toolErr[mapOut](err)
+			}
+			return nil, mapOut{"enabled": enabled, "items": items}, nil
 		})
 	mcp.AddTool(s, &mcp.Tool{Name: "trigger_scan", Description: "Manually trigger a scan for a root domain: passive | active | expand. active requires the vendor's active_enabled."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in triggerScanIn) (*mcp.CallToolResult, mapOut, error) {
