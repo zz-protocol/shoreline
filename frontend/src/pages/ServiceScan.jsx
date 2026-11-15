@@ -1,7 +1,22 @@
 import React, { useEffect, useState } from 'react'
-import { Alert, App, Button, Form, Input, Modal, Popconfirm, Space, Switch, Table, Typography } from 'antd'
+import { Alert, App, Button, Form, Input, Modal, Popconfirm, Space, Switch, Table, Tag, Typography } from 'antd'
 import { del, get, patch, post } from '../api'
 import { HELP, Hint } from '../help'
+
+export const RESPONSE_KIND_LABEL = {
+  none: '无响应',
+  banner: '初始 banner',
+  probe: '探测响应',
+  reverse_proxy: '反代/CDN',
+}
+
+/** T55：开放端口分「已验证 / 仅 TCP 可达 / 反代/CDN」三档展示，不含 IP。 */
+export function serviceResultStatus(row) {
+  if (!row?.open) return { label: '关闭', color: 'default' }
+  if (row.verified) return { label: '已验证', color: 'green' }
+  if (row.response_kind === 'reverse_proxy') return { label: '反代/CDN', color: 'orange' }
+  return { label: '仅 TCP 可达', color: 'gold' }
+}
 
 function parseInetAtonPart(p) {
   if (!p) return null
@@ -51,6 +66,9 @@ export default function ServiceScan() {
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
   const [addErr, setAddErr] = useState('')
+  const [results, setResults] = useState([])
+  const [stats, setStats] = useState({})
+  const [resultsLoading, setResultsLoading] = useState(false)
   const [form] = Form.useForm()
 
   const load = async () => {
@@ -65,7 +83,19 @@ export default function ServiceScan() {
       setLoading(false)
     }
   }
-  useEffect(() => { load() }, [])
+  const loadResults = async () => {
+    setResultsLoading(true)
+    try {
+      const d = await get('/api/service-results?limit=50')
+      setResults(d.items || [])
+      setStats(d.stats || {})
+    } catch (e) {
+      message.error(e.message)
+    } finally {
+      setResultsLoading(false)
+    }
+  }
+  useEffect(() => { load(); loadResults() }, [])
 
   const toggle = async (on) => {
     try {
@@ -117,6 +147,44 @@ export default function ServiceScan() {
           },
         ]}
       />
+      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+          <Hint text={HELP.serviceResults}><Typography.Title level={4} style={{ margin: 0 }}>探测结果</Typography.Title></Hint>
+          <Button size="small" onClick={loadResults} data-testid="service-results-refresh">刷新</Button>
+        </Space>
+        <Typography.Text type="secondary">{HELP.serviceResults}</Typography.Text>
+        <Space size="large" wrap data-testid="service-results-stats">
+          <span>已验证开放 <b data-testid="stat-verified">{stats.open ?? 0}</b></span>
+          <span>TCP 可达 <b data-testid="stat-tcp">{stats.tcp_reachable ?? 0}</b></span>
+          <span>已识别 <b data-testid="stat-named">{stats.named ?? 0}</b></span>
+          <span>反代/CDN <b data-testid="stat-reverse-proxy">{stats.reverse_proxy ?? 0}</b></span>
+        </Space>
+        <Table
+          rowKey="id"
+          loading={resultsLoading}
+          dataSource={results}
+          pagination={false}
+          size="small"
+          data-testid="service-results"
+          locale={{ emptyText: '还没有探测结果；开启开关并登记范围后触发 service 扫描' }}
+          columns={[
+            { title: '主机', dataIndex: 'host' },
+            { title: '端口', dataIndex: 'port', width: 90 },
+            {
+              title: '状态',
+              dataIndex: 'verified',
+              width: 130,
+              render: (_, r) => {
+                const s = serviceResultStatus(r)
+                return <Tag color={s.color} data-testid={`service-state-${r.id}`}>{s.label}</Tag>
+              },
+            },
+            { title: '服务', dataIndex: 'name', render: (v) => v || '—' },
+            { title: '版本', dataIndex: 'version', render: (v) => v || '—' },
+            { title: '响应类型', dataIndex: 'response_kind', width: 120, render: (v) => RESPONSE_KIND_LABEL[v] || v || '—' },
+          ]}
+        />
+      </Space>
       <Modal
         title="添加授权范围"
         open={open}

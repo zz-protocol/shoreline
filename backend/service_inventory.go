@@ -7,8 +7,30 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 )
+
+// T57：聚类哈希前去掉动态字段，避免同类 403 因 Date / Request_id / 节点编号不同被拆成多个候选。
+var (
+	serviceBannerSegmentRE    = regexp.MustCompile(`\.{2,}`)
+	serviceBannerDynamicHdrRE = regexp.MustCompile(`(?i)^\s*(?:date|request[-_]?id|node[-_]?info|client[-_]?ip|content-length|via)\s*:`)
+)
+
+func normalizeServiceBannerForHash(banner string) string {
+	if banner == "" {
+		return ""
+	}
+	parts := serviceBannerSegmentRE.Split(banner, -1)
+	out := parts[:0]
+	for _, p := range parts {
+		if p == "" || serviceBannerDynamicHdrRE.MatchString(p) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return strings.Join(out, "..")
+}
 
 // serviceComponentCategories：优先 Wappalyzer 分类；没有时用 YAML 规则声明的分类。
 func serviceComponentCategories(display, fingerprint string, rules *serviceFingerprintRuleSet) []string {
@@ -22,7 +44,7 @@ func serviceComponentCategories(display, fingerprint string, rules *serviceFinge
 }
 
 func unidentifiedServiceName(banner string) string {
-	sum := sha256.Sum256([]byte(banner))
+	sum := sha256.Sum256([]byte(normalizeServiceBannerForHash(banner)))
 	return "unidentified-service-" + hex.EncodeToString(sum[:])[:12]
 }
 
@@ -52,7 +74,7 @@ func syncAssetServicesToComponents(ctx context.Context, q serviceScanQ, targets 
 	if len(hosts) == 0 {
 		return nil
 	}
-	rs, err := q.Query(ctx, `SELECT asset_id, host, port, open, name, version, banner
+	rs, err := q.Query(ctx, `SELECT asset_id, host, port, open, verified, response_kind, name, version, banner
 		FROM asset_services WHERE host = ANY($1)`, hosts)
 	if err != nil {
 		return err
@@ -62,13 +84,14 @@ func syncAssetServicesToComponents(ctx context.Context, q serviceScanQ, targets 
 		assetID        *int64
 		host           string
 		port           int
-		open           bool
+		open, verified bool
+		kind           string
 		name, ver, ban string
 	}
 	var rows []row
 	for rs.Next() {
 		var r row
-		if err := rs.Scan(&r.assetID, &r.host, &r.port, &r.open, &r.name, &r.ver, &r.ban); err != nil {
+		if err := rs.Scan(&r.assetID, &r.host, &r.port, &r.open, &r.verified, &r.kind, &r.name, &r.ver, &r.ban); err != nil {
 			return err
 		}
 		rows = append(rows, r)
@@ -81,7 +104,8 @@ func syncAssetServicesToComponents(ctx context.Context, q serviceScanQ, targets 
 		if r.assetID == nil || *r.assetID <= 0 {
 			continue
 		}
-		if !r.open {
+		// T55：只有收到 banner/probe 响应才算已验证；仅 TCP 可达（空响应）与反代/CDN 不生成候选。
+		if !r.open || !(r.verified || r.kind == serviceResponseBanner || r.kind == serviceResponseProbe) {
 			continue
 		}
 		r.ban = sanitizeServiceBanner([]byte(r.ban))
@@ -114,7 +138,7 @@ func syncAssetServicesToComponents(ctx context.Context, q serviceScanQ, targets 
 			RETURNING id`, display, strings.ToLower(display), confirmed, sortedCats(cats), repoArg).Scan(&id); err != nil {
 			return err
 		}
-		ev := map[string]any{"host": r.host, "port": r.port, "banner": r.ban}
+		ev := map[string]any{"host": r.host, "port": r.port, "banner": r.ban, "response_kind": r.kind}
 		if c := rules.confidence(r.name); c != "" {
 			ev["confidence"] = c
 		}
@@ -148,7 +172,8 @@ func reidentifyStoredServices(ctx context.Context, q serviceScanQ, rules *servic
 		rules = loaded
 	}
 	rs, err := q.Query(ctx, `SELECT host, port, asset_id, banner FROM asset_services
-		WHERE open AND banner <> '' AND (name = '' OR name LIKE 'unidentified-service-%')
+		WHERE open AND banner <> '' AND response_kind <> 'reverse_proxy'
+		  AND (name = '' OR name LIKE 'unidentified-service-%')
 		ORDER BY host, port`)
 	if err != nil {
 		return 0, err
@@ -170,8 +195,13 @@ func reidentifyStoredServices(ctx context.Context, q serviceScanQ, rules *servic
 		if name == "" {
 			continue
 		}
-		tag, err := q.Exec(ctx, `UPDATE asset_services SET name = $1, version = $2
-			WHERE host = $3 AND port = $4 AND (name = '' OR name LIKE 'unidentified-service-%')`,
+		// 命中规则说明确实收到了可识别响应：补记为已验证 banner，避免旧行（迁移 032 后 kind=none）漏同步组件。
+		tag, err := q.Exec(ctx, `UPDATE asset_services SET name = $1, version = $2,
+			response_kind = CASE WHEN response_kind = 'none' THEN 'banner' ELSE response_kind END,
+			verified = true
+			WHERE host = $3 AND port = $4 AND open AND banner <> ''
+			  AND response_kind <> 'reverse_proxy'
+			  AND (name = '' OR name LIKE 'unidentified-service-%')`,
 			name, version, h.host, h.port)
 		if err != nil {
 			return 0, err
@@ -219,4 +249,46 @@ func reidentifyStoredServices(ctx context.Context, q serviceScanQ, rules *servic
 		}
 	}
 	return len(hits), nil
+}
+
+// backfillServiceResponseKinds 把迁移 032 后 response_kind='none' 的历史行按已存 banner 重新分档：
+// 有响应 → banner（verified=true），反代/CDN 特征 → reverse_proxy（verified=false）；空 banner 保持 none。
+// 只处理 none 行，不覆盖新扫描结果，可重复执行。
+func backfillServiceResponseKinds(ctx context.Context, q serviceScanQ) (int, error) {
+	rs, err := q.Query(ctx, `SELECT host, port, banner FROM asset_services
+		WHERE open AND banner <> '' AND response_kind = 'none'`)
+	if err != nil {
+		return 0, err
+	}
+	defer rs.Close()
+	type row struct {
+		host string
+		port int
+		kind string
+	}
+	var rows []row
+	for rs.Next() {
+		var h string
+		var p int
+		var banner string
+		if err := rs.Scan(&h, &p, &banner); err != nil {
+			return 0, err
+		}
+		kind := serviceResponseKind(true, banner, false)
+		if kind == serviceResponseNone {
+			continue
+		}
+		rows = append(rows, row{host: h, port: p, kind: kind})
+	}
+	if err := rs.Err(); err != nil {
+		return 0, err
+	}
+	for _, r := range rows {
+		if _, err := q.Exec(ctx, `UPDATE asset_services SET response_kind = $1, verified = $2
+			WHERE host = $3 AND port = $4 AND response_kind = 'none'`,
+			r.kind, serviceResponseVerified(r.kind), r.host, r.port); err != nil {
+			return 0, err
+		}
+	}
+	return len(rows), nil
 }

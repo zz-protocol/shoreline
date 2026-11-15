@@ -210,6 +210,7 @@ passive 任务把 `{sources_ok, sources_failed:[{source,error}], found}` 写入 
 - 范围规则挂在厂商下（`/api/vendors/{id}/scopes`，pattern 为 `域名` 或 `*.域名`）；新增/删除返回 202 + `task_id`，`GET /api/scope-tasks/{id}` 查进度；按 id 分批更新、只改有变化的行，不长时间锁表。重算幂等：进程启动时自动重跑 pending/running 的任务（从头重算、计数清零）。
 - 根域格式校验，被任一厂商占用返回 409。`POST /api/scans` 手动触发（kind 只允许 passive/active/expand/service，dns/http 是链路内部步骤；kind=active 需厂商 `active_enabled`，否则 409；`service` 走端口指纹，受 T49/T50 门控，关闭开关时任务仍完成但不拨号）。
 - 扫描授权范围（T49）：`GET/PATCH /api/service-scan`（`{enabled, items}`，默认 `enabled=false`）；`POST /api/service-scan/scopes` 登记域（`example.test` 覆盖该域及其子域，`*.example.test` 只匹配子域，不接受 IP）；`DELETE /api/service-scan/scopes/{id}`。认证同现有 API。此范围独立于厂商 `in_scope` 规则，只约束非 Web 探测。
+- 服务探测结果（T55）：`GET /api/service-results`（`q`、`port`、`response_kind=none|banner|probe|reverse_proxy`、`include_closed` 默认 false、`limit`/`cursor`）返回 `items`、`next_cursor` 与 `stats`（`open`/`verified` 只计已验证、`tcp_reachable` 计全部开放、`named`、`reverse_proxy`、`total`）；`GET /api/service-results/{id}` 查单条。不返回 IP 与 banner 原文。`GET /api/assets/{id}` 详情附带 `services`（同字段）。
 - 待确认根域：`GET /api/vendors/{id}/root-candidates`，`POST /api/root-candidates/{id}/confirm|ignore|reassign`（仅 pending；确认时域名已是别厂商根域返回 409，候选保持 pending）。`GET /api/events` 里资产级 new 事件嵌套 `url_events`（该资产的 URL 级 new 事件）。子公司导入：`POST /api/vendors/{id}/subsidiaries`（CSV：名称,持股比例）。
 
 ## MCP server（T13）
@@ -222,6 +223,7 @@ Streamable HTTP（无状态、JSON 响应），地址 `POST /mcp`，认证同 AP
 | search_assets | q, vendor, in_scope, new_since, include_wildcard, limit, cursor | 同 `GET /api/assets` |
 | check_scope | host | 归属厂商/根域（最长匹配）、in_scope、命中规则、已知资产 id；不要求已是资产 |
 | get_service_scan | 无 | 同 `GET /api/service-scan`：非 Web 探测开关与授权范围列表，默认关 |
+| list_service_results | q, port, response_kind, include_closed, limit, cursor | 同 `GET /api/service-results`：探测结果与 verified/response_kind 统计；不返回 IP 与 banner |
 | check_service_scan | host | 判定该主机是否会被允许做非 Web 探测（enabled / authorized / cdn_fronted / allow / reason）；不发起探测。CDN 前置时 allow=false、reason=cdn_fronted（开关关闭时 reason 仍为 service_scan_disabled） |
 | trigger_scan | root_id, kind | kind 只允许 passive/active/expand/service；active 需厂商开关；service 为非 CDN 源站端口指纹 |
 | claim_mine_targets | claimed_by, limit, vendor_id, since, q, include_abandoned | 同 `POST /api/mine/claim`；agent 自助领取 |
@@ -349,7 +351,7 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 
 - 每个端口至少建立一次 TCP 连接；未声明 `probes` 的端口只读初始 banner、不写；声明了 `probes` 的端口每个 probe 用一次独立连接并读响应，响应同时匹配 `expect` 与规则 `banner` 时停止并采用，否则保留最后一段 banner 供 T52 归入未识别（是否识别仍由 `banner` 正则决定）。报文全部来自 `fingerprints/services.yaml`：PostgreSQL SSLRequest（8 字节 `00 00 00 08 04 d2 16 2f`，只问是否支持 TLS，不发 StartupMessage/用户名）、AMQP 协议头（`AMQP 00 00 09 01`，不发 start-ok/登录）、Redis `PING`、Memcached `version`、MongoDB OP_MSG `hello`、Kafka `ApiVersions`、Elasticsearch/etcd/Nacos 只读版本端点 `GET`。
 - 识别规则来自 YAML（`name` / `component` / `category` / `confidence` / `ports` / `banner` / `version` / `probes`），启动时预编译；代码内不再有规则表。MySQL/MariaDB 按协议 v10 握手包解析：`caching_sha2_password` 的 8.0.36 识别为 mysql/8.0.36；`5.5.5-10.11.6-MariaDB` 版本取 10.11.6。
-- 结果存 `asset_services`（主机名 + 端口唯一；open/name/version/banner 摘要），不含 IP 列。banner **先脱敏再截断到 512**：IPv4、IPv6（含 zone、`[addr]:port`、v4-mapped **整体**替换，不留 `::ffff:`）、`::1`、`127.1`、`0x7f000001`、`0177.0.0.1` 以及大于 65535 的十进制 inet_aton 整数（如 2130706433）换成 `[ip]`。三节全十进制版本号（8.0.36 / 10.11.6 / 5.5.5）不替换；两节全十进制除 127.x / 0.x 外不替换，以免误伤 `8.0`、`10.1` 这类版本。若两段或三段十进制简写紧跟明显 IP 语境前缀（`addr=`、`host=`、`from`，忽略大小写、独立词），仍替换为 `[ip]`，例如 `host=10.1.2`、`from 10.1`；无这类前缀的 `MySQL 8.0.36`、`version 10.11.6` 保留。不新增 REST/MCP。识别结果由 T52 同步写入组件库存。
+- 结果存 `asset_services`（主机名 + 端口唯一；open/verified/response_kind/name/version/banner 摘要），不含 IP 列。banner **先脱敏再截断到 512**：IPv4、IPv6（含 zone、`[addr]:port`、v4-mapped **整体**替换，不留 `::ffff:`）、`::1`、`127.1`、`0x7f000001`、`0177.0.0.1` 以及大于 65535 的十进制 inet_aton 整数（如 2130706433）换成 `[ip]`。三节全十进制版本号（8.0.36 / 10.11.6 / 5.5.5）不替换；两节全十进制除 127.x / 0.x 外不替换，以免误伤 `8.0`、`10.1` 这类版本。若两段或三段十进制简写紧跟明显 IP 语境前缀（`addr=`、`host=`、`from`，忽略大小写、独立词），仍替换为 `[ip]`，例如 `host=10.1.2`、`from 10.1`；无这类前缀的 `MySQL 8.0.36`、`version 10.11.6` 保留。识别结果由 T52 同步写入组件库存；探测结论经 `GET /api/service-results` 只读暴露（T55）。
 - 未做 CDN 判定的资产（`cdn_fronted` 为 NULL）跳过端口扫描，记 `service_scan_skips.reason=cdn_unknown`，不按非 CDN 放行。只拨 CDN 判定时解析到的 IP（只在内存传递，不落库、不进响应或日志）。默认拨号器不再自己解析 DNS，且只接受字面 IP。拨号前拒绝回环、私网、链路本地、未指定地址和云元数据 `169.254.169.254`（含 v4-mapped），记 `private_address`；没有任何可拨地址时记 `no_dial_ip`。测试中的 127.0.0.1 假服务只通过注入拨号器或策略放行，没有生产可用的环境变量开关。
 - 端口指纹限速器为进程级共享（burst 1），多个 service 任务并发时速率不叠加。
 - 局限：未声明 probes 且不主动发 banner 的服务仍会记为开放但 name 为空；在 YAML 为其补一条只读 probe 即可纳入识别。
@@ -361,7 +363,7 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 
 - 关联：服务指纹通常没有 HTTP URL，新增 `asset_components`（资产 + 组件 + 端口，证据 JSON 含 host/port/banner 摘要与规则 `confidence`）。现有组件统计、下钻、整列复制 SQL 对 `url_components` 与 `asset_components` 做 UNION，筛选/降噪/alive 口径与 T43 一致。不新增 REST/MCP 路由，OpenAPI 仍与 `routes()` 对齐。
 - 分类：先走 Wappalyzer `categoriesForName`（MySQL/PostgreSQL/Redis/MongoDB/Elasticsearch 等）。Wappalyzer 没有时用 YAML 规则的 `category`（Kafka/RabbitMQ → Message queues，Memcached → Caching，etcd/Nacos → Application server）。已有组件的非空 `categories` 仍走 T47 `CASE`，不覆盖；`name_key` 冲突时不改已有 `source` / `confirmed`，也不删除已识别组件行或其它来源的关联。
-- 未识别：端口开放且 banner 非空、又没有指纹短名时，按脱敏 banner 的 SHA-256 聚类，名称 `unidentified-service-<12 hex>`，`confirmed=false`，不进默认正式列表。可在「待确认候选」中确认或忽略（LLM 未配置时也展示 service 候选；忽略写 `asset_components.ignored_at`）。关闭端口或开放但无 banner 的不归档。补 YAML 指纹后由 T53 启动重识别自动回填。
+- 未识别：端口**已验证**（`response_kind` 为 `banner`/`probe`）、banner 非空、又没有指纹短名时，按归一化后的脱敏 banner SHA-256 聚类，名称 `unidentified-service-<12 hex>`，`confirmed=false`，不进默认正式列表。可在「待确认候选」中确认或忽略（LLM 未配置时也展示 service 候选；忽略写 `asset_components.ignored_at`）。关闭端口、开放但无 banner（仅 TCP 可达）或反代/CDN 响应都不归档。补 YAML 指纹后由 T53 启动重识别自动回填。
 - 服务扫描拿到 banner 或识别成功时，把该主机标为 `alive`（写 `last_alive_at`、清空 `dead_reason`；已 alive 不再改；从不因端口关闭或无 banner 改成 dead）。默认正式列表仍按 T43 过滤 `alive='alive'`，因此这类主机不会被默认列表隐藏。
 
 ## 可插拔 YAML 指纹库（T53）
@@ -392,3 +394,13 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 - 重算时机：启动时、T44 富集完成写入 `stars` / `advisory_count` 后、T52 `syncAssetServicesToComponents` 写完服务关联后。三处重算失败都只记日志，不阻塞启动、不影响富集与扫描结果。一次聚合查询 + 分批（1000 行）`UPDATE`，不逐组件查询；重复执行幂等（`research_scored_at` 会刷新）。
 - 列表：`GET /api/components` 支持 `sort=research`（`research_score DESC, id DESC`，游标规则与其它排序一致）与 `min_score`（0–100，含端点，越界 400）；返回项含 `research_score` 与 `research_score_parts`。`GET /api/components/values` 沿用同一 `min_score` 筛选。MCP `search_components` 同步 `sort=research` 与 `min_score`。前端「研究价值」列显示 1 位小数，tooltip 展示四分项。
 - 新识别的组件在下一次重算（默认是下一次启动/富集完成/服务同步）时获得分数；未重算前为默认 0 分与空分项。
+
+## 服务探测三态与反代识别（T55–T57）
+
+`asset_services` 增加 `response_kind`（`none` / `banner` / `probe` / `reverse_proxy`）与 `verified`。空 banner 只表示 TCP 可达（`open=true`、`verified=false`、`response_kind=none`），不算已确认开放服务；只有收到初始 banner 或 YAML 探测响应才 `verified=true`。迁移 `032_service_response_kind.sql` 为旧行回填 `verified=false`、`response_kind=none`，可重跑。启动时 `backfillServiceResponseKinds` 把 `none` 历史行按已存 banner 重新分档（含反代），不覆盖新扫描结果。
+
+- 分档：无 probes 的规则 `banner`；有 probes 且匹配成功 `probe`；连上无响应 `none`。T52 `syncAssetServicesToComponents` 只对 `verified=true` 或 `response_kind in ('banner','probe')` 生成候选，空 banner 不生成 `unidentified-service-*`。
+- 反代/CDN（T56）：HTTP 400/403 且带 `Server: openresty|nginx|Tengine`、`via: ...CHN-*`、`X-CCDN-FORBID-CODE`、`X-Cache`、`X-CDN` 特征时记 `reverse_proxy`，不生成未识别候选，并记 `service_scan_skips.reason=reverse_proxy`。迁移 `033_reverse_proxy_backfill.sql` 把历史 `asset_services` 与未识别候选按同特征归档（`ignored_at`），不删除组件，可重跑。200 应用响应不受影响。
+- 聚类归一化（T57）：`normalizeServiceBannerForHash` 在 SHA-256 前按 CRLF 段去掉 `Date` / `Request_id` / `Node_info` / `Client_ip` / `Content-Length` / `via`，保留状态行、`Server` 与其余结构；同类 403 因此合并为一个候选。迁移 `034_unidentified_recluster.sql` 重算现有 `unidentified-service-*` 名称并合并关联，保留 `confirmed` / `ignored`，不删除组件行，可重跑。
+- REST：`GET /api/service-results`（`q` / `port` / `response_kind` / `include_closed`；默认只列开放端口，返回 `items`、`next_cursor`、`stats`）、`GET /api/service-results/{id}`；`GET /api/assets/{id}` 详情带 `services`。默认统计 `stats.open` 只计 `verified=true`，`stats.tcp_reachable` 保留全部开放；不返回 IP，也不返回 banner 原文。MCP 增加 `list_service_results`，口径同 REST。
+- Web：「扫描授权范围」页下方「探测结果」展示已验证开放 / TCP 可达 / 已识别 / 反代/CDN 计数与逐条状态（已验证 / 仅 TCP 可达 / 反代/CDN），不含 IP。

@@ -15,8 +15,9 @@ import (
 
 // T49 跳过原因（稳定字符串，测试锁定）。
 const (
-	skipServiceScanDisabled   = "service_scan_disabled"
-	skipServiceScanOutOfScope = "out_of_scope"
+	skipServiceScanDisabled     = "service_scan_disabled"
+	skipServiceScanOutOfScope   = "out_of_scope"
+	skipServiceScanReverseProxy = "reverse_proxy" // T56：HTTP 400/403 + 反代/CDN 特征
 )
 
 // ServiceProbeFunc 是 T51 的接入点：仅在开关开启且主机落在授权范围时被调用。不得在此实现端口扫描。

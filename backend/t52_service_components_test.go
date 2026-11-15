@@ -91,8 +91,8 @@ func TestT52ServiceInventoryFromAssetServices(t *testing.T) {
 	unkHost := "unk." + domain
 	uid := t51InsertAsset(t, e, unkHost, false)
 	e.pool.Exec(ctx, `UPDATE assets SET alive = 'alive' WHERE id = $1`, uid)
-	if _, err := e.pool.Exec(ctx, `INSERT INTO asset_services (asset_id, host, port, open, name, version, banner)
-		VALUES ($1, $2, 9200, true, '', '', 'weird-banner-no-rule')`, uid, unkHost); err != nil {
+	if _, err := e.pool.Exec(ctx, `INSERT INTO asset_services (asset_id, host, port, open, verified, response_kind, name, version, banner)
+		VALUES ($1, $2, 9200, true, true, 'banner', '', '', 'weird-banner-no-rule')`, uid, unkHost); err != nil {
 		t.Fatal(err)
 	}
 	rules, err := loadServiceFingerprintRules("")

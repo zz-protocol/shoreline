@@ -68,6 +68,15 @@ type checkServiceScanIn struct {
 	Host string `json:"host" jsonschema:"host name to check against service-scan authorization scope"`
 }
 
+type listServiceResultsIn struct {
+	Q             string `json:"q,omitempty" jsonschema:"substring of host name (case-insensitive)"`
+	Port          *int   `json:"port,omitempty" jsonschema:"only this port (1..65535)"`
+	ResponseKind  string `json:"response_kind,omitempty" jsonschema:"none | banner | probe | reverse_proxy"`
+	IncludeClosed bool   `json:"include_closed,omitempty" jsonschema:"include closed-port records (default false)"`
+	Limit         *int   `json:"limit,omitempty" jsonschema:"1..500, default 50"`
+	Cursor        string `json:"cursor,omitempty" jsonschema:"next_cursor from the previous page"`
+}
+
 type searchComponentsIn struct {
 	Q                    string   `json:"q,omitempty" jsonschema:"substring of component name (case-insensitive)"`
 	MinAssets            *int     `json:"min_assets,omitempty" jsonschema:"minimum distinct asset count (>= 0)"`
@@ -288,6 +297,39 @@ func (a *api) mcpServer() *mcp.Server {
 				return toolErr[mapOut](err)
 			}
 			return nil, mapOut{"enabled": enabled, "items": items}, nil
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "list_service_results", Description: "List stored non-Web service probe results with verified/response_kind and stats (same as GET /api/service-results). Default open count counts only verified=true; tcp_reachable keeps all open ports. No IP or banner is returned."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in listServiceResultsIn) (*mcp.CallToolResult, mapOut, error) {
+			limit, cursor, err := parsePage(in.Limit, in.Cursor)
+			if err != nil {
+				return toolErr[mapOut](err)
+			}
+			f := serviceResultFilter{
+				Q:             strings.ToLower(strings.TrimSpace(in.Q)),
+				Kind:          strings.ToLower(strings.TrimSpace(in.ResponseKind)),
+				IncludeClosed: in.IncludeClosed,
+				Limit:         limit,
+				Cursor:        cursor,
+			}
+			if strings.ContainsRune(f.Q, 0) {
+				return toolErr[mapOut](errf(400, "NUL character not allowed"))
+			}
+			if in.Port != nil {
+				if *in.Port <= 0 || *in.Port > 65535 {
+					return toolErr[mapOut](errf(400, "port must be 1..65535"))
+				}
+				f.Port = *in.Port
+			}
+			switch f.Kind {
+			case "", serviceResponseNone, serviceResponseBanner, serviceResponseProbe, serviceResponseReverseProxy:
+			default:
+				return toolErr[mapOut](errf(400, "response_kind must be none|banner|probe|reverse_proxy"))
+			}
+			list, next, stats, err := a.queryServiceResults(ctx, f)
+			if err != nil {
+				return toolErr[mapOut](err)
+			}
+			return nil, mapOut{"items": list, "next_cursor": next, "stats": stats}, nil
 		})
 	mcp.AddTool(s, &mcp.Tool{Name: "trigger_scan", Description: "Manually trigger a scan for a root domain: passive | active | expand | service. active requires the vendor's active_enabled. service is a port-fingerprint scan of non-CDN origins (T49/T50 gated)."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in triggerScanIn) (*mcp.CallToolResult, mapOut, error) {

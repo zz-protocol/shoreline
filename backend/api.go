@@ -139,6 +139,8 @@ func (a *api) routes() map[string]http.HandlerFunc {
 		"PATCH /api/service-scan":                   a.patchServiceScan,
 		"POST /api/service-scan/scopes":             a.createServiceScanScope,
 		"DELETE /api/service-scan/scopes/{id}":      a.deleteServiceScanScope,
+		"GET /api/service-results":                  a.listServiceResults,
+		"GET /api/service-results/{id}":             a.getServiceResult,
 	}
 }
 
@@ -1070,6 +1072,14 @@ func (a *api) getAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	list[0]["urls"] = urls
+	// T55：资产详情带服务探测结论（verified / response_kind），不含 IP 与 banner。
+	services, err := rowsJSON(a.db.Query(r.Context(), `SELECT `+serviceResultCols+`
+		FROM asset_services WHERE asset_id = $1 ORDER BY port, id`, id))
+	if err != nil {
+		dbErr(w, err)
+		return
+	}
+	list[0]["services"] = services
 	writeJSON(w, 200, list[0])
 }
 

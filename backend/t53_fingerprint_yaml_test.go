@@ -522,8 +522,8 @@ func TestT53RepoWrittenOnlyWhenEmpty(t *testing.T) {
 	t51Enable(t, e, domain)
 	host := "repo." + domain
 	aid := t51InsertAsset(t, e, host, false)
-	if _, err := e.pool.Exec(ctx, `INSERT INTO asset_services (asset_id, host, port, open, name, version, banner)
-		VALUES ($1, $2, 6379, true, 'redis', '', '+PONG')`, aid, host); err != nil {
+	if _, err := e.pool.Exec(ctx, `INSERT INTO asset_services (asset_id, host, port, open, verified, response_kind, name, version, banner)
+		VALUES ($1, $2, 6379, true, true, 'probe', 'redis', '', '+PONG')`, aid, host); err != nil {
 		t.Fatal(err)
 	}
 	rules := t53MustLoad(t, "")
@@ -602,14 +602,14 @@ rules:
 		{id2, h2, "unidentified-service-deadbeef", "CustomSQL server 3.4.6"},
 		{id3, h3, "", "totally unknown banner"},
 	} {
-		if _, err := e.pool.Exec(ctx, `INSERT INTO asset_services (asset_id, host, port, open, name, banner)
-			VALUES ($1, $2, 19003, true, $3, $4)`, row.id, row.host, row.name, row.banner); err != nil {
+		if _, err := e.pool.Exec(ctx, `INSERT INTO asset_services (asset_id, host, port, open, verified, response_kind, name, banner)
+			VALUES ($1, $2, 19003, true, true, 'banner', $3, $4)`, row.id, row.host, row.name, row.banner); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// 无资产关联的历史行也应回填 name/version，但不进组件库存（asset_components.asset_id 非空）。
-	if _, err := e.pool.Exec(ctx, `INSERT INTO asset_services (asset_id, host, port, open, name, banner)
-		VALUES (NULL, $1, 19003, true, '', 'CustomSQL server 3.4.7')`, h4); err != nil {
+	if _, err := e.pool.Exec(ctx, `INSERT INTO asset_services (asset_id, host, port, open, verified, response_kind, name, banner)
+		VALUES (NULL, $1, 19003, true, true, 'banner', '', 'CustomSQL server 3.4.7')`, h4); err != nil {
 		t.Fatal(err)
 	}
 

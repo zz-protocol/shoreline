@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,47 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/time/rate"
 )
+
+// T55/T56：探测结果分档。none=TCP 可达但无响应；banner=初始响应；probe=YAML 探测响应；
+// reverse_proxy=HTTP 400/403 + 反代/CDN 特征，不算已确认服务。
+const (
+	serviceResponseNone         = "none"
+	serviceResponseBanner       = "banner"
+	serviceResponseProbe        = "probe"
+	serviceResponseReverseProxy = "reverse_proxy"
+)
+
+var (
+	serviceReverseProxyStatusRE = regexp.MustCompile(`(?i)^\s*HTTP/\d(?:\.\d)?\s+(?:400|403)(?:\s|$)`)
+	// 脱敏后 CRLF 变为连续点，所以边界同时接受空白与点。
+	serviceReverseProxyHeaderRE = regexp.MustCompile(`(?i)(?:^|[.\s])(?:server\s*:\s*(?:openresty|nginx|tengine)(?:[\s/.]|$)|via\s*:\s*[^.\s]*CHN-|x-ccdn-forbid-code\s*:|x-cache\s*:|x-cdn\s*:)`)
+)
+
+// isReverseProxyResponse 判断 HTTP 400/403 + 反代/CDN 特征（T56）。原始响应与入库后的脱敏摘要都适用。
+func isReverseProxyResponse(banner string) bool {
+	if banner == "" {
+		return false
+	}
+	return serviceReverseProxyStatusRE.MatchString(banner) && serviceReverseProxyHeaderRE.MatchString(banner)
+}
+
+// serviceResponseKind 按响应内容分档；probe=true 表示该响应来自 YAML 声明的探测报文。
+func serviceResponseKind(open bool, banner string, probe bool) string {
+	if !open || banner == "" {
+		return serviceResponseNone
+	}
+	if isReverseProxyResponse(banner) {
+		return serviceResponseReverseProxy
+	}
+	if probe {
+		return serviceResponseProbe
+	}
+	return serviceResponseBanner
+}
+
+func serviceResponseVerified(kind string) bool {
+	return kind == serviceResponseBanner || kind == serviceResponseProbe
+}
 
 // serviceDialer 可注入。测试把主机名转到 127.0.0.1 假服务，不走真实 DNS/外网。
 type serviceDialer func(ctx context.Context, network, host string, port int) (net.Conn, error)
@@ -145,6 +187,7 @@ func scanHostServices(ctx context.Context, q serviceScanQ, cfg serviceFingerprin
 	}
 	rules := cfg.Rules
 	reached := false
+	reverseProxyRecorded := false
 	for _, port := range cfg.Ports {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -154,10 +197,17 @@ func scanHostServices(ctx context.Context, q serviceScanQ, cfg serviceFingerprin
 				return err
 			}
 		}
-		open, banner := probeServicePort(ctx, cfg, host, port, rules.ruleForPort(port), dialIPs)
+		open, banner, kind := probeServicePort(ctx, cfg, host, port, rules.ruleForPort(port), dialIPs)
 		name, version, _ := rules.match(port, banner)
-		if err := upsertAssetService(ctx, q, assetID, host, port, open, name, version, sanitizeServiceBanner(banner)); err != nil {
+		if err := upsertAssetService(ctx, q, assetID, host, port, open, kind, name, version, sanitizeServiceBanner(banner)); err != nil {
 			return err
+		}
+		// T56：反代/CDN 边缘响应不生成候选，记一次跳过原因（每主机每轮一次）。
+		if kind == serviceResponseReverseProxy && !reverseProxyRecorded {
+			if err := recordServiceScanSkip(ctx, q, serviceScanTarget{AssetID: assetID, Host: host}, skipServiceScanReverseProxy); err != nil {
+				return err
+			}
+			reverseProxyRecorded = true
 		}
 		// 服务有 banner 或识别成功说明可达：标 alive，避免默认组件列表把 unknown 主机藏掉（架构 11-15 定）。
 		// 端口关闭或开放但无 banner 时不改 alive。
@@ -184,9 +234,11 @@ func markAssetAliveFromService(ctx context.Context, q serviceScanQ, assetID int6
 // probeServicePort 只发送 YAML 声明的探测报文：没有 probes 的端口只读初始 banner，不写。
 // 每个 probe 用一次独立连接；响应同时匹配 expect 与规则 banner 时停止并采用该 banner，
 // 否则保留最后一段 banner 供 T52 归入未识别，是否识别仍由规则的 banner 正则决定。
-func probeServicePort(ctx context.Context, cfg serviceFingerprintConfig, host string, port int, rule serviceFingerprintRule, ips []net.IP) (bool, []byte) {
+// 返回 response_kind（T55）：初始响应=banner、YAML 探测响应=probe、连上无响应=none、反代/CDN=reverse_proxy。
+func probeServicePort(ctx context.Context, cfg serviceFingerprintConfig, host string, port int, rule serviceFingerprintRule, ips []net.IP) (bool, []byte, string) {
 	if len(rule.Probes) == 0 {
-		return readServicePort(ctx, cfg, host, port, nil, ips)
+		ok, banner := readServicePort(ctx, cfg, host, port, nil, ips)
+		return ok, banner, serviceResponseKind(ok, bannerText(banner), false)
 	}
 	open := false
 	var last []byte
@@ -194,20 +246,25 @@ func probeServicePort(ctx context.Context, cfg serviceFingerprintConfig, host st
 		ok, banner := readServicePort(ctx, cfg, host, port, p.Bytes, ips)
 		if !ok {
 			// 拨号失败：端口关闭，不再尝试后续报文。
-			return false, nil
+			return false, nil, serviceResponseNone
 		}
 		open = true
 		if len(banner) == 0 {
 			continue
 		}
 		last = banner
-		expectOK := p.Expect != nil && (p.Expect.Match(banner) || p.Expect.MatchString(bannerText(banner)))
-		bannerOK := rule.BannerRE != nil && (rule.BannerRE.Match(banner) || rule.BannerRE.MatchString(bannerText(banner)))
+		text := bannerText(banner)
+		if isReverseProxyResponse(text) {
+			// 反代/CDN 边缘响应继续发探测也只会重复 400/403，直接采用该响应。
+			return true, banner, serviceResponseReverseProxy
+		}
+		expectOK := p.Expect != nil && (p.Expect.Match(banner) || p.Expect.MatchString(text))
+		bannerOK := rule.BannerRE != nil && (rule.BannerRE.Match(banner) || rule.BannerRE.MatchString(text))
 		if expectOK && bannerOK {
-			return true, banner
+			return true, banner, serviceResponseProbe
 		}
 	}
-	return open, last
+	return open, last, serviceResponseKind(open, bannerText(last), true)
 }
 
 func readServicePort(ctx context.Context, cfg serviceFingerprintConfig, host string, port int, probe []byte, ips []net.IP) (bool, []byte) {
@@ -246,21 +303,26 @@ func bannerText(b []byte) string {
 	return s.String()
 }
 
-func upsertAssetService(ctx context.Context, q serviceScanQ, assetID int64, host string, port int, open bool, name, version, banner string) error {
+func upsertAssetService(ctx context.Context, q serviceScanQ, assetID int64, host string, port int, open bool, kind, name, version, banner string) error {
 	var aid any
 	if assetID > 0 {
 		aid = assetID
 	}
-	_, err := q.Exec(ctx, `INSERT INTO asset_services (asset_id, host, port, open, name, version, banner, probed_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+	if kind == "" {
+		kind = serviceResponseNone
+	}
+	_, err := q.Exec(ctx, `INSERT INTO asset_services (asset_id, host, port, open, verified, response_kind, name, version, banner, probed_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
 		ON CONFLICT (host, port) DO UPDATE SET
 			asset_id = EXCLUDED.asset_id,
 			open = EXCLUDED.open,
+			verified = EXCLUDED.verified,
+			response_kind = EXCLUDED.response_kind,
 			name = EXCLUDED.name,
 			version = EXCLUDED.version,
 			banner = EXCLUDED.banner,
 			probed_at = EXCLUDED.probed_at`,
-		aid, host, port, open, name, version, banner)
+		aid, host, port, open, open && serviceResponseVerified(kind), kind, name, version, banner)
 	return err
 }
 

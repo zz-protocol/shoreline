@@ -68,6 +68,12 @@ func main() {
 	}
 	dnsRes := newResolver(dcfg)
 	svcfp.Resolve = resolverFromDNS(dnsRes)
+	// T55/T56：启动时把迁移 032 后 kind=none 的历史行按已存 banner 分档（含反代/CDN）；失败不阻塞启动。
+	if n, err := backfillServiceResponseKinds(context.Background(), pool); err != nil {
+		log.Printf("service response kinds: %v", err)
+	} else if n > 0 {
+		log.Printf("classified %d stored service responses", n)
+	}
 	// T53：启动时用当前 YAML 规则重识别历史未识别服务；失败不阻塞服务启动。
 	if n, err := reidentifyStoredServices(context.Background(), pool, svcfp.Rules); err != nil {
 		log.Printf("service reidentify: %v", err)

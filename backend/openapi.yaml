@@ -651,13 +651,29 @@ paths:
       summary: "删除一条授权范围"
       parameters: [{$ref: "#/components/parameters/id"}]
       responses: {"204": {description: "deleted"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/service-results:
+    get:
+      summary: "服务探测结果列表与统计（T55）。默认只列开放端口；开放数只计 verified=true，另给 TCP 可达数；不返回 IP 与 banner"
+      parameters:
+        - {name: q, in: query, schema: {type: string}, description: "主机名子串（不区分大小写）"}
+        - {name: port, in: query, schema: {type: integer, minimum: 1, maximum: 65535}}
+        - {name: response_kind, in: query, schema: {type: string, enum: [none, banner, probe, reverse_proxy]}}
+        - {name: include_closed, in: query, schema: {type: boolean, default: false}, description: "为 true 时同时返回端口关闭记录"}
+        - {$ref: "#/components/parameters/limit"}
+        - {$ref: "#/components/parameters/cursor"}
+      responses: {"200": {description: "{items: [{id, asset_id, host, port, open, verified, response_kind, name, version, probed_at}], next_cursor, stats: {open, verified, tcp_reachable, named, reverse_proxy, total}}"}}
+  /api/service-results/{id}:
+    get:
+      summary: "单条服务探测结果（verified / response_kind；不返回 IP 与 banner）"
+      parameters: [{$ref: "#/components/parameters/id"}]
+      responses: {"200": {description: "{id, asset_id, host, port, open, verified, response_kind, name, version, probed_at}"}, "404": {$ref: "#/components/responses/Error"}}
   /mcp:
     post:
       summary: "MCP server（Streamable HTTP，无状态，JSON 响应；JSON-RPC 2.0）"
       description: |
-        需 Bearer token（同 API）。工具：list_new_assets、search_assets、check_scope、check_service_scan、trigger_scan、claim_mine_targets、heartbeat_mine、complete_mine、search_components、list_component_assets、get_service_scan，参数与对应 REST 接口一致
+        需 Bearer token（同 API）。工具：list_new_assets、search_assets、check_scope、check_service_scan、trigger_scan、claim_mine_targets、heartbeat_mine、complete_mine、search_components、list_component_assets、get_service_scan、list_service_results，参数与对应 REST 接口一致
         （list_new_assets ≈ GET /api/events?level=asset&type=new；search_assets ≈ GET /api/assets；trigger_scan ≈ POST /api/scans；
-        claim_mine_targets ≈ POST /api/mine/claim；heartbeat_mine ≈ POST /api/mine/heartbeat；complete_mine ≈ POST /api/mine/complete；search_components ≈ GET /api/components；list_component_assets ≈ GET /api/components/{id}/assets；get_service_scan ≈ GET /api/service-scan；check_service_scan 判定开关与授权范围，不发起探测）。
+        claim_mine_targets ≈ POST /api/mine/claim；heartbeat_mine ≈ POST /api/mine/heartbeat；complete_mine ≈ POST /api/mine/complete；search_components ≈ GET /api/components；list_component_assets ≈ GET /api/components/{id}/assets；get_service_scan ≈ GET /api/service-scan；check_service_scan 判定开关与授权范围，不发起探测；list_service_results ≈ GET /api/service-results）。
         请求头需 `Accept: application/json, text/event-stream`。业务错误以工具结果 isError=true、文本 {"error":"..."} 返回。
       requestBody: {content: {application/json: {schema: {type: object, description: "JSON-RPC 2.0 请求（initialize / tools/list / tools/call）"}}}}
       responses: {"200": {description: "JSON-RPC 响应"}, "401": {$ref: "#/components/responses/Error"}}
