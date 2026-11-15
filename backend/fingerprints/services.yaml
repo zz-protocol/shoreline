@@ -1,0 +1,120 @@
+# T53 服务指纹规则。识别逻辑只使用本文件声明的内容：
+#   - banner/version 是正则；probes 只允许无认证、不读写业务数据的只读识别报文。
+#   - 未声明 probes 的规则只读初始 banner，不发送任何字节。
+#   - SERVICE_FINGERPRINT_RULES 指向的额外 YAML 与本文件合并：同名规则整条覆盖，其余追加。
+version: 1
+rules:
+  - name: mysql
+    component: MySQL
+    category: Databases
+    confidence: high
+    ports: [3306]
+    banner: '(?i)mysql_native_password|mariadb|\x00mysql'
+    version: '([0-9]+\.[0-9]+\.[0-9]+)'
+    # MySQL/MariaDB 连接后主动发 v10 握手包，不写。
+    probes: []
+
+  - name: postgresql
+    component: PostgreSQL
+    category: Databases
+    confidence: high
+    ports: [5432]
+    banner: '^[SN]$'
+    # 8 字节 SSLRequest，只询问是否支持 TLS，不是 StartupMessage。
+    probes:
+      - hex: '0000000804d2162f'
+        expect: '^[SN]$'
+
+  - name: redis
+    component: Redis
+    category: Caching
+    confidence: high
+    ports: [6379]
+    banner: '(?im)-NOAUTH|redis_version|^\+PONG|^-DENIED|^-ERR .+redis'
+    version: 'redis_version:([0-9]+\.[0-9]+\.[0-9]+)'
+    # PING 只探测存活，不读键值。
+    probes:
+      - text: "PING\r\n"
+        expect: '(?im)^\+PONG|^-NOAUTH|^-DENIED'
+
+  - name: mongodb
+    component: MongoDB
+    category: Databases
+    confidence: medium
+    ports: [27017]
+    banner: '(?i)mongodb|ismaster|hellook|maxwireversion'
+    # OP_MSG hello（{hello:1, $db:"admin"}），只做握手，不查询集合。
+    probes:
+      - hex: '340000000100000000000000dd07000000000000001f0000001068656c6c6f000100000002246462000500000061646d696e0000'
+        expect: '(?i)hellook|ismaster|maxwireversion|mongo'
+
+  - name: elasticsearch
+    component: Elasticsearch
+    category: Search engines
+    confidence: high
+    ports: [9200]
+    banner: '(?i)elasticsearch|cluster_name|you know, for search'
+    version: '([0-9]+\.[0-9]+\.[0-9]+)'
+    # 版本端点，只读根信息，不查索引。
+    probes:
+      - text: "GET / HTTP/1.0\r\n\r\n"
+        expect: '(?i)elasticsearch|cluster_name|"number"'
+
+  - name: kafka
+    component: Kafka
+    category: Message queues
+    confidence: medium
+    ports: [9092]
+    banner: '(?s)^.{4}\x00\x00\x00\x01\x00\x00|(?i)kafka'
+    # ApiVersions v0（client_id 为 "-"），只协商协议版本，不生产/消费。
+    probes:
+      - hex: '0000000b001200000000000100012d'
+        expect: '(?s)^.{4}\x00\x00\x00\x01\x00\x00|(?i)kafka|api.?versions'
+
+  - name: etcd
+    component: etcd
+    category: Application server
+    confidence: high
+    ports: [2379]
+    banner: '(?i)etcd'
+    version: '([0-9]+\.[0-9]+)'
+    # /version 是只读版本端点；GET / 作为兼容兜底。
+    probes:
+      - text: "GET /version HTTP/1.0\r\n\r\n"
+        expect: '(?i)etcd|"etcdserver"'
+      - text: "GET / HTTP/1.0\r\n\r\n"
+        expect: '(?i)etcd'
+
+  - name: nacos
+    component: Nacos
+    category: Application server
+    confidence: medium
+    ports: [8848]
+    banner: '(?i)nacos'
+    # 控制台首页，只读 HTML，不调用配置/命名空间 API。
+    probes:
+      - text: "GET / HTTP/1.0\r\n\r\n"
+        expect: '(?i)nacos|console'
+
+  - name: rabbitmq
+    component: RabbitMQ
+    category: Message queues
+    confidence: high
+    ports: [5672]
+    banner: '(?i)AMQP|rabbitmq'
+    # AMQP 协议头（客户端前言），不是 start-ok/登录/publish/consume。
+    probes:
+      - hex: '414d515000000901'
+        expect: '(?i)AMQP|rabbitmq'
+
+  - name: memcached
+    component: Memcached
+    category: Caching
+    confidence: high
+    ports: [11211]
+    banner: '(?i)memcached|^VERSION [0-9]'
+    version: '^VERSION ([0-9]+\.[0-9]+\.[0-9]+)'
+    # version 只回版本号，不取键值。
+    probes:
+      - text: "version\r\n"
+        expect: '(?i)^VERSION|memcached'

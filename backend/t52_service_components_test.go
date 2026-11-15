@@ -95,7 +95,11 @@ func TestT52ServiceInventoryFromAssetServices(t *testing.T) {
 		VALUES ($1, $2, 9200, true, '', '', 'weird-banner-no-rule')`, uid, unkHost); err != nil {
 		t.Fatal(err)
 	}
-	if err := syncAssetServicesToComponents(ctx, e.pool, []serviceScanTarget{{AssetID: uid, Host: unkHost}}); err != nil {
+	rules, err := loadServiceFingerprintRules("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syncAssetServicesToComponents(ctx, e.pool, []serviceScanTarget{{AssetID: uid, Host: unkHost}}, rules); err != nil {
 		t.Fatal(err)
 	}
 	var uname string
@@ -131,7 +135,7 @@ func TestT52ServiceInventoryFromAssetServices(t *testing.T) {
 	if _, err := e.pool.Exec(ctx, `UPDATE components SET categories = '{Kept}' WHERE name_key = 'mysql'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := syncAssetServicesToComponents(ctx, e.pool, []serviceScanTarget{{AssetID: aid, Host: host}}); err != nil {
+	if err := syncAssetServicesToComponents(ctx, e.pool, []serviceScanTarget{{AssetID: aid, Host: host}}, rules); err != nil {
 		t.Fatal(err)
 	}
 	var cats2 []string

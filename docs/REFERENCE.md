@@ -15,9 +15,10 @@
 | SERVICE_SCAN_ENABLED | false | 非 Web（端口/服务）探测全局开关，默认关。未在网页/API 写入过时读此变量；一旦 PATCH `/api/service-scan` 则以库为准。关闭时不发起探测，不影响 Web 扫描（T49） |
 | CDN_CNAME_FILE | 空 | 额外 CNAME 后缀库文件（每行 `suffix vendor`，`#` 开头为注释）；与内置后缀合并，供 CDN 判定（T50） |
 | CDN_CIDR_FILE | 空 | 额外 CDN/WAF IP 段库文件（每行 `cidr vendor`）；仅本地匹配，测试用文档保留段。内置仍含 CNAME 后缀与 cdncheck 段（T50） |
-| SERVICE_SCAN_PORTS | 3306,5432,6379,27017,9200,9092,2379,8848,5672,11211 | 端口指纹扫描端口（逗号分隔，不接受范围；T51） |
+| SERVICE_SCAN_PORTS | 空（取 YAML 规则端口） | 端口指纹扫描端口（逗号分隔，不接受范围；T51）。为空时使用 `fingerprints/services.yaml` 声明的全部端口，新增 YAML 规则即自动纳入默认扫描 |
 | SERVICE_SCAN_RPS | 2 | 端口指纹每秒连接上限（全局，burst 1；T51） |
 | SERVICE_SCAN_TIMEOUT | 2s | 单端口连接 + banner 读取超时；拨号超时/拒绝记端口关闭，不重试（T51） |
+| SERVICE_FINGERPRINT_RULES | 空 | 额外服务指纹 YAML 文件；同名规则整条覆盖内置规则，其余追加。启动时校验，非法规则（坏正则、端口越界、未知置信度、重复 name、probe 超 256 字节等）直接拒绝启动（T53） |
 
 ## 被动源配置（环境变量）
 
@@ -345,19 +346,31 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 - 开关关闭时：触发仍返回 202 并产生 `service` 任务，worker 跑完标记 `done`，`planOriginServiceScan` 不入队、不拨号、不写 `asset_services`。
 
 
-- 每端口一次 TCP 连接，读初始 banner；仅两种端口发送最小握手：PostgreSQL SSLRequest（8 字节 `00 00 00 08 04 d2 16 2f`，只问是否支持 TLS，不发 StartupMessage/用户名）与 AMQP 协议头（`AMQP 00 00 09 01`，服务端回 Connection.Start，不发 start-ok/登录）。其余端口只读不写；不发 Redis PING/INFO、Mongo isMaster/hello、ES `GET /`、Memcached version/stats、Kafka ApiVersions。更广的只读识别报文留给 T53 的 YAML 声明。
-- 识别规则是代码内数据表 `builtinServiceFingerprintRules()`（名称、端口、探测字节、banner 正则、版本正则），T53 可整表替换为 YAML。MySQL/MariaDB 按协议 v10 握手包解析：`caching_sha2_password` 的 8.0.36 识别为 mysql/8.0.36；`5.5.5-10.11.6-MariaDB` 版本取 10.11.6。
+- 每个端口至少建立一次 TCP 连接；未声明 `probes` 的端口只读初始 banner、不写；声明了 `probes` 的端口每个 probe 用一次独立连接并读响应，响应同时匹配 `expect` 与规则 `banner` 时停止并采用，否则保留最后一段 banner 供 T52 归入未识别（是否识别仍由 `banner` 正则决定）。报文全部来自 `fingerprints/services.yaml`：PostgreSQL SSLRequest（8 字节 `00 00 00 08 04 d2 16 2f`，只问是否支持 TLS，不发 StartupMessage/用户名）、AMQP 协议头（`AMQP 00 00 09 01`，不发 start-ok/登录）、Redis `PING`、Memcached `version`、MongoDB OP_MSG `hello`、Kafka `ApiVersions`、Elasticsearch/etcd/Nacos 只读版本端点 `GET`。
+- 识别规则来自 YAML（`name` / `component` / `category` / `confidence` / `ports` / `banner` / `version` / `probes`），启动时预编译；代码内不再有规则表。MySQL/MariaDB 按协议 v10 握手包解析：`caching_sha2_password` 的 8.0.36 识别为 mysql/8.0.36；`5.5.5-10.11.6-MariaDB` 版本取 10.11.6。
 - 结果存 `asset_services`（主机名 + 端口唯一；open/name/version/banner 摘要），不含 IP 列。banner **先脱敏再截断到 512**：IPv4、IPv6（含 zone、`[addr]:port`、v4-mapped **整体**替换，不留 `::ffff:`）、`::1`、`127.1`、`0x7f000001`、`0177.0.0.1` 以及大于 65535 的十进制 inet_aton 整数（如 2130706433）换成 `[ip]`。三节全十进制版本号（8.0.36 / 10.11.6 / 5.5.5）不替换；两节全十进制除 127.x / 0.x 外不替换，以免误伤 `8.0`、`10.1` 这类版本。不新增 REST/MCP。识别结果由 T52 同步写入组件库存。
 - 未做 CDN 判定的资产（`cdn_fronted` 为 NULL）跳过端口扫描，记 `service_scan_skips.reason=cdn_unknown`，不按非 CDN 放行。只拨 CDN 判定时解析到的 IP（只在内存传递，不落库、不进响应或日志）。默认拨号器不再自己解析 DNS，且只接受字面 IP。拨号前拒绝回环、私网、链路本地、未指定地址和云元数据 `169.254.169.254`（含 v4-mapped），记 `private_address`；没有任何可拨地址时记 `no_dial_ip`。测试中的 127.0.0.1 假服务只通过注入拨号器或策略放行，没有生产可用的环境变量开关。
 - 端口指纹限速器为进程级共享（burst 1），多个 service 任务并发时速率不叠加。
-- 局限：Redis/Mongo/ES/Kafka/etcd/Nacos/Memcached 在未收到客户端报文时通常不主动发 banner，此时记为开放但 name 为空；需更强识别时由 T53 声明只读报文。
+- 局限：未声明 probes 且不主动发 banner 的服务仍会记为开放但 name 为空；在 YAML 为其补一条只读 probe 即可纳入识别。
 
 
 ## 非 Web 服务并入组件库存（T52）
 
 `service` 扫描在 `fingerprintOriginServices` 写完 `asset_services` 之后，由 `serviceScanHandler` 调用 `syncAssetServicesToComponents` 入库（不在指纹函数内写入，以免无触发的指纹调用改库存）。来源按扫描结果：`asset_services` → `components`，新建行 `source=service`，不含 IP。
 
-- 关联：服务指纹通常没有 HTTP URL，新增 `asset_components`（资产 + 组件 + 端口，证据 JSON 只含 host/port/banner 摘要）。现有组件统计、下钻、整列复制 SQL 对 `url_components` 与 `asset_components` 做 UNION，筛选/降噪/alive 口径与 T43 一致。不新增 REST/MCP 路由，OpenAPI 仍与 `routes()` 对齐。
-- 分类：先走 Wappalyzer `categoriesForName`（MySQL/PostgreSQL/Redis/MongoDB/Elasticsearch 等）。库中没有的名字按 SPEC 回退：Kafka/RabbitMQ → Message queues，Memcached → Caching，etcd/Nacos → Application server。已有组件的非空 `categories` 仍走 T47 `CASE`，不覆盖；`name_key` 冲突时不改已有 `source` / `confirmed`，也不删除已识别组件行或其它来源的关联。
-- 未识别：端口开放且 banner 非空、又没有指纹短名时，按脱敏 banner 的 SHA-256 聚类，名称 `unidentified-service-<12 hex>`，`confirmed=false`，不进默认正式列表。可在「待确认候选」中确认或忽略（LLM 未配置时也展示 service 候选；忽略写 `asset_components.ignored_at`）。关闭端口或开放但无 banner 的不归档。补 YAML 指纹后的自动重识别留给 T53。
+- 关联：服务指纹通常没有 HTTP URL，新增 `asset_components`（资产 + 组件 + 端口，证据 JSON 含 host/port/banner 摘要与规则 `confidence`）。现有组件统计、下钻、整列复制 SQL 对 `url_components` 与 `asset_components` 做 UNION，筛选/降噪/alive 口径与 T43 一致。不新增 REST/MCP 路由，OpenAPI 仍与 `routes()` 对齐。
+- 分类：先走 Wappalyzer `categoriesForName`（MySQL/PostgreSQL/Redis/MongoDB/Elasticsearch 等）。Wappalyzer 没有时用 YAML 规则的 `category`（Kafka/RabbitMQ → Message queues，Memcached → Caching，etcd/Nacos → Application server）。已有组件的非空 `categories` 仍走 T47 `CASE`，不覆盖；`name_key` 冲突时不改已有 `source` / `confirmed`，也不删除已识别组件行或其它来源的关联。
+- 未识别：端口开放且 banner 非空、又没有指纹短名时，按脱敏 banner 的 SHA-256 聚类，名称 `unidentified-service-<12 hex>`，`confirmed=false`，不进默认正式列表。可在「待确认候选」中确认或忽略（LLM 未配置时也展示 service 候选；忽略写 `asset_components.ignored_at`）。关闭端口或开放但无 banner 的不归档。补 YAML 指纹后由 T53 启动重识别自动回填。
 - 服务扫描拿到 banner 或识别成功时，把该主机标为 `alive`（写 `last_alive_at`、清空 `dead_reason`；已 alive 不再改；从不因端口关闭或无 banner 改成 dead）。默认正式列表仍按 T43 过滤 `alive='alive'`，因此这类主机不会被默认列表隐藏。
+
+## 可插拔 YAML 指纹库（T53）
+
+服务指纹规则集中在 `backend/fingerprints/services.yaml`，经 `go:embed` 编入二进制；识别、版本提取、探测报文都只读这份规则，新增服务只改 YAML，不改扫描代码。
+
+- 规则字段：顶层 `version: 1`；每条规则含 `name`（小写短名，写入 `asset_services.name`）、`component`（库存展示名，省略时用 `name`）、`category`（Wappalyzer 分类名，Wappalyzer 查不到时作为组件分类）、`confidence`（`high` / `medium` / `low`）、`ports`（1–65535）、`banner`（必须命中的正则）、`version`（可选，需带捕获组）、`probes`（可空；每项 `text` 或 `hex` 二选一，加 `expect` 响应正则）。
+- `probes` 只允许无认证、不读写业务数据的只读识别报文，单条不超过 256 字节。未声明 `probes` 的端口只读初始 banner、不写；声明后每个 probe 用一次连接，响应同时匹配 `expect` 与规则 `banner` 时停止并采用，否则保留最后一段 banner 供 T52 归档。默认扫描端口等于全部规则声明的端口，`SERVICE_SCAN_PORTS` 可覆盖。
+- `SERVICE_FINGERPRINT_RULES` 指向额外 YAML，与内置规则合并：**同名规则整条覆盖**，其余追加；不接受删除内置规则。加载在启动时完成，正则预编译，扫描热路径不再编译；改规则需重启（随发布更新，不做热加载）。
+- 启动校验失败即拒绝启动（`main` 中 `log.Fatal`）：Banner/version/expect 正则不可编译、端口不在 1–65535、`confidence` 不是三个枚举值、同一文件内 `name` 重复或非法、`category` 为空、probe 同时给 `text` 与 `hex` 或都为空、probe 超过 256 字节、YAML 出现未知字段。
+- 置信度随规则写入 `asset_components.evidence.confidence`（不改表结构），例如 `{"host":"...","port":6379,"banner":"...","confidence":"high"}`。
+- 启动时 `reidentifyStoredServices` 用当前规则重匹配 `asset_services` 中 `open=true`、`banner` 非空且 `name` 为空或以 `unidentified-service-` 开头的记录；命中则回填 `name` / `version` 并同步 T52 组件。新建的识别组件按一次新扫描的口径 `confirmed=true`（已存在组件的 `confirmed` 仍按 T52 冲突口径不覆盖）；同资产同端口旧的 `unidentified-service-*` 关联置 `ignored_at`，避免同一端口同时出现在正式列表和待确认候选。无资产关联（`asset_id` 为空）的历史行只回填 name/version，不进组件库存。重识别失败只记日志，不阻塞服务启动。
+- 不新增 REST/MCP 路由。

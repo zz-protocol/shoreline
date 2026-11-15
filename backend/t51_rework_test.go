@@ -236,7 +236,7 @@ func (r *t51ByteRec) bytesOf(name string) []byte {
 }
 
 // TestT51RealisticProbeBytes 覆盖 M1b/M2c/M3b：假服务记录全部收到的字节。
-// Redis 不主动发 banner；AMQP 只在协议头后回 Start；PG 只回 S/N，之后不得再收到 StartupMessage。
+// Redis 不主动发 banner，T53 起发送 YAML 声明的 PING；AMQP 只在协议头后回 Start；PG 只回 S/N，之后不得再收到 StartupMessage。
 func TestT51RealisticProbeBytes(t *testing.T) {
 	e := newTestEnv(t)
 	domain := t51RootDomain(t, e)
@@ -281,11 +281,12 @@ func TestT51RealisticProbeBytes(t *testing.T) {
 	rec.wg.Wait()
 	pgWant := []byte{0, 0, 0, 8, 4, 0xd2, 0x16, 0x2f}
 	amqpWant := []byte{'A', 'M', 'Q', 'P', 0, 0, 9, 1}
+	redisWant := []byte("PING\r\n")
 	if !bytes.Equal(rec.bytesOf("pg"), pgWant) {
 		t.Fatalf("PG received %x want SSLRequest only (M1b)", rec.bytesOf("pg"))
 	}
-	if len(rec.bytesOf("redis")) != 0 {
-		t.Fatalf("Redis must not receive PING or any probe (M2c), got %q", rec.bytesOf("redis"))
+	if !bytes.Equal(rec.bytesOf("redis"), redisWant) {
+		t.Fatalf("Redis received %q want declared PING only (T53)", rec.bytesOf("redis"))
 	}
 	if !bytes.Equal(rec.bytesOf("amqp"), amqpWant) {
 		t.Fatalf("AMQP received %x want protocol header only (M3b)", rec.bytesOf("amqp"))
@@ -566,19 +567,35 @@ func TestT51OnlyDialsResolvedIPs(t *testing.T) {
 	}
 }
 
-func TestT51ProbeByteSetStillOnlyHandshake(t *testing.T) {
-	// 红线：本轮探测集仍只有 PG SSLRequest 与 AMQP 头（T53 再扩展）。
-	probes := serviceFingerprintProbes()
-	if len(probes) != 2 {
-		t.Fatalf("probe set size=%d, want 2", len(probes))
+func TestT51ProbeByteSetStillOnlyReadOnly(t *testing.T) {
+	// T53：探测集来自 YAML 声明，仍是只读识别报文（PG SSLRequest + AMQP 头保留）。
+	rules, err := loadServiceFingerprintRules("")
+	if err != nil {
+		t.Fatal(err)
 	}
+	probes := rules.probes()
+	if len(probes) < 2 {
+		t.Fatalf("probe set size=%d, want at least PG + AMQP", len(probes))
+	}
+	wantPG := []byte{0, 0, 0, 8, 4, 0xd2, 0x16, 0x2f}
+	wantAMQP := []byte{'A', 'M', 'Q', 'P', 0, 0, 9, 1}
+	var hasPG, hasAMQP bool
 	for _, p := range probes {
+		if bytes.Equal(p, wantPG) {
+			hasPG = true
+		}
+		if bytes.Equal(p, wantAMQP) {
+			hasAMQP = true
+		}
 		s := strings.ToUpper(string(p))
-		for _, f := range []string{"PING", "AUTH", "INFO", "KEYS", "GET /", "HELLO", "SELECT"} {
+		for _, f := range []string{"AUTH", "LOGIN", "PASSWORD", "SELECT", "INSERT", "UPDATE", "DELETE", "FLUSH", "CONFIG"} {
 			if strings.Contains(s, f) {
 				t.Errorf("probe contains %q", f)
 			}
 		}
+	}
+	if !hasPG || !hasAMQP {
+		t.Fatalf("probe set missing SSLRequest or AMQP preamble: pg=%v amqp=%v", hasPG, hasAMQP)
 	}
 	_ = rate.Limit(1)
 }

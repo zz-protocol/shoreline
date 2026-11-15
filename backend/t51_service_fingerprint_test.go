@@ -120,10 +120,11 @@ func t51Dialer(dials *atomic.Int32, routes map[int]string) serviceDialer {
 }
 
 func TestT51ProbeByteSet(t *testing.T) {
-	probes := serviceFingerprintProbes()
-	if len(probes) != 2 {
-		t.Fatalf("complete probe set size = %d, want 2 (PostgreSQL SSLRequest + AMQP preamble only)", len(probes))
+	rules, err := loadServiceFingerprintRules("")
+	if err != nil {
+		t.Fatal(err)
 	}
+	probes := rules.probes()
 	wantPG := []byte{0x00, 0x00, 0x00, 0x08, 0x04, 0xd2, 0x16, 0x2f}
 	wantAMQP := []byte{'A', 'M', 'Q', 'P', 0x00, 0x00, 0x09, 0x01}
 	var hasPG, hasAMQP bool
@@ -132,31 +133,30 @@ func TestT51ProbeByteSet(t *testing.T) {
 			hasPG = true
 		} else if bytes.Equal(p, wantAMQP) {
 			hasAMQP = true
-		} else {
-			t.Fatalf("unexpected probe bytes %q", p)
+		}
+		if len(p) == 0 || len(p) > serviceFingerprintMaxProbeSize {
+			t.Errorf("declared probe %q has invalid size %d", p, len(p))
 		}
 	}
 	if !hasPG || !hasAMQP {
 		t.Fatalf("probe set missing SSLRequest or AMQP preamble: pg=%v amqp=%v", hasPG, hasAMQP)
 	}
+	// T53：探测报文由 YAML 声明，只允许无认证、不读写业务数据的只读识别指令。
 	forbidden := []string{
-		"AUTH", "LOGIN", "PASSWORD", "INFO", "PING",
-		"isMaster", "ismaster", "hello", "helloOk",
-		"GET /", "GET /_", "POST ", "STATS", "stats\r\n", "version\r\n",
-		"SELECT", "INSERT", "UPDATE", "DELETE", "EVAL", "KEYS", "CONFIG",
-		"FLUSH", "QUIT", "STARTUP", "User=", "password",
+		"AUTH", "LOGIN", "PASSWORD",
+		"SET ", "DEL ", "FLUSH", "CONFIG", "SHUTDOWN", "QUIT",
+		"SELECT", "INSERT", "UPDATE", "DELETE", "EVAL", "KEYS", "STARTUP",
 	}
 	for _, p := range probes {
-		s := string(p)
-		upper := strings.ToUpper(s)
+		s := strings.ToUpper(string(p))
 		for _, f := range forbidden {
-			if strings.Contains(s, f) || strings.Contains(upper, strings.ToUpper(f)) {
+			if strings.Contains(s, f) {
 				t.Errorf("probe %q contains forbidden %q", p, f)
 			}
 		}
 	}
-	// 默认端口恰好覆盖 SPEC 点名的 10 种服务，不是全端口。
-	ports := defaultServiceScanPorts
+	// 默认端口来自 YAML，恰好覆盖 SPEC 点名的 10 种服务，不是全端口。
+	ports := rules.ports()
 	if len(ports) != 10 {
 		t.Fatalf("default ports = %v, want 10 named services", ports)
 	}
@@ -169,21 +169,16 @@ func TestT51ProbeByteSet(t *testing.T) {
 			t.Fatalf("default ports = %v, want %v", ports, wantPorts)
 		}
 	}
-	// 规则表每条默认端口都有对应行，便于 T53 整表替换。
-	covered := map[int]string{}
-	for _, r := range builtinServiceFingerprintRules() {
-		for _, p := range r.Ports {
-			covered[p] = r.Name
-		}
-	}
 	for _, p := range wantPorts {
-		if covered[p] == "" {
+		r := rules.ruleForPort(p)
+		if r.Name == "" {
 			t.Errorf("default port %d has no fingerprint rule", p)
 		}
 	}
 }
 
 func TestT51ConfigFromEnv(t *testing.T) {
+	t.Setenv("SERVICE_FINGERPRINT_RULES", "")
 	t.Setenv("SERVICE_SCAN_PORTS", "")
 	t.Setenv("SERVICE_SCAN_RPS", "")
 	t.Setenv("SERVICE_SCAN_TIMEOUT", "")
@@ -272,11 +267,16 @@ func TestT51OpenPortIdentifyAndClosed(t *testing.T) {
 	}
 
 	var dials atomic.Int32
+	defaultRules, err := loadServiceFingerprintRules("")
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg := serviceFingerprintConfig{
-		Ports:   append(append([]int{}, defaultServiceScanPorts...), 19999),
+		Ports:   append(append([]int{}, defaultRules.ports()...), 19999),
 		RPS:     100,
 		Timeout: time.Second,
 		Dialer:  t51Dialer(&dials, routes),
+		Rules:   defaultRules,
 	}
 
 	var beforeComp int

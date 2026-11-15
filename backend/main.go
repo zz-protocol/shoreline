@@ -68,6 +68,12 @@ func main() {
 	}
 	dnsRes := newResolver(dcfg)
 	svcfp.Resolve = resolverFromDNS(dnsRes)
+	// T53：启动时用当前 YAML 规则重识别历史未识别服务；失败不阻塞服务启动。
+	if n, err := reidentifyStoredServices(context.Background(), pool, svcfp.Rules); err != nil {
+		log.Printf("service reidentify: %v", err)
+	} else if n > 0 {
+		log.Printf("reidentified %d stored services", n)
+	}
 	handlers := map[string]ScanHandler{
 		"passive": passiveHandlerFromConfig(pool, pcfg),
 		"dns":     dnsHandler(pool, dnsRes),

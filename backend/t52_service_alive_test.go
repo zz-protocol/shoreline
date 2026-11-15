@@ -42,6 +42,10 @@ func TestT52ServiceBannerMarksAliveAndDefaultList(t *testing.T) {
 
 	mysqlBanner := append([]byte{0x0a}, []byte("8.0.36\x00mysql_native_password")...)
 	base := serviceFingerprintConfig{Ports: []int{3306}, RPS: 100, Timeout: 300 * time.Millisecond}
+	rules, err := loadServiceFingerprintRules("")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var d1, d2, d3 atomic.Int32
 	bannerCfg := base
@@ -49,7 +53,7 @@ func TestT52ServiceBannerMarksAliveAndDefaultList(t *testing.T) {
 	if err := fingerprintOriginServices(ctx, e.pool, bannerCfg, []serviceScanTarget{{AssetID: bid, Host: bannerHost}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := syncAssetServicesToComponents(ctx, e.pool, []serviceScanTarget{{AssetID: bid, Host: bannerHost}}); err != nil {
+	if err := syncAssetServicesToComponents(ctx, e.pool, []serviceScanTarget{{AssetID: bid, Host: bannerHost}}, rules); err != nil {
 		t.Fatal(err)
 	}
 	if t52AssetAlive(t, e, bid) != "alive" {

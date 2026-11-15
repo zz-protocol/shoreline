@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -14,58 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/time/rate"
 )
-
-// 默认常见端口（SPEC 点名的 10 种后端服务，非全 65535 端口）。
-var defaultServiceScanPorts = []int{3306, 5432, 6379, 27017, 9200, 9092, 2379, 8848, 5672, 11211}
-
-// 明确列出的最小无害握手字节（不认证、不查询、不写入）。
-// PostgreSQL SSLRequest：8 字节魔术 80877103，只询问是否支持 TLS，不是 StartupMessage。
-var probePostgreSQLSSLRequest = []byte{0x00, 0x00, 0x00, 0x08, 0x04, 0xd2, 0x16, 0x2f}
-
-// AMQP 协议头：客户端前言，不是 connection.start-ok / 登录 / publish / consume。
-var probeAMQPProtocolHeader = []byte{'A', 'M', 'Q', 'P', 0x00, 0x00, 0x09, 0x01}
-
-// serviceFingerprintRule 是 T51 识别规则行。T53 可用 YAML 整表替换，扫描侧只读这张表。
-type serviceFingerprintRule struct {
-	Name      string
-	Ports     []int
-	Probe     []byte
-	BannerRE  string
-	VersionRE string
-}
-
-func builtinServiceFingerprintRules() []serviceFingerprintRule {
-	return []serviceFingerprintRule{
-		{Name: "mysql", Ports: []int{3306}, BannerRE: `(?i)mysql_native_password|mariadb|\x00mysql`, VersionRE: `([0-9]+\.[0-9]+\.[0-9]+)`},
-		{Name: "postgresql", Ports: []int{5432}, Probe: probePostgreSQLSSLRequest, BannerRE: `^[SN]$`},
-		{Name: "redis", Ports: []int{6379}, BannerRE: `(?i)-NOAUTH|redis_version|-DENIED Redis|(?m)^-ERR .+[Rr]edis`},
-		{Name: "mongodb", Ports: []int{27017}, BannerRE: `(?i)mongo`},
-		{Name: "elasticsearch", Ports: []int{9200}, BannerRE: `(?i)elasticsearch`, VersionRE: `([0-9]+\.[0-9]+\.[0-9]+)`},
-		{Name: "kafka", Ports: []int{9092}, BannerRE: `(?i)kafka`},
-		{Name: "etcd", Ports: []int{2379}, BannerRE: `(?i)etcd`, VersionRE: `([0-9]+\.[0-9]+)`},
-		{Name: "nacos", Ports: []int{8848}, BannerRE: `(?i)nacos`},
-		{Name: "rabbitmq", Ports: []int{5672}, Probe: probeAMQPProtocolHeader, BannerRE: `(?i)AMQP|rabbitmq`},
-		{Name: "memcached", Ports: []int{11211}, BannerRE: `(?i)memcached`},
-	}
-}
-
-// serviceFingerprintProbes 返回规则表中全部非空探测字节（完整集合，供测试断言）。
-func serviceFingerprintProbes() [][]byte {
-	seen := map[string]struct{}{}
-	var out [][]byte
-	for _, r := range builtinServiceFingerprintRules() {
-		if len(r.Probe) == 0 {
-			continue
-		}
-		k := string(r.Probe)
-		if _, ok := seen[k]; ok {
-			continue
-		}
-		seen[k] = struct{}{}
-		out = append(out, append([]byte(nil), r.Probe...))
-	}
-	return out
-}
 
 // serviceDialer 可注入。测试把主机名转到 127.0.0.1 假服务，不走真实 DNS/外网。
 type serviceDialer func(ctx context.Context, network, host string, port int) (net.Conn, error)
@@ -77,6 +23,7 @@ type serviceFingerprintConfig struct {
 	Dialer  serviceDialer // 测试注入：按主机名转到假服务。生产路径保持为 nil，只拨判定所得 IP。
 	Resolve serviceIPResolver
 	DialIP  serviceIPDialer // 测试注入生产拨号路径；默认 defaultServiceDialer，只接受字面 IP。
+	Rules   *serviceFingerprintRuleSet
 	limiter *rate.Limiter
 }
 
@@ -96,7 +43,12 @@ func defaultServiceDialer(timeout time.Duration) serviceDialer {
 }
 
 func serviceFingerprintConfigFromEnv() (serviceFingerprintConfig, error) {
-	c := serviceFingerprintConfig{Ports: append([]int(nil), defaultServiceScanPorts...), RPS: 2, Timeout: 2 * time.Second}
+	rules, err := loadServiceFingerprintRules(os.Getenv("SERVICE_FINGERPRINT_RULES"))
+	if err != nil {
+		return serviceFingerprintConfig{}, err
+	}
+	// 默认扫描端口来自 YAML 规则声明，新增服务只改 YAML。
+	c := serviceFingerprintConfig{Ports: rules.ports(), RPS: 2, Timeout: 2 * time.Second, Rules: rules}
 	if s := strings.TrimSpace(os.Getenv("SERVICE_SCAN_PORTS")); s != "" {
 		var ports []int
 		for _, part := range strings.Split(s, ",") {
@@ -136,8 +88,15 @@ func serviceFingerprintConfigFromEnv() (serviceFingerprintConfig, error) {
 }
 
 func (c *serviceFingerprintConfig) ready() error {
+	if c.Rules == nil {
+		rules, err := loadServiceFingerprintRules(os.Getenv("SERVICE_FINGERPRINT_RULES"))
+		if err != nil {
+			return err
+		}
+		c.Rules = rules
+	}
 	if len(c.Ports) == 0 {
-		c.Ports = append([]int(nil), defaultServiceScanPorts...)
+		c.Ports = c.Rules.ports()
 	}
 	if c.RPS <= 0 {
 		c.RPS = 2
@@ -184,7 +143,7 @@ func scanHostServices(ctx context.Context, q serviceScanQ, cfg serviceFingerprin
 	if cfg.Dialer == nil && len(dialIPs) == 0 {
 		return nil
 	}
-	rules := builtinServiceFingerprintRules()
+	rules := cfg.Rules
 	reached := false
 	for _, port := range cfg.Ports {
 		if err := ctx.Err(); err != nil {
@@ -195,8 +154,8 @@ func scanHostServices(ctx context.Context, q serviceScanQ, cfg serviceFingerprin
 				return err
 			}
 		}
-		open, banner := probeServicePort(ctx, cfg, host, port, ruleForPort(rules, port), dialIPs)
-		name, version := matchServiceFingerprint(rules, port, banner)
+		open, banner := probeServicePort(ctx, cfg, host, port, rules.ruleForPort(port), dialIPs)
+		name, version, _ := rules.match(port, banner)
 		if err := upsertAssetService(ctx, q, assetID, host, port, open, name, version, sanitizeServiceBanner(banner)); err != nil {
 			return err
 		}
@@ -222,18 +181,36 @@ func markAssetAliveFromService(ctx context.Context, q serviceScanQ, assetID int6
 	return err
 }
 
-func ruleForPort(rules []serviceFingerprintRule, port int) serviceFingerprintRule {
-	for _, r := range rules {
-		for _, p := range r.Ports {
-			if p == port {
-				return r
-			}
+// probeServicePort 只发送 YAML 声明的探测报文：没有 probes 的端口只读初始 banner，不写。
+// 每个 probe 用一次独立连接；响应同时匹配 expect 与规则 banner 时停止并采用该 banner，
+// 否则保留最后一段 banner 供 T52 归入未识别，是否识别仍由规则的 banner 正则决定。
+func probeServicePort(ctx context.Context, cfg serviceFingerprintConfig, host string, port int, rule serviceFingerprintRule, ips []net.IP) (bool, []byte) {
+	if len(rule.Probes) == 0 {
+		return readServicePort(ctx, cfg, host, port, nil, ips)
+	}
+	open := false
+	var last []byte
+	for _, p := range rule.Probes {
+		ok, banner := readServicePort(ctx, cfg, host, port, p.Bytes, ips)
+		if !ok {
+			// 拨号失败：端口关闭，不再尝试后续报文。
+			return false, nil
+		}
+		open = true
+		if len(banner) == 0 {
+			continue
+		}
+		last = banner
+		expectOK := p.Expect != nil && (p.Expect.Match(banner) || p.Expect.MatchString(bannerText(banner)))
+		bannerOK := rule.BannerRE != nil && (rule.BannerRE.Match(banner) || rule.BannerRE.MatchString(bannerText(banner)))
+		if expectOK && bannerOK {
+			return true, banner
 		}
 	}
-	return serviceFingerprintRule{}
+	return open, last
 }
 
-func probeServicePort(ctx context.Context, cfg serviceFingerprintConfig, host string, port int, rule serviceFingerprintRule, ips []net.IP) (bool, []byte) {
+func readServicePort(ctx context.Context, cfg serviceFingerprintConfig, host string, port int, probe []byte, ips []net.IP) (bool, []byte) {
 	dialCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 	conn, err := dialServicePort(dialCtx, cfg, host, port, ips)
@@ -241,75 +218,20 @@ func probeServicePort(ctx context.Context, cfg serviceFingerprintConfig, host st
 		return false, nil
 	}
 	defer conn.Close()
-	deadline := time.Now().Add(cfg.Timeout)
-	_ = conn.SetDeadline(deadline)
-	if len(rule.Probe) > 0 {
-		if _, err := conn.Write(rule.Probe); err != nil {
+	_ = conn.SetDeadline(time.Now().Add(cfg.Timeout))
+	if len(probe) > 0 {
+		if _, err := conn.Write(probe); err != nil {
 			// 已连上但写入失败仍视为开放，无 banner。
 			return true, nil
 		}
 	}
 	buf := make([]byte, 1024)
-	n, err := conn.Read(buf)
+	n, _ := conn.Read(buf)
 	if n > 0 {
 		return true, buf[:n]
 	}
-	if err != nil && err != io.EOF {
-		// 超时或对端立即断开：已建立过连接则视为开放但无 banner（拒绝/超时在 Dial 失败时已记关闭）。
-		// 读超时：连接已建立，算开放。
-		if ne, ok := err.(net.Error); ok && ne.Timeout() && len(rule.Probe) == 0 {
-			return true, nil
-		}
-		if ne, ok := err.(net.Error); ok && ne.Timeout() && len(rule.Probe) > 0 {
-			// 发了握手仍无响应：端口开着但无法识别。
-			return true, nil
-		}
-	}
+	// 超时或对端立即断开：已建立过连接则视为开放但无 banner（拒绝/超时在 Dial 失败时已记关闭）。
 	return true, nil
-}
-
-func matchServiceFingerprint(rules []serviceFingerprintRule, port int, banner []byte) (name, version string) {
-	if len(banner) == 0 {
-		return "", ""
-	}
-	if n, v, ok := parseMySQLHandshake(banner); ok {
-		return n, v
-	}
-	text := bannerText(banner)
-	var fallbackName, fallbackVer string
-	for _, r := range rules {
-		if r.BannerRE == "" {
-			continue
-		}
-		re, err := regexp.Compile(r.BannerRE)
-		if err != nil || (!re.Match(banner) && !re.MatchString(text)) {
-			continue
-		}
-		ver := ""
-		if r.VersionRE != "" {
-			if vre, err := regexp.Compile(r.VersionRE); err == nil {
-				if m := vre.FindStringSubmatch(text); len(m) > 1 {
-					ver = m[1]
-				} else if m := vre.FindStringSubmatch(string(banner)); len(m) > 1 {
-					ver = m[1]
-				}
-			}
-		}
-		portHit := false
-		for _, p := range r.Ports {
-			if p == port {
-				portHit = true
-				break
-			}
-		}
-		if portHit {
-			return r.Name, ver
-		}
-		if fallbackName == "" {
-			fallbackName, fallbackVer = r.Name, ver
-		}
-	}
-	return fallbackName, fallbackVer
 }
 
 func bannerText(b []byte) string {
@@ -354,10 +276,15 @@ func serviceScanHandler(d *pgxpool.Pool, cfg serviceFingerprintConfig) ScanHandl
 		if err != nil {
 			return nil, err
 		}
-		if err := fingerprintOriginServices(ctx, d, cfg, targets); err != nil {
+		// 用局部副本 ready，避免多个 service 任务并发时改同一份 cfg。
+		runCfg := cfg
+		if err := runCfg.ready(); err != nil {
 			return nil, err
 		}
-		return nil, syncAssetServicesToComponents(ctx, d, targets)
+		if err := fingerprintOriginServices(ctx, d, runCfg, targets); err != nil {
+			return nil, err
+		}
+		return nil, syncAssetServicesToComponents(ctx, d, targets, runCfg.Rules)
 	}
 }
 
