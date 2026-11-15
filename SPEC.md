@@ -421,3 +421,43 @@
 
 ### 任务顺序与依赖
 T49（门控）→ T50（CDN 识别）→ T51（端口/服务指纹）→ T52（并入库存）→ T53（YAML 指纹库，可与 T51/T52 并行设计）→ T54（评分，依赖 T52）。T49/T50 可先独立验收。
+
+
+## 第十轮：服务识别质量修复（T55–T59）
+
+背景：11-15 全量 service 扫描 43,406 资产、434,057 端口记录，open 569、具名 4（MySQL/MariaDB）、未识别候选 175（HTTP 400/403 为主）、空 banner 401；跳过 no_dial_ip 77,729、cdn_unknown 12,745、cdn_fronted 8,395。识别率 0.7%，覆盖 44%。
+
+已确认口径：
+- 空 banner 只代表 TCP 可达，不算已确认开放服务；默认统计只看 verified。
+- HTTP 400/403 且带反代/CDN 特征（Server: openresty/nginx/Tengine、via: CHN-*、X-CCDN-FORBID-CODE、X-Cache）判为 edge/reverse_proxy，不生成服务候选。
+- 聚类哈希前清洗动态字段：Date、Request_id、Node_info、Client_ip、Content-Length、via 节点编号。
+- no_dial_ip 先诊断原因，不绕过 CDN 门控；未判定 CDN 仍跳过。
+- 复扫超时用 1s，先小批对比再全量。
+- 迁移编号 032–034，串行；不删已识别组件。
+
+### T55 探测结果三态
+数据：asset_services 加 response_kind（none/banner/probe/reverse_proxy）与 verified 布尔；迁移 032，可重跑；旧行回填 verified=false、response_kind=none。
+行为：只有收到 banner 或 probe 响应才 verified=true；空 banner 记 open=true、verified=false。T52 只对 verified 或 response_kind=banner/probe 生成候选；默认统计只计 verified。
+接口：组件/资产相关列表与详情返回 verified；服务扫描页开放数按 verified 展示，同时保留 TCP 可达数。
+验收：空 banner 不生成组件；旧数据回填后 verified 数等于有 banner/probe 数；API/UI 无 IP；迁移可重跑；测试无真实网络。
+
+### T56 反代/CDN 边缘识别
+行为：T55 的 response_kind 增加 reverse_proxy；按 HTTP 状态 400/403 + 反代/CDN 头识别；识别后不生成 unidentified 候选，并记 skip 原因 reverse_proxy。
+可选：把已确认的 CDN/反代解析段写入 CDN 段库或跳过表，后续 service 扫描直接跳过；不绕过 T50 三态门控。
+验收：构造假 403 openresty / 400 nginx / 200 应用响应分类正确；175 个历史候选可回填归类；真实 200 应用不误伤；无真实网络。
+
+### T57 未识别聚类归一化
+行为：banner 哈希前去掉 Date、Request_id、Node_info、Client_ip、Content-Length、via 节点编号等动态字段；同一类 403 归为一个候选。
+历史：迁移 034 或回填脚本把现有 175 个 unidentified 重新聚类，合并关联；confirmed/ignored 状态保留；幂等。
+验收：同类 403 合并为一个候选；不同真实响应仍分开；回填幂等；无真实网络。
+
+### T58 no_dial_ip 覆盖诊断
+行为：细分 no_dial_ip 原因（无 A/AAAA、解析超时、CDN 判定缓存空、范围外）；修复可修复项（解析重试/回退、缓存），仍不绕过 CDN 门控。
+验收：skip 原因可区分；抽样资产能拿到 IP；未判定 CDN 仍跳过；不写入 IP；测试无真实网络。
+
+### T59 小批复扫与效果对比
+行为：部署配置 SERVICE_SCAN_TIMEOUT=1s；挑 5–10 个根域复扫；重触发 20 个失败根域；对比 open/verified/named/候选数量。
+验收：复扫有前后对比数据；失败根域 359/363 补齐；不改变 T55–T58 口径；无真实厂商扫描（开发环境仅假服务/测试库）。
+
+### 任务顺序与依赖
+T55 → T56 → T57；T58 可与 T55 并行诊断；T59 最后。迁移 032/033/034 串行。

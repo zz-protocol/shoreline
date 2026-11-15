@@ -75,5 +75,15 @@
 | T53 | 可插拔 YAML 指纹库：端口+banner 正则→服务名/分类/置信度，与扫描代码解耦，加组件只改 YAML；启动校验非法规则 | 新增一条 YAML 规则即可识别对应 banner（临时规则文件驱动测试）；非法规则被拦；置信度写入证据；无真实网络 | 完成（86fa113 实现、37f5e7e 待验收、481efee 复验：YAML 内置 10 条规则，SERVICE_FINGERPRINT_RULES 同名覆盖/追加，非法规则拒启动，只发声明只读报文，置信度进 evidence，启动重识别；accept.ps1 T53 全 PASS；变异 M1 未声明探测被 TestT53OnlyDeclaredProbesAreSent 抓到、M2 未知 confidence 被 TestT53InvalidRulesRejected 抓到；go test -count=2 全量 233.6s；前端 70 测试与 build 过；无真实网络） |
 | T54 | 研究价值评分：在冷门分上扩展四维（攻击面=服务类型权重、源码可得性=能否关联 repo、公开披露稀缺=OSV/公告少、本 SRC 使用频度=厂商内计数）；列表可按分排序/筛选；权重文档化 | 构造数据四维方向正确（后端服务/有 repo/披露少/本 src 高频→高分）；四维等权各 0.25；NULL 中性、0 披露最高但不标安全；全局分不随 vendor 筛选变化；并列按 id 稳定；go test/vitest/build 过；无真实网络 | 完成（38547bf 实现、待验收；复验：accept.ps1 T54 8 项全 PASS；四维等权 0.25、全局评分、NULL 中性、0 披露最高但不标安全；031 迁移可重跑；YAML repo 只填空不覆盖；go test -count=2 全量 226.5s；前端 26 文件 73 测试与 build 过；无真实网络） |
 
-依赖顺序：T49 → T50 → T51 → T52 →（T53 可并行）→ T54（依赖 T52）。T49/T50 可先独立验收。
+## 第十轮（11-15）：服务识别质量修复
+
+| 编号 | 任务 | 验收标准 | 状态 |
+|---|---|---|---|
+| T55 | 探测结果三态：asset_services 加 response_kind（none/banner/probe/reverse_proxy）与 verified；空 banner 记 open=true、verified=false；T52 只对 verified 生成候选；默认统计只计 verified；迁移 032 可重跑 | 空 banner 不生成组件；回填后 verified 数等于有 banner/probe 数；API/UI 无 IP；迁移可重跑；无真实网络 | 待做 |
+| T56 | 反代/CDN 边缘识别：HTTP 400/403 + openresty/nginx/Tengine/via: CHN-*/X-CCDN 判 reverse_proxy，不生成候选，记 skip；不绕过 T50 门控 | 假 403/400/200 分类正确；175 个历史候选可回填；200 应用不误伤；无真实网络 | 待做 |
+| T57 | 未识别聚类归一化：哈希前去 Date/Request_id/Node_info/Client_ip/Content-Length/via 节点；迁移 034 回填合并历史 175 个候选，保留 confirmed/ignored，幂等 | 同类 403 合并；不同响应分开；回填幂等；无真实网络 | 待做 |
+| T58 | no_dial_ip 覆盖诊断：细分无 A/AAAA、解析超时、CDN 缓存空、范围外；修复解析重试/回退/缓存，仍不绕过 CDN 门控 | skip 原因可区分；抽样资产拿到 IP；未判定 CDN 仍跳过；不写 IP；无真实网络 | 待做 |
+| T59 | 小批复扫与对比：SERVICE_SCAN_TIMEOUT=1s；5–10 个根域复扫；重触发 20 个失败根域；对比 open/verified/named/候选 | 复扫前后对比；失败根域补齐 359/363；不改 T55–T58 口径；开发环境仅假服务/测试库 | 待做 |
+
+依赖顺序：T49 → T50 → T51 → T52 →（T53 可并行）→ T54（依赖 T52）。第十轮 T55 → T56 → T57；T58 可与 T55 并行；T59 最后。T49/T50 可先独立验收。
 约束：只开发，不部署、不对真实厂商扫描、不写生产地址、IP 不存不显、不删除已识别组件数据。
