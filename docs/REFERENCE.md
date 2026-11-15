@@ -11,6 +11,7 @@
 | RATE_PASSIVE / RATE_DNS / RATE_HTTP / RATE_SERVICE | 1 / 10 / 5 / 1 | 每类任务每秒处理数（单实例）；须为有限正数。`RATE_SERVICE` 为端口指纹任务级限速（T51），与 `SERVICE_SCAN_RPS`（每端口连接）叠加 |
 | MAX_RETRY | 3 | 失败重试次数；重试中状态为 retrying，用尽后为 failed（终态） |
 | HOST_CHUNK_SIZE | 2000 | dns/http 单任务 hosts 超过此数则拆成子 scan_task（parent_id）；父状态由子推导；重启只重投未完成分片（T40） |
+| WORKER_CONCURRENCY | 10 | Asynq worker 并发任务数，范围 1–1000。提高可加速，但要同时看 `RATE_*`、`SERVICE_SCAN_RPS` 和目标承受能力 |
 | RETRY_BASE_SECONDS | 1 | 指数退避基数（最小 1，asynq 重试调度为秒级精度），第 k 次重试前等待 base × 2^(k-1) 秒，默认即 1s/2s/4s |
 | SERVICE_SCAN_ENABLED | false | 非 Web（端口/服务）探测全局开关，默认关。未在网页/API 写入过时读此变量；一旦 PATCH `/api/service-scan` 则以库为准。关闭时不发起探测，不影响 Web 扫描（T49） |
 | CDN_CNAME_FILE | 空 | 额外 CNAME 后缀库文件（每行 `suffix vendor`，`#` 开头为注释）；与内置后缀合并，供 CDN 判定（T50） |

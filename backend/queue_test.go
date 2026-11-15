@@ -29,18 +29,20 @@ func TestConfigFromEnv(t *testing.T) {
 	t.Setenv("RATE_DNS", "2.5")
 	t.Setenv("MAX_RETRY", "5")
 	t.Setenv("RETRY_BASE_SECONDS", "1.5")
+	t.Setenv("WORKER_CONCURRENCY", "300")
 	if c, err = configFromEnv(); err != nil {
 		t.Fatal(err)
 	}
-	if c.Rates["dns"] != 2.5 || c.MaxRetry != 5 || c.RetryBase != 1500*time.Millisecond {
+	if c.Rates["dns"] != 2.5 || c.MaxRetry != 5 || c.RetryBase != 1500*time.Millisecond || c.Concurrent != 300 {
 		t.Fatalf("overrides: %+v", c)
 	}
 	for k, v := range map[string]string{
 		"RATE_HTTP": "0", "RATE_DNS": "NaN", "RATE_PASSIVE": "Inf", "RATE_PASSIVE_NEG": "-Inf",
 		"MAX_RETRY": "-1", "RETRY_BASE_SECONDS": "NaN", "RETRY_BASE_SECONDS_NEG": "0.5",
+		"WORKER_CONCURRENCY": "0", "WORKER_CONCURRENCY_HIGH": "1001",
 	} {
 		t.Run(k+"="+v, func(t *testing.T) {
-			t.Setenv(strings.TrimSuffix(k, "_NEG"), v)
+			t.Setenv(strings.TrimSuffix(strings.TrimSuffix(k, "_NEG"), "_HIGH"), v)
 			if _, err := configFromEnv(); err == nil {
 				t.Fatalf("%s=%s should be rejected", k, v)
 			}

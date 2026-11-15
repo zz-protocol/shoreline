@@ -81,6 +81,13 @@ func configFromEnv() (workerConfig, error) {
 		}
 		c.HostChunkSize = n
 	}
+	if s := os.Getenv("WORKER_CONCURRENCY"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 || n > 1000 {
+			return c, fmt.Errorf("WORKER_CONCURRENCY: invalid %q (integer 1-1000)", s)
+		}
+		c.Concurrent = n
+	}
 	return c, nil
 }
 
