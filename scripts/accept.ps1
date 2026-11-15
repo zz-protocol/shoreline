@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("T49", "T50", "T51", "T52", "T53", "T54", "T55", "T56", "T57", "All")]
+    [ValidateSet("T49", "T50", "T51", "T52", "T53", "T54", "T55", "T56", "T57", "T58", "All")]
     [string]$Task = "All",
     [int]$Count = 1,
     [switch]$SkipFrontend
@@ -231,6 +231,34 @@ function Invoke-T57 {
     }
 }
 
+function Invoke-T58 {
+    Write-Host "`nT58 no_dial_ip 收口" -ForegroundColor Cyan
+    Invoke-Check "T58" "实现与迁移存在" {
+        Assert-Exists (Join-Path $backend "migrations\036_service_skip_dedup.sql") "036 迁移"
+        Assert-Exists (Join-Path $backend "t58_no_dial_ip_test.go") "T58 测试"
+    }
+    Invoke-Check "T58" "测试通过（T58）" { Invoke-GoTests "T58" }
+    Invoke-Check "T58" "skip 原因细分" {
+        Assert-Text (Join-Path $backend "service_dial_policy.go") "dns_nxdomain" "缺少 dns_nxdomain"
+        Assert-Text (Join-Path $backend "service_dial_policy.go") "dns_negative_cached" "缺少 dns_negative_cached"
+    }
+    Invoke-Check "T58" "NXDOMAIN 双 resolver 与 A/AAAA 分开" {
+        Assert-Text (Join-Path $backend "t58_no_dial_ip_test.go") "NXDomain" "缺少 NXDOMAIN 复核用例"
+        Assert-Text (Join-Path $backend "t58_no_dial_ip_test.go") "AAAA" "缺少 A/AAAA 用例"
+    }
+    Invoke-Check "T58" "skip 去重与 scan_task_id" {
+        Assert-Text (Join-Path $backend "migrations\036_service_skip_dedup.sql") "scan_task_id" "缺少 scan_task_id"
+        Assert-Text (Join-Path $backend "migrations\036_service_skip_dedup.sql") "CREATE UNIQUE INDEX" "缺少唯一索引"
+    }
+    Invoke-Check "T58" "负缓存 TTL 配置" {
+        Assert-Text (Join-Path $backend "service_fingerprint.go") "SERVICE_DNS_NEGATIVE_TTL" "缺少 TTL 配置"
+        Assert-Text (Join-Path $repo "docs\REFERENCE.md") "SERVICE_DNS_NEGATIVE_TTL" "REFERENCE 未记录 TTL"
+    }
+    Invoke-Check "T58" "CDN 复判用例" {
+        Assert-Text (Join-Path $backend "t58_no_dial_ip_test.go") "CDN" "缺少 CDN 复判用例"
+    }
+}
+
 function Invoke-T54 {
     Write-Host "`nT54 研究价值评分" -ForegroundColor Cyan
     Invoke-Check "T54" "实现文件存在" {
@@ -269,6 +297,7 @@ switch ($Task) {
     "T55" { Invoke-T55 }
     "T56" { Invoke-T56 }
     "T57" { Invoke-T57 }
+    "T58" { Invoke-T58 }
     "All" {
         Invoke-T49
         Invoke-T50
@@ -279,6 +308,7 @@ switch ($Task) {
         Invoke-T55
         Invoke-T56
         Invoke-T57
+        Invoke-T58
     }
 }
 
