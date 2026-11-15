@@ -21,6 +21,8 @@ var (
 	decInetRE     = regexp.MustCompile(`\b\d{6,10}\b`)
 	octalQuadRE   = regexp.MustCompile(`\b(?:0[0-7]{1,3}|0x[0-9a-fA-F]+|\d{1,3})(?:\.(?:0[0-7]{1,3}|0x[0-9a-fA-F]+|\d{1,3})){3}\b`)
 	twoPartLoopRE = regexp.MustCompile(`(?:^|[^0-9.])((?:127|0)\.[0-9]+)(?:[^0-9.]|$)`)
+	// 架构 11-15 定：两段/三段十进制默认当版本号保留；仅当紧跟这些 IP 语境前缀时才替换。
+	ipContextShorthandRE = regexp.MustCompile(`(?i)(\b(?:addr|host)=\s*|\bfrom\s+)(\d+(?:\.\d+){1,2})(?:[^0-9.]|$)`)
 )
 
 func sanitizeServiceBanner(b []byte) string {
@@ -62,7 +64,7 @@ func truncateBanner(s string, max int) string {
 }
 
 // redactBannerIPs 把可解析的 IP 写法换成 [ip]。先处理 IPv6（含 zone、[addr]:port、v4-mapped 整体），再处理 IPv4 与 inet_aton。
-// 不替换版本号 8.0.36 / 10.11.6 / 5.5.5；三节全十进制一律保留。单节十进制只替换 >65535 且能 parseInetAton 的整数（如 2130706433），以免误伤端口。
+// 不替换版本号 8.0.36 / 10.11.6 / 5.5.5；三节全十进制及两节（除 127.x/0.x）默认保留，仅当紧跟 addr= / host= / from 等 IP 语境前缀时替换。单节十进制只替换 >65535 且能 parseInetAton 的整数（如 2130706433），以免误伤端口。
 func redactBannerIPs(s string) string {
 	s = replaceAllVerified(s, bracketAddrRE, func(m string) bool {
 		inner := strings.TrimSuffix(strings.TrimPrefix(m, "["), "]")
@@ -95,7 +97,18 @@ func redactBannerIPs(s string) string {
 		return parseInetAton(m) != nil
 	})
 	s = replaceTwoPartLoopback(s)
+	s = replaceInetAtonWithIPContext(s)
 	return s
+}
+
+func replaceInetAtonWithIPContext(s string) string {
+	return ipContextShorthandRE.ReplaceAllStringFunc(s, func(m string) string {
+		sub := ipContextShorthandRE.FindStringSubmatch(m)
+		if len(sub) < 3 {
+			return m
+		}
+		return strings.Replace(m, sub[2], "[ip]", 1)
+	})
 }
 
 func replaceTwoPartLoopback(s string) string {
