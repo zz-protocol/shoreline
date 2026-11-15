@@ -347,6 +347,15 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 
 - 每端口一次 TCP 连接，读初始 banner；仅两种端口发送最小握手：PostgreSQL SSLRequest（8 字节 `00 00 00 08 04 d2 16 2f`，只问是否支持 TLS，不发 StartupMessage/用户名）与 AMQP 协议头（`AMQP 00 00 09 01`，服务端回 Connection.Start，不发 start-ok/登录）。其余端口只读不写；不发 Redis PING/INFO、Mongo isMaster/hello、ES `GET /`、Memcached version/stats、Kafka ApiVersions。
 - 识别规则是代码内数据表 `builtinServiceFingerprintRules()`（名称、端口、探测字节、banner 正则、版本正则），T53 可整表替换为 YAML。
-- 结果存 `asset_services`（主机名 + 端口唯一；open/name/version/banner 摘要），不含 IP 列，banner 中的 IP 文本替换为 `[ip]`。本轮不写 components（T52），不新增 REST/MCP。
+- 结果存 `asset_services`（主机名 + 端口唯一；open/name/version/banner 摘要），不含 IP 列，banner 中的 IP 文本替换为 `[ip]`。不新增 REST/MCP。识别结果由 T52 同步写入组件库存。
 - 局限：Redis/Mongo/ES/Kafka/etcd/Nacos/Memcached 在未收到客户端报文时通常不主动发 banner，此时记为开放但 name 为空；需更强识别时另行确认探测口径。
 
+
+## 非 Web 服务并入组件库存（T52）
+
+`service` 扫描在 `fingerprintOriginServices` 写完 `asset_services` 之后，由 `serviceScanHandler` 调用 `syncAssetServicesToComponents` 入库（不在指纹函数内写入，以免无触发的指纹调用改库存）。来源按扫描结果：`asset_services` → `components`，新建行 `source=service`，不含 IP。
+
+- 关联：服务指纹通常没有 HTTP URL，新增 `asset_components`（资产 + 组件 + 端口，证据 JSON 只含 host/port/banner 摘要）。现有组件统计、下钻、整列复制 SQL 对 `url_components` 与 `asset_components` 做 UNION，筛选/降噪/alive 口径与 T43 一致。不新增 REST/MCP 路由，OpenAPI 仍与 `routes()` 对齐。
+- 分类：先走 Wappalyzer `categoriesForName`（MySQL/PostgreSQL/Redis/MongoDB/Elasticsearch 等）。库中没有的名字按 SPEC 回退：Kafka/RabbitMQ → Message queues，Memcached → Caching，etcd/Nacos → Application server。已有组件的非空 `categories` 仍走 T47 `CASE`，不覆盖；`name_key` 冲突时不改已有 `source` / `confirmed`，也不删除已识别组件行或其它来源的关联。
+- 未识别：端口开放且 banner 非空、又没有指纹短名时，按脱敏 banner 的 SHA-256 聚类，名称 `unidentified-service-<12 hex>`，`confirmed=false`，不进默认正式列表。可在「待确认候选」中确认或忽略（LLM 未配置时也展示 service 候选；忽略写 `asset_components.ignored_at`）。关闭端口或开放但无 banner 的不归档。补 YAML 指纹后的自动重识别留给 T53。
+- 默认正式列表仍按 T43 过滤 `alive='alive'`；仅有服务指纹、alive 仍为 unknown 的主机会被默认列表隐藏。
