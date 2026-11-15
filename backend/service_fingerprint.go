@@ -358,7 +358,7 @@ func serviceScanHandler(d *pgxpool.Pool, cfg serviceFingerprintConfig) ScanHandl
 		if err := fingerprintOriginServices(ctx, d, cfg, targets); err != nil {
 			return nil, err
 		}
-		return nil, nil
+		return nil, syncAssetServicesToComponents(ctx, d, targets)
 	}
 }
 

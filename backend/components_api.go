@@ -44,6 +44,18 @@ const scopedURLSQL = `FROM url_components uc
 	  AND ($3::bool OR a.alive = 'alive')
 	  AND ($4::bigint IS NULL OR r.vendor_id = $4)`
 
+// scopedAssetSQL：服务指纹（T52）资产级关联，口径与 scopedURLSQL 相同。
+const scopedAssetSQL = `FROM asset_components ac
+	JOIN components c0 ON c0.id = ac.component_id AND c0.confirmed
+	JOIN assets a ON a.id = ac.asset_id
+	JOIN root_domains r ON r.id = a.root_id
+	JOIN vendors v ON v.id = r.vendor_id
+	WHERE ($1::bool OR NOT a.wildcard)
+	  AND ($2::bool OR NOT a.customer_hosted)
+	  AND ($3::bool OR a.alive = 'alive')
+	  AND ($4::bigint IS NULL OR r.vendor_id = $4)
+	  AND ac.ignored_at IS NULL`
+
 const commonExistsSQL = `EXISTS (
 	SELECT 1 FROM common_component_names n
 	WHERE n.deleted_at IS NULL AND n.enabled AND n.name_key = c.name_key)`
@@ -160,6 +172,9 @@ FROM components c
 JOIN (
 	SELECT uc.component_id, u.id AS url_id, a.id AS asset_id, r.vendor_id
 	` + scopedURLSQL + `
+	UNION ALL
+	SELECT ac.component_id, NULL::bigint AS url_id, a.id AS asset_id, r.vendor_id
+	` + scopedAssetSQL + `
 ) s ON s.component_id = c.id
 WHERE c.confirmed
   AND ($5::text = '' OR strpos(lower(c.name), $5) > 0)
@@ -394,6 +409,17 @@ func (a *api) queryComponentAssets(ctx context.Context, id int64, f componentFil
 			  AND ($2::bool OR NOT a2.customer_hosted)
 			  AND ($3::bool OR a2.alive = 'alive')
 			  AND ($4::bigint IS NULL OR r2.vendor_id = $4)
+			UNION
+			SELECT DISTINCT a2.id
+			FROM asset_components ac
+			JOIN assets a2 ON a2.id = ac.asset_id
+			JOIN root_domains r2 ON r2.id = a2.root_id
+			WHERE ac.component_id = $5
+			  AND ac.ignored_at IS NULL
+			  AND ($1::bool OR NOT a2.wildcard)
+			  AND ($2::bool OR NOT a2.customer_hosted)
+			  AND ($3::bool OR a2.alive = 'alive')
+			  AND ($4::bigint IS NULL OR r2.vendor_id = $4)
 		)
 		  AND ($6::bigint = 0 OR a.id < $6)
 		ORDER BY a.id DESC
@@ -513,7 +539,8 @@ func (a *api) componentValues(w http.ResponseWriter, r *http.Request) {
 	var q string
 	switch field {
 	case "subdomain":
-		q = `SELECT DISTINCT a.subdomain AS v
+		q = `SELECT DISTINCT v FROM (
+			SELECT a.subdomain AS v
 			FROM url_components uc
 			JOIN urls u ON u.id = uc.url_id
 			JOIN assets a ON a.id = u.asset_id
@@ -523,6 +550,18 @@ func (a *api) componentValues(w http.ResponseWriter, r *http.Request) {
 			  AND ($2::bool OR NOT a.customer_hosted)
 			  AND ($3::bool OR a.alive = 'alive')
 			  AND ($4::bigint IS NULL OR r.vendor_id = $4)
+			UNION
+			SELECT a.subdomain AS v
+			FROM asset_components ac
+			JOIN assets a ON a.id = ac.asset_id
+			JOIN root_domains r ON r.id = a.root_id
+			WHERE ac.component_id = $5
+			  AND ac.ignored_at IS NULL
+			  AND ($1::bool OR NOT a.wildcard)
+			  AND ($2::bool OR NOT a.customer_hosted)
+			  AND ($3::bool OR a.alive = 'alive')
+			  AND ($4::bigint IS NULL OR r.vendor_id = $4)
+			) s
 			ORDER BY 1 LIMIT $6`
 	case "url":
 		q = `SELECT DISTINCT u.scheme || '://' || u.host || ':' || u.port::text AS v
@@ -684,19 +723,24 @@ func (a *api) updateComponent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) listComponentCandidates(w http.ResponseWriter, r *http.Request) {
-	if !a.llm.enabled() {
-		writeJSON(w, 200, map[string]any{"configured": false, "items": []any{}})
-		return
-	}
+	configured := a.llm.enabled()
 	list, err := rowsJSON(a.db.Query(r.Context(), `SELECT c.id, c.name, c.source, c.confirmed,
-		COALESCE(c.github_repo, MAX(uc.evidence->>'github_repo')) AS github_repo,
-		MAX(uc.evidence->>'reason') AS reason,
-		count(DISTINCT uc.url_id)::bigint AS url_count
+		COALESCE(c.github_repo, MAX(x.github_repo)) AS github_repo,
+		MAX(x.reason) AS reason,
+		count(DISTINCT x.url_id)::bigint AS url_count
 		FROM components c
-		JOIN url_components uc ON uc.component_id = c.id AND uc.source = 'llm' AND uc.ignored_at IS NULL
+		JOIN (
+			SELECT uc.component_id, uc.url_id, uc.evidence->>'github_repo' AS github_repo, uc.evidence->>'reason' AS reason
+			FROM url_components uc
+			WHERE uc.source = 'llm' AND uc.ignored_at IS NULL AND $1::bool
+			UNION ALL
+			SELECT ac.component_id, NULL::bigint AS url_id, '' AS github_repo, ac.evidence->>'banner' AS reason
+			FROM asset_components ac
+			WHERE ac.source = 'service' AND ac.ignored_at IS NULL
+		) x ON x.component_id = c.id
 		WHERE NOT c.confirmed
 		GROUP BY c.id
-		ORDER BY c.id DESC`))
+		ORDER BY c.id DESC`, configured))
 	if err != nil {
 		dbErr(w, err)
 		return
@@ -704,7 +748,7 @@ func (a *api) listComponentCandidates(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []map[string]any{}
 	}
-	writeJSON(w, 200, map[string]any{"configured": true, "items": list})
+	writeJSON(w, 200, map[string]any{"configured": configured, "items": list})
 }
 
 func (a *api) confirmComponent(w http.ResponseWriter, r *http.Request) {
@@ -737,6 +781,10 @@ func (a *api) confirmComponent(w http.ResponseWriter, r *http.Request) {
 		dbErr(w, err)
 		return
 	}
+	if _, err := a.db.Exec(r.Context(), `UPDATE asset_components SET ignored_at = NULL WHERE component_id = $1 AND source = 'service'`, id); err != nil {
+		dbErr(w, err)
+		return
+	}
 	if repo != "" {
 		a.scheduleEnrich(id)
 	}
@@ -759,6 +807,11 @@ func (a *api) ignoreComponent(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := a.db.Exec(r.Context(), `UPDATE url_components SET ignored_at = now()
 		WHERE component_id = $1 AND source = 'llm' AND ignored_at IS NULL`, id); err != nil {
+		dbErr(w, err)
+		return
+	}
+	if _, err := a.db.Exec(r.Context(), `UPDATE asset_components SET ignored_at = now()
+		WHERE component_id = $1 AND source = 'service' AND ignored_at IS NULL`, id); err != nil {
 		dbErr(w, err)
 		return
 	}

@@ -253,7 +253,7 @@ export default function Components() {
       {llmConfigured === false && (
         <Typography.Text type="warning" data-testid="llm-unconfigured">{HELP.llmCandidates}</Typography.Text>
       )}
-      {llmConfigured && candidates.length > 0 && (
+      {candidates.length > 0 && (
         <div data-testid="llm-candidates">
           <Typography.Title level={5} style={{ marginTop: 8 }}>待确认候选</Typography.Title>
           <Table
