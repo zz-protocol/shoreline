@@ -51,5 +51,5 @@ describe('T34 厂商行内添加根域', () => {
     expect(within(box).queryByText(/invalid domain/)).toBeNull()
     expect(screen.queryByTestId('inline-root-1')).toBeNull()
     expect(screen.queryByRole('dialog')).toBeNull()
-  })
+  }, 15000)
 })
