@@ -165,6 +165,7 @@ passive 任务把 `{sources_ok, sources_failed:[{source,error}], found}` 写入 
 | SCHEDULE_PASSIVE | 6h | 定时被动扫描间隔（Go duration）；`0`/`off` 关闭；非法启动退出 |
 | SCHEDULE_ACTIVE | 24h | 定时主动扫描间隔；仅 `active_enabled` 厂商的根域；`0`/`off` 关闭 |
 | SCHEDULE_ALIVE | 24h | dead 资产复查间隔（重做 DNS+HTTP）；alive 不再复查；`0`/`off` 关闭；非法启动退出 |
+| SCHEDULE_SERVICE | 空（禁用） | 定时端口指纹间隔（Go duration）；默认空/未配置则禁用，只能手动触发；配了间隔才为所有根域入队 `service`；`0`/`off` 关闭；非法启动退出。计划任务仍受 T49 开关、授权范围和 T50 `cdn_fronted` 门控；无厂商级 409 |
 
 - ICP 接口约定：`GET <ICP_API_URL>?company=<主体名>` 或 `?domain=<域名>`，响应 `{"records":[{"domain":"...","company":"...","license":"备案号"}]}`。对接具体服务商时需按此约定加一层转换。
 - `ICP_PROVIDER=icp_yanzhenma`：对接自建的 [zz-protocol/icp_yanzhenma](https://github.com/zz-protocol/icp_yanzhenma)（FastAPI，MIT；本仓库不含其代码，只走 HTTP）。`ICP_API_URL` 填该服务根地址（如 `http://icp:8000`），请求 `GET <ICP_API_URL>/query?domain=<值>`；该服务把参数作为工信部查询的 unitName 透传，主体名与域名都走此接口（**推断，待真实联调确认**）。响应 `status=success` 时从 `data.params.list`（或 `data.list`）取 `domain`/`unitName`/`mainLicence`（`domain` 字段取法为**推断，待真实联调确认**）；`status=failed`、HTTP 非 200、超时（30s）或连不上都计入 `icp_failures`，若本轮全部失败扫描一律为 done 并标 `degraded:true`，不重试；`GET /api/scans/{id}` 返回 `degraded` 与 `degraded_reason`。该服务按其自述**仅限安全研究**用途，需控制请求频率：本项目超时 30s，`RATE_EXPAND` 默认 1 任务/秒。真实联调留到部署时做。
@@ -245,7 +246,7 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 
 
 ### 定时调度（T15）
-- 进程内调度：到点为**所有根域**触发 `passive`；为 **`vendors.active_enabled=true`** 的根域触发 `active`。不自动跑 expand（仍手动）。
+- 进程内调度：到点为**所有根域**触发 `passive`；为 **`vendors.active_enabled=true`** 的根域触发 `active`。`SCHEDULE_SERVICE` 默认禁用；配了间隔才为所有根域入队 `service`。不自动跑 expand（仍手动）。
 - 若该根域已有同 kind 的 `pending`/`running` 任务则跳过，避免堆积。
 - 间隔可读环境变量；运行中改配置需重启进程，或测试里 `SetConfig` 热更新（会打断当前等待，新间隔立即生效）。
 
@@ -340,7 +341,7 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 
 只对 T49 开关开启、在授权范围内、且未 `cdn_fronted` 的源站执行；入口 `fingerprintOriginServices` 经 `runOriginServiceScan` 走 T49/T50 门控，不改门控实现。主机校验复用 T49 修复（IP、`inet_aton` 简写、全数字末级标签一律不拨号）。
 
-- 扫描类型 `service`（架构 11-15 定）：与 dns/http 一样进入 `scanKinds`、独立 Asynq 队列、`RATE_SERVICE`（默认 1 任务/秒）和 T40 分片（`HOST_CHUNK_SIZE`）。可经 REST `POST /api/scans` 与 MCP `trigger_scan` 手动触发（写入该根域非泛解析资产主机并入队）。**不**自动接在 dns/http 之后。现有定时调度只跑 passive/active（以及探活的 dns），没有按类型配置的通用计划，本轮不加 `SCHEDULE_SERVICE`。无 expand 那样的厂商级 409；并发规则与 passive 相同。
+- 扫描类型 `service`（架构 11-15 定）：与 dns/http 一样进入 `scanKinds`、独立 Asynq 队列、`RATE_SERVICE`（默认 1 任务/秒）和 T40 分片（`HOST_CHUNK_SIZE`）。可经 REST `POST /api/scans` 与 MCP `trigger_scan` 手动触发（写入该根域非泛解析资产主机并入队）。**不**自动接在 dns/http 之后。`SCHEDULE_SERVICE` 默认空（禁用）；配了间隔才按计划为所有根域入队 `service`，仍受 T49 开关、授权范围和 T50 `cdn_fronted` 门控；开关关闭时任务会完成但不拨号。无 expand 那样的厂商级 409；同一根域已有 pending/running 的 service 则跳过（与 passive 相同）。
 - 开关关闭时：触发仍返回 202 并产生 `service` 任务，worker 跑完标记 `done`，`planOriginServiceScan` 不入队、不拨号、不写 `asset_services`。
 
 
