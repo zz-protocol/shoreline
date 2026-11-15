@@ -64,9 +64,12 @@ type serviceFingerprintConfig struct {
 	Timeout time.Duration
 	Dialer  serviceDialer // 测试注入：按主机名转到假服务。生产路径保持为 nil，只拨判定所得 IP。
 	Resolve serviceIPResolver
-	DialIP  serviceIPDialer // 测试注入生产拨号路径；默认 defaultServiceDialer，只接受字面 IP。
-	Rules   *serviceFingerprintRuleSet
-	limiter *rate.Limiter
+	Lookup  serviceDNSLookup // 生产解析（保留 CNAME 供 CDN 复判）；测试可只注入 Resolve。
+	DialIP  serviceIPDialer  // 测试注入生产拨号路径；默认 defaultServiceDialer，只接受字面 IP。
+	// NegativeTTL：DNS 负缓存窗口（SERVICE_DNS_NEGATIVE_TTL，默认 6h，允许 6–24h）。
+	NegativeTTL time.Duration
+	Rules       *serviceFingerprintRuleSet
+	limiter     *rate.Limiter
 }
 
 // defaultServiceDialer 只拨字面 IP，自己不再解析 DNS。传入主机名则拒绝。
@@ -90,7 +93,8 @@ func serviceFingerprintConfigFromEnv() (serviceFingerprintConfig, error) {
 		return serviceFingerprintConfig{}, err
 	}
 	// 默认扫描端口来自 YAML 规则声明，新增服务只改 YAML。
-	c := serviceFingerprintConfig{Ports: rules.ports(), RPS: 2, Timeout: 2 * time.Second, Rules: rules}
+	c := serviceFingerprintConfig{Ports: rules.ports(), RPS: 2, Timeout: 2 * time.Second,
+		NegativeTTL: serviceDNSNegativeDefaultTTL, Rules: rules}
 	if s := strings.TrimSpace(os.Getenv("SERVICE_SCAN_PORTS")); s != "" {
 		var ports []int
 		for _, part := range strings.Split(s, ",") {
@@ -126,6 +130,13 @@ func serviceFingerprintConfigFromEnv() (serviceFingerprintConfig, error) {
 		}
 		c.Timeout = d
 	}
+	if s := os.Getenv("SERVICE_DNS_NEGATIVE_TTL"); s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil || d < serviceDNSNegativeMinTTL || d > serviceDNSNegativeMaxTTL {
+			return c, fmt.Errorf("SERVICE_DNS_NEGATIVE_TTL: invalid %q (duration 6h–24h)", s)
+		}
+		c.NegativeTTL = d
+	}
 	return c, nil
 }
 
@@ -146,11 +157,21 @@ func (c *serviceFingerprintConfig) ready() error {
 	if c.Timeout <= 0 {
 		c.Timeout = 2 * time.Second
 	}
+	if c.NegativeTTL <= 0 {
+		c.NegativeTTL = serviceDNSNegativeDefaultTTL
+	}
 	// 生产不在这里填默认拨号器：无注入 Dialer 时只拨 CDN 判定解析到的 IP。
 	if c.limiter == nil {
 		c.limiter = sharedServiceLimiter(c.RPS)
 	}
 	return nil
+}
+
+func (c serviceFingerprintConfig) negativeTTL() time.Duration {
+	if c.NegativeTTL <= 0 {
+		return serviceDNSNegativeDefaultTTL
+	}
+	return c.NegativeTTL
 }
 
 // fingerprintOriginServices 经 planOriginServiceScan / runOriginServiceScan 接入：
@@ -159,32 +180,35 @@ func fingerprintOriginServices(ctx context.Context, q serviceScanQ, cfg serviceF
 	if err := cfg.ready(); err != nil {
 		return err
 	}
-	byHost := map[string]int64{}
+	byHost := map[string]serviceScanTarget{}
 	for _, t := range targets {
 		h := normalizeHost(t.Host)
 		if h == "" {
 			continue
 		}
-		byHost[h] = t.AssetID
+		t.Host = h
+		byHost[h] = t
 	}
 	return runOriginServiceScan(ctx, q, targets, func(ctx context.Context, host string) error {
-		return scanHostServices(ctx, q, cfg, host, byHost[normalizeHost(host)])
+		return scanHostServices(ctx, q, cfg, byHost[normalizeHost(host)])
 	})
 }
 
-func scanHostServices(ctx context.Context, q serviceScanQ, cfg serviceFingerprintConfig, host string, assetID int64) error {
-	host = normalizeHost(host)
+func scanHostServices(ctx context.Context, q serviceScanQ, cfg serviceFingerprintConfig, t serviceScanTarget) error {
+	host := normalizeHost(t.Host)
 	// 复用 T49 修复后的主机校验（规范 IP、inet_aton 简写、全数字末级标签），不改门控实现。
 	if host == "" || rejectedServiceScanHost(host) {
 		return nil
 	}
-	dialIPs, err := prepareServiceDialIPs(ctx, q, cfg, serviceScanTarget{AssetID: assetID, Host: host})
+	t.Host = host
+	dialIPs, err := prepareServiceDialIPs(ctx, q, cfg, t)
 	if err != nil {
 		return err
 	}
 	if cfg.Dialer == nil && len(dialIPs) == 0 {
 		return nil
 	}
+	assetID := t.AssetID
 	rules := cfg.Rules
 	reached := false
 	reverseProxyRecorded := false
@@ -204,7 +228,7 @@ func scanHostServices(ctx context.Context, q serviceScanQ, cfg serviceFingerprin
 		}
 		// T56：反代/CDN 边缘响应不生成候选，记一次跳过原因（每主机每轮一次）。
 		if kind == serviceResponseReverseProxy && !reverseProxyRecorded {
-			if err := recordServiceScanSkip(ctx, q, serviceScanTarget{AssetID: assetID, Host: host}, skipServiceScanReverseProxy); err != nil {
+			if err := recordServiceScanSkip(ctx, q, t, skipServiceScanReverseProxy); err != nil {
 				return err
 			}
 			reverseProxyRecorded = true
@@ -337,6 +361,10 @@ func serviceScanHandler(d *pgxpool.Pool, cfg serviceFingerprintConfig) ScanHandl
 		targets, err := loadServiceScanTargets(ctx, d, rootID, hosts)
 		if err != nil {
 			return nil, err
+		}
+		// 跳过记录带上本次任务号，便于按任务统计；同一资产同一原因只累计一行（T58）。
+		for i := range targets {
+			targets[i].ScanTaskID = scanID
 		}
 		// 用局部副本 ready，避免多个 service 任务并发时改同一份 cfg。
 		runCfg := cfg

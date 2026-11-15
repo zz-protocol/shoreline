@@ -19,6 +19,7 @@
 | SERVICE_SCAN_PORTS | 空（取 YAML 规则端口） | 端口指纹扫描端口（逗号分隔，不接受范围；T51）。为空时使用 `fingerprints/services.yaml` 声明的全部端口，新增 YAML 规则即自动纳入默认扫描 |
 | SERVICE_SCAN_RPS | 2 | 端口指纹每秒连接上限（全局，burst 1；T51） |
 | SERVICE_SCAN_TIMEOUT | 2s | 单端口连接 + banner 读取超时；拨号超时/拒绝记端口关闭，不重试（T51） |
+| SERVICE_DNS_NEGATIVE_TTL | 6h | DNS 负缓存窗口（T58）。`resolved=false` 且 `resolved_at` 在此窗口内的资产不再逐轮重解析，记 `dns_negative_cached`；允许 6h–24h，越界拒绝启动 |
 | SERVICE_FINGERPRINT_RULES | 空 | 额外服务指纹 YAML 文件；同名规则整条覆盖内置规则，其余追加。启动时校验，非法规则（坏正则、端口越界、未知置信度、重复 name、probe 超 256 字节等）直接拒绝启动（T53） |
 
 ## 被动源配置（环境变量）
@@ -52,6 +53,13 @@ passive 任务把 `{sources_ok, sources_failed:[{source,error}], found}` 写入 
 
 查询 A/AAAA（记录 CNAME 链）。泛解析过滤：对子域的父域（仅限根域及其子域）自适应探测随机子域——
 探到新 IP 就继续，直到连续 DNS_WILDCARD_STABLE 次无新 IP 或达 DNS_WILDCARD_MAX；前 3 次均无解析视为无泛解析。
+
+T58 起解析健壮性（dns 扫描与服务拨号共用）：
+
+- 只有 `RcodeSuccess` / `RcodeNameError`（NXDOMAIN）当权威答案；`REFUSED` / `FORMERR` / `SERVFAIL` / 超时换下一台 resolver，每次查询最多 3 次尝试（含 100ms 起退避）。
+- 查询带 EDNS0（1232 字节）；响应 `TC=1` 被截断时对同一台 resolver 改 TCP 重查一次。
+- A 与 AAAA 分开计成功：任一类拿到地址即视为解析成功，不会因 AAAA 超时丢弃已拿到的 A。
+- NXDOMAIN 必须由另一台 resolver 复核（或已有负缓存）才落负答案；复核给不出结论时按超时/错误处理，不写 `dns_nxdomain`。只配置一台 resolver 时没有可交叉复核的对象，直接采用其负答案。
 
 ### HTTP 探测（T8）
 
@@ -352,7 +360,7 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 - 每个端口至少建立一次 TCP 连接；未声明 `probes` 的端口只读初始 banner、不写；声明了 `probes` 的端口每个 probe 用一次独立连接并读响应，响应同时匹配 `expect` 与规则 `banner` 时停止并采用，否则保留最后一段 banner 供 T52 归入未识别（是否识别仍由 `banner` 正则决定）。报文全部来自 `fingerprints/services.yaml`：PostgreSQL SSLRequest（8 字节 `00 00 00 08 04 d2 16 2f`，只问是否支持 TLS，不发 StartupMessage/用户名）、AMQP 协议头（`AMQP 00 00 09 01`，不发 start-ok/登录）、Redis `PING`、Memcached `version`、MongoDB OP_MSG `hello`、Kafka `ApiVersions`、Elasticsearch/etcd/Nacos 只读版本端点 `GET`。
 - 识别规则来自 YAML（`name` / `component` / `category` / `confidence` / `ports` / `banner` / `version` / `probes`），启动时预编译；代码内不再有规则表。MySQL/MariaDB 按协议 v10 握手包解析：`caching_sha2_password` 的 8.0.36 识别为 mysql/8.0.36；`5.5.5-10.11.6-MariaDB` 版本取 10.11.6。
 - 结果存 `asset_services`（主机名 + 端口唯一；open/verified/response_kind/name/version/banner 摘要），不含 IP 列。banner **先脱敏再截断到 512**：IPv4、IPv6（含 zone、`[addr]:port`、v4-mapped **整体**替换，不留 `::ffff:`）、`::1`、`127.1`、`0x7f000001`、`0177.0.0.1` 以及大于 65535 的十进制 inet_aton 整数（如 2130706433）换成 `[ip]`。三节全十进制版本号（8.0.36 / 10.11.6 / 5.5.5）不替换；两节全十进制除 127.x / 0.x 外不替换，以免误伤 `8.0`、`10.1` 这类版本。若两段或三段十进制简写紧跟明显 IP 语境前缀（`addr=`、`host=`、`from`，忽略大小写、独立词），仍替换为 `[ip]`，例如 `host=10.1.2`、`from 10.1`；无这类前缀的 `MySQL 8.0.36`、`version 10.11.6` 保留。识别结果由 T52 同步写入组件库存；探测结论经 `GET /api/service-results` 只读暴露（T55）。
-- 未做 CDN 判定的资产（`cdn_fronted` 为 NULL）跳过端口扫描，记 `service_scan_skips.reason=cdn_unknown`，不按非 CDN 放行。只拨 CDN 判定时解析到的 IP（只在内存传递，不落库、不进响应或日志）。默认拨号器不再自己解析 DNS，且只接受字面 IP。拨号前拒绝回环、私网、链路本地、未指定地址和云元数据 `169.254.169.254`（含 v4-mapped），记 `private_address`；没有任何可拨地址时记 `no_dial_ip`。测试中的 127.0.0.1 假服务只通过注入拨号器或策略放行，没有生产可用的环境变量开关。
+- 未做 CDN 判定的资产（`cdn_fronted` 为 NULL）跳过端口扫描，记 `service_scan_skips.reason=cdn_unknown`，不按非 CDN 放行。只拨 CDN 判定时解析到的 IP（只在内存传递，不落库、不进响应或日志）。默认拨号器不再自己解析 DNS，且只接受字面 IP。拨号前拒绝回环、私网、链路本地、未指定地址和云元数据 `169.254.169.254`（含 v4-mapped），记 `private_address`。解析失败/负答案按 `dns_nxdomain` / `dns_nodata` / `dns_timeout` / `dns_error` 细分，负缓存命中记 `dns_negative_cached`（见下节）；不再写 `no_dial_ip`（历史行保留原值）。测试中的 127.0.0.1 假服务只通过注入拨号器或策略放行，没有生产可用的环境变量开关。
 - 端口指纹限速器为进程级共享（burst 1），多个 service 任务并发时速率不叠加。
 - 局限：未声明 probes 且不主动发 banner 的服务仍会记为开放但 name 为空；在 YAML 为其补一条只读 probe 即可纳入识别。
 
@@ -404,3 +412,22 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 - 聚类归一化（T57）：`normalizeServiceBannerForHash` 在 SHA-256 前按 CRLF 段去掉 `Date` / `Request_id` / `Node_info` / `Client_ip` / `Content-Length` / `via`，保留状态行、`Server` 与其余结构；同类 403 因此合并为一个候选。迁移 `034_unidentified_recluster.sql` 重算现有 `unidentified-service-*` 名称并合并关联，保留 `confirmed` / `ignored`，不删除组件行，可重跑。
 - REST：`GET /api/service-results`（`q` / `port` / `response_kind` / `include_closed`；默认只列开放端口，返回 `items`、`next_cursor`、`stats`）、`GET /api/service-results/{id}`；`GET /api/assets/{id}` 详情带 `services`。默认统计 `stats.open` 只计 `verified=true`，`stats.tcp_reachable` 保留全部开放；不返回 IP，也不返回 banner 原文。MCP 增加 `list_service_results`，口径同 REST。
 - Web：「扫描授权范围」页下方「探测结果」展示已验证开放 / TCP 可达 / 已识别 / 反代/CDN 计数与逐条状态（已验证 / 仅 TCP 可达 / 反代/CDN），不含 IP。
+
+## no_dial_ip 收口（T58）
+
+历史 `no_dial_ip` 是「没有可拨地址」的兜底原因，实测绝大多数是 DNS 负答案。现在按原因细分，`no_dial_ip` 不再写入（旧行保留原值）。
+
+| 原因 | 含义 |
+|---|---|
+| `dns_nxdomain` | A/AAAA 均为 NXDOMAIN，且由另一台 resolver 复核确认（只配置一台 resolver 时直接采用其负答案） |
+| `dns_nodata` | 域名存在但没有 A/AAAA 记录（权威 NODATA），或解析成功但无地址 |
+| `dns_timeout` | 所有尝试均为超时，或负答案复核超时 |
+| `dns_error` | REFUSED/FORMERR/SERVFAIL 等非权威回码，或负答案无法复核 |
+| `dns_negative_cached` | 资产 `resolved=false` 且 `resolved_at` 在 `SERVICE_DNS_NEGATIVE_TTL`（默认 6h，允许 6–24h）内，本轮不再解析 |
+| `private_address` | 解析到回环/私网/链路本地/未指定/云元数据，全部被拨号策略拒绝（保留原口径） |
+
+- 负缓存：`resolved=false` 的资产在窗口内直接跳过，服务扫描目标枚举仍包含这些资产（不特殊过滤），只在拨号准备阶段预过滤。
+- 去重：迁移 `036_service_skip_dedup.sql` 给 `service_scan_skips` 加 `scan_task_id`、`first_seen`、`last_seen`、`count`；唯一键为 `(asset_id, reason)`（`asset_id` 为空时按 `(host, reason)`）。写入改为 upsert：同一资产同一原因只保留一行，`count` 累加、`last_seen` 刷新、`scan_task_id` 取最近一次非空任务。迁移可重跑：旧行回填 `first_seen=last_seen=created_at`、`count=1`，历史重复行合并为一行并累计 `count`。
+- 统计口径：按原因统计资产数用 `count(DISTINCT asset_id)`，不要用行数（行数会被多轮任务与历史重复放大）。
+- 拨号前 CDN 复判：`resolverFromDNS` 保留解析链 CNAME；`prepareServiceDialIPs` 用既有 CDN 判定（CNAME 后缀 / cdncheck 段 / 静态库）复核本次解析结果，命中即记 `cdn_fronted` 并跳过。`cdn_fronted` 为 NULL（未判定）仍由 T50 门控跳过，不进入拨号准备；不改 T49/T50 门控顺序。
+- 仍不写 IP：解析地址只在内存参与 CDN 匹配与拨号，不落库、不进响应/日志；跳过记录只有 host 与原因。

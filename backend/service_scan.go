@@ -25,8 +25,9 @@ type ServiceProbeFunc func(ctx context.Context, host string) error
 
 // serviceScanTarget 是一次非 Web 探测的候选（host 为域名，不含 IP）。
 type serviceScanTarget struct {
-	AssetID int64
-	Host    string
+	AssetID    int64
+	Host       string
+	ScanTaskID int64 // 来自触发本次扫描的任务；0 表示未知（手动规划/测试），跳过记录里写 NULL。
 }
 
 type serviceScanQ interface {
@@ -211,13 +212,33 @@ func decideServiceScan(enabled bool, patterns []string, host string) (allow bool
 	return true, ""
 }
 
+// recordServiceScanSkip 写跳过原因。同一资产同一原因只有一行：count 累加、last_seen 刷新；
+// asset_id 为空时按 host + reason 去重。不写 IP。
 func recordServiceScanSkip(ctx context.Context, q serviceScanQ, t serviceScanTarget, reason string) error {
-	var aid any
+	host := normalizeHost(t.Host)
+	var aid, tid any
 	if t.AssetID > 0 {
 		aid = t.AssetID
 	}
-	_, err := q.Exec(ctx, `INSERT INTO service_scan_skips (host, asset_id, reason) VALUES ($1, $2, $3)`,
-		normalizeHost(t.Host), aid, reason)
+	if t.ScanTaskID > 0 {
+		tid = t.ScanTaskID
+	}
+	if t.AssetID > 0 {
+		_, err := q.Exec(ctx, `INSERT INTO service_scan_skips (host, asset_id, reason, scan_task_id, first_seen, last_seen, count)
+			VALUES ($1, $2, $3, $4, now(), now(), 1)
+			ON CONFLICT (asset_id, reason) WHERE asset_id IS NOT NULL DO UPDATE SET
+				host = EXCLUDED.host,
+				scan_task_id = COALESCE(EXCLUDED.scan_task_id, service_scan_skips.scan_task_id),
+				last_seen = now(),
+				count = service_scan_skips.count + 1`, host, aid, reason, tid)
+		return err
+	}
+	_, err := q.Exec(ctx, `INSERT INTO service_scan_skips (host, asset_id, reason, scan_task_id, first_seen, last_seen, count)
+		VALUES ($1, NULL, $2, $3, now(), now(), 1)
+		ON CONFLICT (host, reason) WHERE asset_id IS NULL DO UPDATE SET
+			scan_task_id = COALESCE(EXCLUDED.scan_task_id, service_scan_skips.scan_task_id),
+			last_seen = now(),
+			count = service_scan_skips.count + 1`, host, reason, tid)
 	return err
 }
 

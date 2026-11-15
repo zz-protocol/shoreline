@@ -363,7 +363,7 @@ func TestT51ScanHostRejectsIPLikeHosts(t *testing.T) {
 	cfg.ready()
 	ctx := context.Background()
 	for _, h := range []string{"127.1", "1.0x7f", "0x7f000001", "2130706433", "0177.0.0.1", "127.0.0.1", "::1"} {
-		if err := scanHostServices(ctx, e.pool, cfg, h, 0); err != nil {
+		if err := scanHostServices(ctx, e.pool, cfg, serviceScanTarget{Host: h}); err != nil {
 			t.Fatal(err)
 		}
 	}

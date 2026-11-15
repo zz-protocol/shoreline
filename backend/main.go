@@ -67,7 +67,8 @@ func main() {
 		log.Fatal(err)
 	}
 	dnsRes := newResolver(dcfg)
-	svcfp.Resolve = resolverFromDNS(dnsRes)
+	// T58：服务拨号沿用 DNS 扫描的解析器，并保留 CNAME 供拨号前复判 CDN。
+	svcfp.Lookup = resolverFromDNS(dnsRes)
 	// T55/T56：启动时把迁移 032 后 kind=none 的历史行按已存 banner 分档（含反代/CDN）；失败不阻塞启动。
 	if n, err := backfillServiceResponseKinds(context.Background(), pool); err != nil {
 		log.Printf("service response kinds: %v", err)

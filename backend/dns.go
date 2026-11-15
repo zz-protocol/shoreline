@@ -140,52 +140,222 @@ func newResolver(cfg dnsConfig) *resolver {
 	if cfg.QPS <= 0 {
 		cfg.QPS = 50
 	}
-	return &resolver{cfg: cfg, client: &dns.Client{Timeout: cfg.Timeout}, limiter: rate.NewLimiter(rate.Limit(cfg.QPS), 1)}
+	return &resolver{cfg: cfg, client: &dns.Client{Timeout: cfg.Timeout, UDPSize: dnsEDNS0Size}, limiter: rate.NewLimiter(rate.Limit(cfg.QPS), 1)}
 }
 
-// lookup 查询 A 与 AAAA；依次尝试各 resolver，NXDOMAIN/无记录返回空结果。
-func (r *resolver) lookup(ctx context.Context, host string) (dnsResult, error) {
-	var res dnsResult
+// DNS 查询状态：只有 RcodeSuccess / RcodeNameError 当权威；REFUSED/FORMERR/SERVFAIL/超时换下一台。
+type dnsQueryStatus int
+
+const (
+	dnsQueryAnswer dnsQueryStatus = iota
+	dnsQueryNoData
+	dnsQueryNXDomain
+	dnsQueryTimeout
+	dnsQueryFailure
+)
+
+// dnsLookupStatus 是一次 name 的 A/AAAA 汇总，供服务扫描细分 skip 原因（T58）。
+type dnsLookupStatus int
+
+const (
+	dnsLookupOK dnsLookupStatus = iota
+	dnsLookupNXDomain
+	dnsLookupNoData
+	dnsLookupTimeout
+	dnsLookupError
+)
+
+const (
+	dnsMaxAttempts  = 3 // 每次查询最多换 3 台 resolver（含退避重试）
+	dnsRetryBackoff = 100 * time.Millisecond
+	dnsEDNS0Size    = 1232
+)
+
+var (
+	errDNSTimeout = errors.New("dns lookup timeout")
+	errDNSFailed  = errors.New("dns lookup failed")
+)
+
+// exchange 向单台 resolver 查询：带 EDNS0；响应被截断（TC=1）时改 TCP 重查一次。
+func (r *resolver) exchange(ctx context.Context, host string, qtype uint16, srv string) (*dns.Msg, error) {
+	if err := r.limiter.Wait(ctx); err != nil {
+		return nil, err
+	}
+	m := new(dns.Msg)
+	m.SetQuestion(dns.Fqdn(host), qtype)
+	m.SetEdns0(dnsEDNS0Size, false)
+	in, _, err := r.client.ExchangeContext(ctx, m, srv)
+	if err != nil {
+		return nil, err
+	}
+	if !in.Truncated {
+		return in, nil
+	}
+	if err := r.limiter.Wait(ctx); err != nil {
+		return nil, err
+	}
+	tcp := &dns.Client{Net: "tcp", Timeout: r.cfg.Timeout}
+	in, _, err = tcp.ExchangeContext(ctx, m, srv)
+	return in, err
+}
+
+func dnsTimeoutError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+func collectDNSAnswer(in *dns.Msg) dnsResult {
+	var out dnsResult
 	seen := map[string]bool{}
-	for _, qt := range []uint16{dns.TypeA, dns.TypeAAAA} {
-		m := new(dns.Msg)
-		m.SetQuestion(dns.Fqdn(host), qt)
-		var in *dns.Msg
-		var err error
-		for _, srv := range r.cfg.Resolvers {
-			if err = r.limiter.Wait(ctx); err != nil {
-				return res, err
+	for _, rr := range in.Answer {
+		var key string
+		switch x := rr.(type) {
+		case *dns.A:
+			key = x.A.String()
+			if !seen[key] {
+				out.IPs = append(out.IPs, key)
 			}
-			if in, _, err = r.client.ExchangeContext(ctx, m, srv); err == nil && in.Rcode != dns.RcodeServerFailure {
-				break
+		case *dns.AAAA:
+			key = x.AAAA.String()
+			if !seen[key] {
+				out.IPs = append(out.IPs, key)
+			}
+		case *dns.CNAME:
+			v := normalizeHost(x.Target)
+			key = "cname:" + v
+			if v != "" && !seen[key] {
+				out.CNAMEs = append(out.CNAMEs, v)
+			}
+		default:
+			continue
+		}
+		seen[key] = true
+	}
+	return out
+}
+
+// queryType 查单一记录类型：权威成功/无记录/NXDOMAIN 立即返回，其余 rcode 与超时换下一台。
+// skipIdx >= 0 时跳过该 resolver（NXDOMAIN 复核用）；返回最后一台给出结论的 resolver 下标。
+func (r *resolver) queryType(ctx context.Context, host string, qtype uint16, skipIdx int) (dnsResult, dnsQueryStatus, int) {
+	var out dnsResult
+	timeouts, attempts := 0, 0
+	for idx, srv := range r.cfg.Resolvers {
+		if idx == skipIdx && len(r.cfg.Resolvers) > 1 {
+			continue
+		}
+		if attempts >= dnsMaxAttempts {
+			break
+		}
+		if attempts > 0 {
+			t := time.NewTimer(time.Duration(attempts) * dnsRetryBackoff)
+			select {
+			case <-ctx.Done():
+				t.Stop()
+				return out, dnsQueryTimeout, -1
+			case <-t.C:
 			}
 		}
+		attempts++
+		in, err := r.exchange(ctx, host, qtype, srv)
 		if err != nil {
-			return res, err
-		}
-		for _, rr := range in.Answer {
-			var v string
-			switch x := rr.(type) {
-			case *dns.A:
-				v = x.A.String()
-				if !seen[v] {
-					res.IPs = append(res.IPs, v)
-				}
-			case *dns.AAAA:
-				v = x.AAAA.String()
-				if !seen[v] {
-					res.IPs = append(res.IPs, v)
-				}
-			case *dns.CNAME:
-				v = "cname:" + normalizeHost(x.Target)
-				if !seen[v] {
-					res.CNAMEs = append(res.CNAMEs, normalizeHost(x.Target))
-				}
+			if dnsTimeoutError(err) {
+				timeouts++
 			}
-			seen[v] = true
+			continue
+		}
+		switch in.Rcode {
+		case dns.RcodeNameError:
+			return out, dnsQueryNXDomain, idx
+		case dns.RcodeSuccess:
+			out = collectDNSAnswer(in)
+			if len(out.IPs) > 0 {
+				return out, dnsQueryAnswer, idx
+			}
+			return out, dnsQueryNoData, idx
+		default:
+			// REFUSED/FORMERR/SERVFAIL 等非权威回码：换下一台 resolver。
 		}
 	}
-	sort.Strings(res.IPs)
+	if timeouts > 0 {
+		return out, dnsQueryTimeout, -1
+	}
+	return out, dnsQueryFailure, -1
+}
+
+// lookupStatus 汇总 A 与 AAAA。两类分开计成功：任一类有地址即为成功；一类超时不丢弃另一类地址。
+// NXDOMAIN 是负答案，必须由另一台 resolver 复核后才落 dns_nxdomain。
+func (r *resolver) lookupStatus(ctx context.Context, host string) (dnsResult, dnsLookupStatus) {
+	var res dnsResult
+	seen := map[string]bool{}
+	merge := func(part dnsResult) {
+		for _, ip := range part.IPs {
+			if !seen[ip] {
+				seen[ip] = true
+				res.IPs = append(res.IPs, ip)
+			}
+		}
+		for _, c := range part.CNAMEs {
+			if !seen["cname:"+c] {
+				seen["cname:"+c] = true
+				res.CNAMEs = append(res.CNAMEs, c)
+			}
+		}
+	}
+	a, aStatus, aIdx := r.queryType(ctx, host, dns.TypeA, -1)
+	merge(a)
+	aaaa, aaaaStatus, aaaaIdx := r.queryType(ctx, host, dns.TypeAAAA, -1)
+	merge(aaaa)
+	if len(res.IPs) > 0 {
+		sort.Strings(res.IPs)
+		return res, dnsLookupOK
+	}
+	if aStatus == dnsQueryNXDomain || aaaaStatus == dnsQueryNXDomain {
+		// 只有一台 resolver 时没有可交叉复核的对象，直接采用其负答案（不再重查同一台）。
+		if len(r.cfg.Resolvers) <= 1 {
+			return res, dnsLookupNXDomain
+		}
+		confirmIdx := aIdx
+		if aStatus != dnsQueryNXDomain {
+			confirmIdx = aaaaIdx
+		}
+		confirm, status, _ := r.queryType(ctx, host, dns.TypeA, confirmIdx)
+		merge(confirm)
+		if len(res.IPs) > 0 {
+			sort.Strings(res.IPs)
+			return res, dnsLookupOK
+		}
+		switch status {
+		case dnsQueryNXDomain:
+			return res, dnsLookupNXDomain
+		case dnsQueryNoData:
+			return res, dnsLookupNoData
+		case dnsQueryTimeout:
+			return res, dnsLookupTimeout
+		default:
+			return res, dnsLookupError
+		}
+	}
+	if aStatus == dnsQueryTimeout || aaaaStatus == dnsQueryTimeout {
+		return res, dnsLookupTimeout
+	}
+	if aStatus == dnsQueryNoData || aaaaStatus == dnsQueryNoData {
+		return res, dnsLookupNoData
+	}
+	return res, dnsLookupError
+}
+
+// lookup 保持旧调用方语义：NXDOMAIN/NODATA 返回空结果，超时/失败返回错误。
+func (r *resolver) lookup(ctx context.Context, host string) (dnsResult, error) {
+	res, st := r.lookupStatus(ctx, host)
+	switch st {
+	case dnsLookupTimeout:
+		return res, errDNSTimeout
+	case dnsLookupError:
+		return res, errDNSFailed
+	}
 	return res, nil
 }
 
