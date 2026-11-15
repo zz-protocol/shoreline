@@ -12,6 +12,7 @@
 | MAX_RETRY | 3 | 失败重试次数；重试中状态为 retrying，用尽后为 failed（终态） |
 | HOST_CHUNK_SIZE | 2000 | dns/http 单任务 hosts 超过此数则拆成子 scan_task（parent_id）；父状态由子推导；重启只重投未完成分片（T40） |
 | RETRY_BASE_SECONDS | 1 | 指数退避基数（最小 1，asynq 重试调度为秒级精度），第 k 次重试前等待 base × 2^(k-1) 秒，默认即 1s/2s/4s |
+| SERVICE_SCAN_ENABLED | false | 非 Web（端口/服务）探测全局开关，默认关。未在网页/API 写入过时读此变量；一旦 PATCH `/api/service-scan` 则以库为准。关闭时不发起探测，不影响 Web 扫描（T49） |
 
 ## 被动源配置（环境变量）
 
@@ -200,6 +201,7 @@ passive 任务把 `{sources_ok, sources_failed:[{source,error}], found}` 写入 
 - `GET /api/events`：默认资产级（`level=asset`），`level=url|all` 查 URL 事件；不传 `type` 默认 `new,recovered`（显式传 `changed` 才含）；`since`/`until`、`asset_id`、`vendor`、`include_wildcard`、`q`（子域名或 URL 子串，不区分大小写；`/stats` 与 `/values`、MCP `list_new_assets` 同步）。
 - 范围规则挂在厂商下（`/api/vendors/{id}/scopes`，pattern 为 `域名` 或 `*.域名`）；新增/删除返回 202 + `task_id`，`GET /api/scope-tasks/{id}` 查进度；按 id 分批更新、只改有变化的行，不长时间锁表。重算幂等：进程启动时自动重跑 pending/running 的任务（从头重算、计数清零）。
 - 根域格式校验，被任一厂商占用返回 409。`POST /api/scans` 手动触发（kind 只允许 passive/active/expand，dns/http 是链路内部步骤；kind=active 需厂商 `active_enabled`，否则 409）。
+- 扫描授权范围（T49）：`GET/PATCH /api/service-scan`（`{enabled, items}`，默认 `enabled=false`）；`POST /api/service-scan/scopes` 登记域（`example.test` 覆盖该域及其子域，`*.example.test` 只匹配子域，不接受 IP）；`DELETE /api/service-scan/scopes/{id}`。认证同现有 API。此范围独立于厂商 `in_scope` 规则，只约束非 Web 探测。
 - 待确认根域：`GET /api/vendors/{id}/root-candidates`，`POST /api/root-candidates/{id}/confirm|ignore|reassign`（仅 pending；确认时域名已是别厂商根域返回 409，候选保持 pending）。`GET /api/events` 里资产级 new 事件嵌套 `url_events`（该资产的 URL 级 new 事件）。子公司导入：`POST /api/vendors/{id}/subsidiaries`（CSV：名称,持股比例）。
 
 ## MCP server（T13）
@@ -211,6 +213,8 @@ Streamable HTTP（无状态、JSON 响应），地址 `POST /mcp`，认证同 AP
 | list_new_assets | vendor, since, include_wildcard, limit, cursor | 资产级 new 事件（新→旧），嵌套 url_events；默认过滤 wildcard |
 | search_assets | q, vendor, in_scope, new_since, include_wildcard, limit, cursor | 同 `GET /api/assets` |
 | check_scope | host | 归属厂商/根域（最长匹配）、in_scope、命中规则、已知资产 id；不要求已是资产 |
+| get_service_scan | 无 | 同 `GET /api/service-scan`：非 Web 探测开关与授权范围列表，默认关 |
+| check_service_scan | host | 判定该主机是否会被允许做非 Web 探测（enabled / authorized / allow / reason）；不发起探测 |
 | trigger_scan | root_id, kind | kind 只允许 passive/active/expand；active 需厂商开关 |
 | claim_mine_targets | claimed_by, limit, vendor_id, since, q, include_abandoned | 同 `POST /api/mine/claim`；agent 自助领取 |
 | heartbeat_mine | asset_ids | 同 `POST /api/mine/heartbeat`；续认领锁 |
@@ -246,7 +250,7 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 
 ## Web 端（T14）
 - React + Vite + Ant Design 5（MIT，深色算法主题，不做浅色切换）+ swagger-ui-dist（Apache-2.0）做 `/docs`。
-- 首屏输入 API token，存 `localStorage`；侧栏：新增播报 / 资产 / 厂商·根域 / 客户托管规则 / 扫描任务 / 测绘 Key / API Key / API 文档。
+- 首屏输入 API token，存 `localStorage`；侧栏：新增播报 / 资产 / 厂商·根域 / 客户托管规则 / 扫描任务 / 扫描授权范围 / 测绘 Key / API Key / API 文档。
 - 测绘 Key（T30）：FOFA/Quake/Hunter 可在网页增删改，库内保存；API/页面只返掩码（后 4 位）；「测试连通」只调账户信息接口（mock 测），不耗查询额度。
 - 厂商 `active_enabled` 开关走 `PATCH`；删厂商/根域二次确认；资产 `include_wildcard`；事件 `level` + 每 30s 轮询 `since`。
 - http 扫描标题按 Content-Type/meta 声明的 charset 解码（`golang.org/x/net/html/charset`），无法判定时回退 GB18030；title、redirect、被动子域名入库前清洗为合法 UTF-8；单个 host 的 URL 入库失败只记日志，任务仍为 done，`result` 记 `store_failures` 并标 `degraded:true`（T33）。历史失败任务不自动重跑。
@@ -306,3 +310,12 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 ## 组件列表整列复制（T48）
 
 组件列表「复制本列」复制**当前筛选条件下的全部匹配组件名**（非仅本页），一行一个、去重、按名称排序。口径与 `GET /api/components` 相同（关键字、常见排除、泛解析/客户托管/失活、冷门分上限、分类隐藏与 `category` 精筛等）。`GET /api/components/values` 返回 `{field, items, count, truncated}`，`field` 为 `name`（可省略）；上限与资产页相同（100000），超出则截断并 `truncated=true`。HTTP 下自动回退 textarea，失败弹出手动复制框。下钻详情的 `GET /api/components/{id}/values` 不变。
+
+## 扫描授权范围（T49）
+
+非 Web（端口/服务）探测的安全地基，供后续 T51 接入，本轮不实现端口扫描，也不做 CDN 判定。
+
+- 全局开关默认关闭。关闭时 `runServiceScan` 完全不调用探测器（测试用计数假探测断言零外连），现有 Web 扫描不受影响。未在库中写入过时可读环境变量 `SERVICE_SCAN_ENABLED`；一旦经 `PATCH /api/service-scan` 写入则以库为准。
+- 授权范围按域登记，与厂商资产「范围规则 / in_scope」相互独立：登记 `example.test` 覆盖该域及其子域（资产集合）；`*.example.test` 只匹配子域。无明确范围视为不在范围内。不接受 IP，API/UI 不返回 IP。
+- 开启但主机不在范围时跳过，并在 `service_scan_skips` 记录原因 `out_of_scope`；关闭时不按主机记跳过。在范围内才执行传入的 `ServiceProbeFunc`。
+- Web「扫描授权范围」页可开关并增删范围；REST 认证同现有 API；MCP：`get_service_scan`、`check_service_scan`。
