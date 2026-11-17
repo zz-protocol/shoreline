@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("T49", "T50", "T51", "T52", "T53", "T54", "T55", "T56", "T57", "T58", "All")]
+    [ValidateSet("T49", "T50", "T51", "T52", "T53", "T54", "T55", "T56", "T57", "T58", "T60", "All")]
     [string]$Task = "All",
     [int]$Count = 1,
     [switch]$SkipFrontend
@@ -259,6 +259,32 @@ function Invoke-T58 {
     }
 }
 
+function Invoke-T60 {
+    Write-Host "`nT60 组件-资产 8 字段" -ForegroundColor Cyan
+    Invoke-Check "T60" "实现与迁移存在" {
+        Assert-Exists (Join-Path $backend "migrations\037_component_asset_fields.sql") "037 迁移"
+        Assert-Exists (Join-Path $backend "t60_component_fields_test.go") "T60 测试"
+    }
+    Invoke-Check "T60" "测试通过（T60）" { Invoke-GoTests "T60" }
+    Invoke-Check "T60" "8 字段 API" {
+        foreach ($f in @("component_evidence", "component_confidence", "matched_url", "version_hint", "exposure_state", "auth_state", "component_candidate_repo", "capture_time")) {
+            Assert-Text (Join-Path $backend "components_api.go") $f "缺少 $f"
+        }
+    }
+    Invoke-Check "T60" "筛选参数" {
+        Assert-Text (Join-Path $backend "components_api.go") "min_confidence" "缺少 min_confidence"
+        Assert-Text (Join-Path $backend "components_api.go") "exposure" "缺少 exposure"
+        Assert-Text (Join-Path $backend "openapi.yaml") "min_confidence" "OpenAPI 未同步"
+    }
+    Invoke-Check "T60" "回填默认 unknown/low" {
+        Assert-Text (Join-Path $backend "migrations\037_component_asset_fields.sql") "DEFAULT 'unknown'" "缺少 unknown 默认值"
+        Assert-Text (Join-Path $backend "migrations\037_component_asset_fields.sql") "DEFAULT 'low'" "缺少 low 默认值"
+    }
+    Invoke-Check "T60" "无 IP" {
+        Assert-Text (Join-Path $backend "t60_component_fields_test.go") "NoIP|noIP|IP" "缺少无 IP 断言"
+    }
+}
+
 function Invoke-T54 {
     Write-Host "`nT54 研究价值评分" -ForegroundColor Cyan
     Invoke-Check "T54" "实现文件存在" {
@@ -298,6 +324,7 @@ switch ($Task) {
     "T56" { Invoke-T56 }
     "T57" { Invoke-T57 }
     "T58" { Invoke-T58 }
+    "T60" { Invoke-T60 }
     "All" {
         Invoke-T49
         Invoke-T50
@@ -309,6 +336,7 @@ switch ($Task) {
         Invoke-T56
         Invoke-T57
         Invoke-T58
+        Invoke-T60
     }
 }
 
