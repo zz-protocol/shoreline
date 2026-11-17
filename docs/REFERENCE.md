@@ -439,3 +439,17 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 - `GET /api/components/{id}/assets` 改为一条组件-资产关系一项：保留 `id`、`subdomain`、`vendor`、`url`、`title`、`version`、`source`、`port`、`urls`，并返回 8 字段 `component_evidence`（evidence jsonb 原样）、`component_confidence`、`matched_url`（Web 关系取具体 URL；服务关系为空）、`version_hint`、`exposure_state`、`auth_state`、`component_candidate_repo`（关系上 `candidate_repo` 为空时回退 `components.github_repo`）、`capture_time`（`created_at`，RFC3339）。分页仍按资产计，`next_cursor` 传下一页；MCP `list_component_assets` 与 REST 同口径。
 - `GET /api/components`（以及 `/api/components/values`、MCP `search_components`）新增 `min_confidence=high|medium|low` 与 `exposure=live_app,api,admin`（可重复或逗号分隔）：只保留至少一条组件-资产关系（`url_components` 或 `asset_components`）满足置信度下限、且命中资产暴露状态落在所选集合的组件；`url_count` / `asset_count` / `vendor_count` 与列表用同一关系口径。未传这两个参数时行为不变。
 - 仍不写 IP：组件关系只带 host、端口、URL 与证据，不落库、不进 API/MCP/前端；`confidence` 由岸线规则推断，LLM 不改写。
+
+## 证据与置信度 / exposure-auth（T61/T62）
+
+写入时机：HTTP 扫描的 `storeURL` 在写 `urls` 的同一事务里写 `url_components` 的关系证据与 `assets` 的 exposure/auth；服务组件在 `syncAssetServicesToComponents` 里写。历史行不重算，仍为 `low` / `unknown`。
+
+- Web 证据（`url_components.evidence`）为 `{type,value,snippet}`：`type` 取 `path` / `header` / `meta` / `title` / `js` / `favicon` / `status` / `llm`（服务组件为 `banner`）。判定顺序：非 Server 响应头 > `<meta name="generator">` > `<script src>` 包名 > 资源 path（link/a/img/form 等的 href/src/action/data）> 标题 > 正文 > 仅 Server 头。
+- 置信度：明确 path / 非 Server 响应头 / meta generator / JS 包名 / favicon hash = `high`；标题、正文结构、内联脚本结构匹配 = `medium`；仅 Server 头、LLM 推断、找不到来源 = `low`。找不到来源时不编造证据，evidence 记 `{}`。
+- `matched_url` 写该 URL（`scheme://host:port`），服务组件为空；`candidate_repo` 暂空（T63 填）。
+- title/header 规则（`identifyRules`）同样写证据：标题记 `title`/`medium`，`Server` 头记 `header`/`low`，其它响应头记 `header`/`high`；wappalyzer 已有关联时保留其证据、置信度与 `matched_url`。无响应证据的兼容入口 `syncURLComponents`（测试/历史路径）仍写 `{"tech": ...}` 与 `low`。
+- LLM 候选写 `type=llm`、`confidence=low`，保留 `reason` / `github_repo` 供 AI 关联提示。
+- 服务组件：`asset_components.confidence` 取 YAML 规则的 `confidence`（未声明记 `low`），`candidate_repo` 取规则的 `repo`（未声明为空），`evidence` 保留 `host` / `port` / `banner` / `response_kind` / `confidence` 并加 `type: "banner"`；`matched_url` 为空。
+- `exposure_state`（按顺序判定）：WAF challenge/人机校验（含 Cloudflare 头 + 401/403/429/503、拦截词）→ `waf`；登录表单（含密码框）或登录标题 → `login_only`；401 与跳转登录 → 保持 `unknown`；404/500/502/503/504 → `error_page`；200 时 JSON → `api`、默认页/停放页 → `placeholder`、后台标题 → `admin`、目录列表/二进制/非 HTML 文本 → `static_only`、其余 HTML → `live_app`；其它状态码与空响应 → `unknown`。
+- `auth_state`：登录表单/登录标题、401、302 到登录 → `login_required`；200 业务 JSON → `anonymous`；其余 `unknown`。
+- 写库用 `UPDATE assets SET exposure_state/auth_state`；`unknown` 表示本次判不出来，不覆盖已有结论。服务/非 Web 资产保持 `unknown`，只用内存里的状态码/标题/响应头/正文判定，不落正文、不写 IP。

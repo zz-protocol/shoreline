@@ -134,10 +134,11 @@ type probeResult struct {
 	Title        string
 	Redirect     string
 	Tech         []string
-	Fingerprint  string              // sha256(status|title|tech)
-	Headers      map[string]string   // T45：少量响应头（Server / X-Powered-By / X-Generator 等）
-	FaviconHash  string              // T45：同主机 favicon 的 sha256，未取到则为空
-	TechCats     map[string][]string // T47：FingerprintWithInfo 得到的分类名（按组件名）
+	Fingerprint  string                       // sha256(status|title|tech)
+	Headers      map[string]string            // T45：少量响应头（Server / X-Powered-By / X-Generator 等）
+	FaviconHash  string                       // T45：同主机 favicon 的 sha256，未取到则为空
+	TechCats     map[string][]string          // T47：FingerprintWithInfo 得到的分类名（按组件名）
+	TechEvidence map[string]techMatchEvidence // T61：按组件名（小写）的证据与置信度，找不到来源则缺项
 	body         []byte
 }
 
@@ -170,14 +171,20 @@ func (p *prober) getWith(ctx context.Context, lim *rate.Limiter, scheme, host st
 	}
 	if w, err := wappalyzerClient(); err == nil {
 		r.TechCats = map[string][]string{}
+		var names []string
 		for t, info := range w.FingerprintWithInfo(resp.Header, body) {
 			r.Tech = append(r.Tech, t)
 			name, _ := parseTech(t)
-			if cats := sortedCats(info.Categories); len(cats) > 0 && name != "" {
+			if name == "" {
+				continue
+			}
+			names = append(names, name)
+			if cats := sortedCats(info.Categories); len(cats) > 0 {
 				r.TechCats[name] = cats
 			}
 		}
 		sort.Strings(r.Tech)
+		r.TechEvidence = deriveTechEvidence(r, names)
 	}
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s", r.Status, r.Title, strings.Join(r.Tech, ","))))
 	r.Fingerprint = hex.EncodeToString(sum[:])
@@ -709,10 +716,13 @@ func (p *prober) storeURL(ctx context.Context, d *pgxpool.Pool, assetID int64, r
 				} else if err != nil {
 					return err
 				}
-				if err := syncURLComponentsWithCats(ctx, tx, urlID, r.Tech, r.TechCats); err != nil {
+				if err := syncURLComponentsEvidence(ctx, tx, urlID, r.Tech, r.TechCats, r.TechEvidence, url); err != nil {
 					return err
 				}
-				if err := syncIdentifyComponents(ctx, tx, urlID, matchIdentifyRules(r.Title, r.Headers)); err != nil {
+				if err := syncIdentifyComponentsEvidence(ctx, tx, urlID, matchIdentifyRules(r.Title, r.Headers), url); err != nil {
+					return err
+				}
+				if err := updateAssetExposure(ctx, tx, assetID, r); err != nil {
 					return err
 				}
 				return emitNew(ctx, tx, assetID, &urlID, map[string]any{"url": url, "status_code": r.Status, "title": r.Title})
@@ -724,10 +734,13 @@ func (p *prober) storeURL(ctx context.Context, d *pgxpool.Pool, assetID int64, r
 				urlID, assetID, r.Status, r.Title, r.Fingerprint, nullIfEmpty(r.Redirect), nonNil(r.Tech), headerJSON(r.Headers), nullIfEmpty(r.FaviconHash)); err != nil {
 				return err
 			}
-			if err := syncURLComponentsWithCats(ctx, tx, urlID, r.Tech, r.TechCats); err != nil {
+			if err := syncURLComponentsEvidence(ctx, tx, urlID, r.Tech, r.TechCats, r.TechEvidence, url); err != nil {
 				return err
 			}
-			if err := syncIdentifyComponents(ctx, tx, urlID, matchIdentifyRules(r.Title, r.Headers)); err != nil {
+			if err := syncIdentifyComponentsEvidence(ctx, tx, urlID, matchIdentifyRules(r.Title, r.Headers), url); err != nil {
+				return err
+			}
+			if err := updateAssetExposure(ctx, tx, assetID, r); err != nil {
 				return err
 			}
 			changes := map[string]change{}

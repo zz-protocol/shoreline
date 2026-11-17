@@ -234,14 +234,21 @@ func storeLLMCandidates(ctx context.Context, d *pgxpool.Pool, urlID int64, cands
 			RETURNING id`, c.Name, strings.ToLower(c.Name), repo).Scan(&id); err != nil {
 			return err
 		}
-		ev, _ := json.Marshal(map[string]string{"reason": c.Reason, "github_repo": c.GitHubRepo})
-		if _, err := d.Exec(ctx, `INSERT INTO url_components (url_id, component_id, version, source, evidence)
-			VALUES ($1, $2, '', 'llm', $3)
+		ev, _ := json.Marshal(map[string]string{
+			"type":        evidenceLLM,
+			"value":       "",
+			"snippet":     evidenceSnippet(c.Reason),
+			"reason":      c.Reason,
+			"github_repo": c.GitHubRepo,
+		})
+		if _, err := d.Exec(ctx, `INSERT INTO url_components (url_id, component_id, version, source, evidence, confidence)
+			VALUES ($1, $2, '', 'llm', $3, $4)
 			ON CONFLICT (url_id, component_id) DO UPDATE SET
 				evidence = CASE WHEN url_components.source = 'wappalyzer' THEN url_components.evidence ELSE EXCLUDED.evidence END,
+				confidence = CASE WHEN url_components.source = 'wappalyzer' THEN url_components.confidence ELSE EXCLUDED.confidence END,
 				source = CASE WHEN url_components.source = 'wappalyzer' THEN url_components.source ELSE EXCLUDED.source END,
 				ignored_at = CASE WHEN url_components.source = 'wappalyzer' THEN url_components.ignored_at ELSE NULL END`,
-			urlID, id, ev); err != nil {
+			urlID, id, ev, confidenceLow); err != nil {
 			return err
 		}
 	}

@@ -138,18 +138,22 @@ func syncAssetServicesToComponents(ctx context.Context, q serviceScanQ, targets 
 			RETURNING id`, display, strings.ToLower(display), confirmed, sortedCats(cats), repoArg).Scan(&id); err != nil {
 			return err
 		}
-		ev := map[string]any{"host": r.host, "port": r.port, "banner": r.ban, "response_kind": r.kind}
+		ev := map[string]any{"type": evidenceBanner, "host": r.host, "port": r.port, "banner": r.ban, "response_kind": r.kind}
+		confidence := confidenceLow
 		if c := rules.confidence(r.name); c != "" {
 			ev["confidence"] = c
+			confidence = c
 		}
 		raw, _ := json.Marshal(ev)
-		if _, err := q.Exec(ctx, `INSERT INTO asset_components (asset_id, component_id, port, version, source, evidence)
-			VALUES ($1, $2, $3, $4, 'service', $5)
+		if _, err := q.Exec(ctx, `INSERT INTO asset_components (asset_id, component_id, port, version, source, evidence, confidence, candidate_repo)
+			VALUES ($1, $2, $3, $4, 'service', $5, $6, $7)
 			ON CONFLICT (asset_id, component_id, port) DO UPDATE SET
 				version = CASE WHEN EXCLUDED.version <> '' THEN EXCLUDED.version ELSE asset_components.version END,
 				evidence = EXCLUDED.evidence,
+				confidence = EXCLUDED.confidence,
+				candidate_repo = CASE WHEN EXCLUDED.candidate_repo <> '' THEN EXCLUDED.candidate_repo ELSE asset_components.candidate_repo END,
 				ignored_at = NULL`,
-			*r.assetID, id, r.port, r.ver, raw); err != nil {
+			*r.assetID, id, r.port, r.ver, raw, confidence, repo); err != nil {
 			return err
 		}
 	}

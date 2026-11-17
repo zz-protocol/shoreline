@@ -104,6 +104,12 @@ func matchIdentifyRules(title string, headers map[string]string) []identifyHit {
 }
 
 func syncIdentifyComponents(ctx context.Context, q dbq, urlID int64, hits []identifyHit) error {
+	return syncIdentifyComponentsEvidence(ctx, q, urlID, hits, "")
+}
+
+// syncIdentifyComponentsEvidence：T61 口径写入 title/header 规则命中的证据、置信度与 matched_url；
+// wappalyzer 已有关联时保留其证据、置信度与 matched_url。
+func syncIdentifyComponentsEvidence(ctx context.Context, q dbq, urlID int64, hits []identifyHit, matchedURL string) error {
 	keep := make([]int64, 0, len(hits))
 	for _, hit := range hits {
 		var id int64
@@ -115,13 +121,16 @@ func syncIdentifyComponents(ctx context.Context, q dbq, urlID int64, hits []iden
 			RETURNING id`, hit.Name, strings.ToLower(hit.Name), hit.Source, sortedCats(categoriesForName(hit.Name))).Scan(&id); err != nil {
 			return err
 		}
-		ev, _ := json.Marshal(map[string]string{"rule": hit.Name, "header": hit.Header, "value": clipHeader(hit.Value)})
-		if _, err := q.Exec(ctx, `INSERT INTO url_components (url_id, component_id, version, source, evidence)
-			VALUES ($1, $2, '', $3, $4)
+		evid, confidence := identifyHitEvidence(hit)
+		ev, _ := json.Marshal(evid)
+		if _, err := q.Exec(ctx, `INSERT INTO url_components (url_id, component_id, version, source, evidence, confidence, matched_url)
+			VALUES ($1, $2, '', $3, $4, $5, $6)
 			ON CONFLICT (url_id, component_id) DO UPDATE SET
 				evidence = CASE WHEN url_components.source = 'wappalyzer' THEN url_components.evidence ELSE EXCLUDED.evidence END,
+				confidence = CASE WHEN url_components.source = 'wappalyzer' THEN url_components.confidence ELSE EXCLUDED.confidence END,
+				matched_url = CASE WHEN EXCLUDED.matched_url <> '' THEN EXCLUDED.matched_url ELSE url_components.matched_url END,
 				source = CASE WHEN url_components.source = 'wappalyzer' THEN url_components.source ELSE EXCLUDED.source END`,
-			urlID, id, hit.Source, ev); err != nil {
+			urlID, id, hit.Source, ev, confidence, matchedURL); err != nil {
 			return err
 		}
 		keep = append(keep, id)

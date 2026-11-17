@@ -108,7 +108,15 @@ func syncURLComponents(ctx context.Context, q dbq, urlID int64, tech []string) e
 	return syncURLComponentsWithCats(ctx, q, urlID, tech, nil)
 }
 
+// syncURLComponentsWithCats：没有响应证据的兼容入口（测试与历史路径）：置信度记 low，证据保留原始 tech。
 func syncURLComponentsWithCats(ctx context.Context, q dbq, urlID int64, tech []string, cats map[string][]string) error {
+	return syncURLComponentsEvidence(ctx, q, urlID, tech, cats, nil, "")
+}
+
+// syncURLComponentsEvidence：T61 口径的 wappalyzer 关联维护。ev 为 nil 表示没有证据管道，
+// confidence 记 low、evidence 保留 {"tech": ...}；非 nil 时按组件名取证据，找不到来源记 {} 与 low。
+func syncURLComponentsEvidence(ctx context.Context, q dbq, urlID int64, tech []string, cats map[string][]string,
+	ev map[string]techMatchEvidence, matchedURL string) error {
 	items := collectTech(tech)
 	keep := make([]int64, 0, len(items))
 	for _, it := range items {
@@ -126,11 +134,24 @@ func syncURLComponentsWithCats(ctx context.Context, q dbq, urlID int64, tech []s
 			RETURNING id`, it.name, strings.ToLower(it.name), got).Scan(&id); err != nil {
 			return err
 		}
-		ev, _ := json.Marshal(map[string]string{"tech": it.raw})
-		if _, err := q.Exec(ctx, `INSERT INTO url_components (url_id, component_id, version, source, evidence)
-			VALUES ($1, $2, $3, 'wappalyzer', $4)
-			ON CONFLICT (url_id, component_id) DO UPDATE SET version = EXCLUDED.version, evidence = EXCLUDED.evidence`,
-			urlID, id, it.version, ev); err != nil {
+		match, hasEv := ev[strings.ToLower(it.name)]
+		confidence := confidenceLow
+		var raw []byte
+		switch {
+		case hasEv:
+			confidence = match.Confidence
+			raw, _ = json.Marshal(match.Evidence)
+		case ev == nil:
+			raw, _ = json.Marshal(map[string]string{"tech": it.raw})
+		default:
+			raw = []byte("{}")
+		}
+		if _, err := q.Exec(ctx, `INSERT INTO url_components (url_id, component_id, version, source, evidence, confidence, matched_url)
+			VALUES ($1, $2, $3, 'wappalyzer', $4, $5, $6)
+			ON CONFLICT (url_id, component_id) DO UPDATE SET version = EXCLUDED.version, evidence = EXCLUDED.evidence,
+				confidence = EXCLUDED.confidence,
+				matched_url = CASE WHEN EXCLUDED.matched_url <> '' THEN EXCLUDED.matched_url ELSE url_components.matched_url END`,
+			urlID, id, it.version, raw, confidence, matchedURL); err != nil {
 			return err
 		}
 		keep = append(keep, id)
