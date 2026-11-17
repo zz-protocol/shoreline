@@ -83,7 +83,7 @@
 | T56 | 反代/CDN 边缘识别：HTTP 400/403 + openresty/nginx/Tengine/via: CHN-*/X-CCDN 判 reverse_proxy，不生成候选，记 skip；不绕过 T50 门控 | 假 403/400/200 分类正确；175 个历史候选可回填；200 应用不误伤；无真实网络 | 完成（831cbbb 交付；accept T56 全 PASS；033 回填 reverse_proxy=132、归档 177 条历史候选；400/403 openresty/nginx 与 200 对照测试过；无真实网络） |
 | T57 | 未识别聚类归一化：哈希前去 Date/Request_id/Node_info/Client_ip/Content-Length/via 节点；迁移 034 回填合并历史 175 个候选，保留 confirmed/ignored，幂等 | 同类 403 合并；不同响应分开；回填幂等；无真实网络 | 完成（831cbbb + 0fb82d3；accept T57 全 PASS；034 归一化合并 + 035 清理孤儿后 unidentified 175→156、孤儿 0；幂等测试过；无真实网络） |
 | T58 | no_dial_ip 收口（诊断完成）：77,729 行为 44,823 资产，99.85% 为 NXDOMAIN 死域；改 skip 原因细分（dns_nxdomain/dns_nodata/dns_timeout/dns_error/dns_negative_cached）、service_scan_skips 去重 + scan_task_id、NXDOMAIN 双 resolver 复核、A/AAAA 分开成功、EDNS0/TC TCP 回退、重解析后 CDN 复判；仍不绕过 CDN 门控 | 同类资产不重复计数；NXDOMAIN 负缓存/预过滤后不再逐轮重解析；CDN 未判定仍跳过；不写 IP；无真实网络 | 完成（1e163ff/cdc4067；accept T58 全 PASS；生产迁移 036 去重 101450→54503 行、count 累计 77729；DNS 负答案复核、A/AAAA 分开、EDNS0/TC、负缓存、CDN 复判测试过；go test -count=2 231.0s、前端 75 测试与 build 过；无真实网络） |
-| T59 | 小批复扫与对比：SERVICE_SCAN_TIMEOUT=1s；5–10 个根域复扫；重触发 20 个失败根域；对比 open/verified/named/候选 | 复扫前后对比；失败根域补齐 359/363；不改 T55–T58 口径；开发环境仅假服务/测试库 | 进行中（1s 复扫已触发；5 个样本 open 46→57、22→33、67→55、40→39、29→34，verified 均仍为 0；新 skip 原因 dns_nxdomain 7329 等生效；20 个失败根域已重触发，running 692，root done 359/363，后台继续） |
+| T59 | 小批复扫与对比：SERVICE_SCAN_TIMEOUT=1s；5–10 个根域复扫；重触发 20 个失败根域；对比 open/verified/named/候选 | 复扫前后对比；失败根域补齐 359/363；不改 T55–T58 口径；开发环境仅假服务/测试库 | 完成（1s 复扫：样本 open 22 46→57、40 22→33、41 67→55、452 40→39、466 29→34；verified 36→42；新 skip 原因 dns_nxdomain 7329、dns_nodata 277、dns_timeout 209、dns_error 8、reverse_proxy 9；失败根域重触发后 roots_done 363/363；无真实网络） |
 
 ## 第十一轮（11-16）：组件-资产 8 字段
 
