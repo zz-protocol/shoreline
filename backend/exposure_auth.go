@@ -24,6 +24,21 @@ const (
 	authUnknown       = "unknown"
 )
 
+// exposureStates：可筛选的暴露状态全集（与 classifyExposureAuth 的取值一一对应；T63 起前端/MCP 全量可选）。
+var exposureStates = []string{
+	exposureLiveApp, exposureLoginOnly, exposureAPI, exposureAdmin,
+	exposurePlaceholder, exposureWAF, exposureErrorPage, exposureStaticOnly, exposureUnknown,
+}
+
+func validExposureState(s string) bool {
+	for _, v := range exposureStates {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 // wafStrongMarkers：常见 JS challenge / 人机校验页特征，命中即判 waf。
 var wafStrongMarkers = []string{
 	"cf-chl", "__cf_chl", "cf-challenge", "cf_challenge", "just a moment", "checking your browser",

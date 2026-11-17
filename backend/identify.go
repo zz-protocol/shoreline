@@ -123,14 +123,16 @@ func syncIdentifyComponentsEvidence(ctx context.Context, q dbq, urlID int64, hit
 		}
 		evid, confidence := identifyHitEvidence(hit)
 		ev, _ := json.Marshal(evid)
-		if _, err := q.Exec(ctx, `INSERT INTO url_components (url_id, component_id, version, source, evidence, confidence, matched_url)
-			VALUES ($1, $2, '', $3, $4, $5, $6)
+		// T63：候选仓库按组件名映射写入，已有值不覆盖。
+		if _, err := q.Exec(ctx, `INSERT INTO url_components (url_id, component_id, version, source, evidence, confidence, matched_url, candidate_repo)
+			VALUES ($1, $2, '', $3, $4, $5, $6, $7)
 			ON CONFLICT (url_id, component_id) DO UPDATE SET
 				evidence = CASE WHEN url_components.source = 'wappalyzer' THEN url_components.evidence ELSE EXCLUDED.evidence END,
 				confidence = CASE WHEN url_components.source = 'wappalyzer' THEN url_components.confidence ELSE EXCLUDED.confidence END,
 				matched_url = CASE WHEN EXCLUDED.matched_url <> '' THEN EXCLUDED.matched_url ELSE url_components.matched_url END,
-				source = CASE WHEN url_components.source = 'wappalyzer' THEN url_components.source ELSE EXCLUDED.source END`,
-			urlID, id, hit.Source, ev, confidence, matchedURL); err != nil {
+				source = CASE WHEN url_components.source = 'wappalyzer' THEN url_components.source ELSE EXCLUDED.source END,
+				candidate_repo = CASE WHEN COALESCE(url_components.candidate_repo, '') <> '' THEN url_components.candidate_repo ELSE EXCLUDED.candidate_repo END`,
+			urlID, id, hit.Source, ev, confidence, matchedURL, componentCandidateRepo(hit.Name)); err != nil {
 			return err
 		}
 		keep = append(keep, id)

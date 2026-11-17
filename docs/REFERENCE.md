@@ -283,9 +283,9 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 
 默认统计口径与资产列表一致：排除泛解析、客户托管，且只统计仍存活（`alive`）的资产；可切换「含泛解析 / 含客户托管 / 含失活」。列表默认再排除「常见」组件（内置可编辑名单，启动时补种；停用或删除后升级不会加回）。
 
-- Web：导航「组件」（资产之后，全宽）。列：组件名、来源、URL 数、资产数、厂商数、是否常见；默认按厂商数、再按资产数降序。筛选：关键字、最小资产数、最小厂商数、排除常见、含泛解析/客户托管/失活。下钻可按厂商筛，并复制本组件资产主机名或 URL（当前筛选全量、去重，规则与资产页相同）。
+- Web：导航「组件」（资产之后，全宽）。列：组件名、来源、URL 数、资产数、厂商数、是否常见；默认按厂商数、再按资产数降序。筛选：关键字、最小资产数、最小厂商数、排除常见、含泛解析/客户托管/失活，以及 T63 的 `min_confidence`、`exposure` 多选（见下节）。下钻可按厂商筛，并复制本组件资产主机名或 URL（当前筛选全量、去重，规则与资产页相同）；展开行与详情抽屉展示组件-资产关系的 8 字段（T63）。
 - REST：`GET /api/components`、`GET /api/components/{id}`、`GET /api/components/{id}/assets`、`GET /api/components/{id}/values`；常见名单 `GET/POST /api/common-components`、`PATCH/DELETE /api/common-components/{id}`。
-- MCP：`search_components`、`list_component_assets`，口径与 REST 一致。
+- MCP：`search_components`、`list_component_assets`、`ai_review_component`（写回，见「候选 repo、AI 写回与前端（T63）」），口径与 REST 一致。
 - 后续 HTTP 扫描更新 `urls.tech` 时同步维护关联。
 
 岸线只做识别、聚合、筛选和下钻，不内置代码审计、不按版本自动匹配 CVE。
@@ -437,7 +437,7 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 迁移 `037_component_asset_fields.sql`（可重跑）给 `assets` 加 `exposure_state` / `auth_state`（默认 `unknown`，建 `assets_exposure_state_idx`），给 `url_components` / `asset_components` 加 `confidence`（默认 `low`）、`matched_url`、`candidate_repo`（默认空串，各建 confidence 索引），给 `components` 加 `repo_confidence`（默认 `low`）与 `ai_review`（jsonb，默认 `{}`）。历史行只由默认值回填，**不伪造证据**；evidence/confidence/exposure 的写入在 T61/T62。
 
 - `GET /api/components/{id}/assets` 改为一条组件-资产关系一项：保留 `id`、`subdomain`、`vendor`、`url`、`title`、`version`、`source`、`port`、`urls`，并返回 8 字段 `component_evidence`（evidence jsonb 原样）、`component_confidence`、`matched_url`（Web 关系取具体 URL；服务关系为空）、`version_hint`、`exposure_state`、`auth_state`、`component_candidate_repo`（关系上 `candidate_repo` 为空时回退 `components.github_repo`）、`capture_time`（`created_at`，RFC3339）。分页仍按资产计，`next_cursor` 传下一页；MCP `list_component_assets` 与 REST 同口径。
-- `GET /api/components`（以及 `/api/components/values`、MCP `search_components`）新增 `min_confidence=high|medium|low` 与 `exposure=live_app,api,admin`（可重复或逗号分隔）：只保留至少一条组件-资产关系（`url_components` 或 `asset_components`）满足置信度下限、且命中资产暴露状态落在所选集合的组件；`url_count` / `asset_count` / `vendor_count` 与列表用同一关系口径。未传这两个参数时行为不变。
+- `GET /api/components`（以及 `/api/components/values`、MCP `search_components`）新增 `min_confidence=high|medium|low` 与 `exposure`（可重复或逗号分隔，T63 起接受 9 个值：`live_app` / `login_only` / `api` / `admin` / `placeholder` / `waf` / `error_page` / `static_only` / `unknown`）：只保留至少一条组件-资产关系（`url_components` 或 `asset_components`）满足置信度下限、且命中资产暴露状态落在所选集合的组件；`url_count` / `asset_count` / `vendor_count` 与列表用同一关系口径。未传这两个参数时行为不变。
 - 仍不写 IP：组件关系只带 host、端口、URL 与证据，不落库、不进 API/MCP/前端；`confidence` 由岸线规则推断，LLM 不改写。
 
 ## 证据与置信度 / exposure-auth（T61/T62）
@@ -446,10 +446,58 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 
 - Web 证据（`url_components.evidence`）为 `{type,value,snippet}`：`type` 取 `path` / `header` / `meta` / `title` / `js` / `favicon` / `status` / `llm`（服务组件为 `banner`）。判定顺序：非 Server 响应头 > `<meta name="generator">` > `<script src>` 包名 > 资源 path（link/a/img/form 等的 href/src/action/data）> 标题 > 正文 > 仅 Server 头。
 - 置信度：明确 path / 非 Server 响应头 / meta generator / JS 包名 / favicon hash = `high`；标题、正文结构、内联脚本结构匹配 = `medium`；仅 Server 头、LLM 推断、找不到来源 = `low`。找不到来源时不编造证据，evidence 记 `{}`。
-- `matched_url` 写该 URL（`scheme://host:port`），服务组件为空；`candidate_repo` 暂空（T63 填）。
+- `matched_url` 写该 URL（`scheme://host:port`），服务组件为空；`candidate_repo` 由 T63 的组件名映射写入（见下节）。
 - title/header 规则（`identifyRules`）同样写证据：标题记 `title`/`medium`，`Server` 头记 `header`/`low`，其它响应头记 `header`/`high`；wappalyzer 已有关联时保留其证据、置信度与 `matched_url`。无响应证据的兼容入口 `syncURLComponents`（测试/历史路径）仍写 `{"tech": ...}` 与 `low`。
 - LLM 候选写 `type=llm`、`confidence=low`，保留 `reason` / `github_repo` 供 AI 关联提示。
-- 服务组件：`asset_components.confidence` 取 YAML 规则的 `confidence`（未声明记 `low`），`candidate_repo` 取规则的 `repo`（未声明为空），`evidence` 保留 `host` / `port` / `banner` / `response_kind` / `confidence` 并加 `type: "banner"`；`matched_url` 为空。
+- 服务组件：`asset_components.confidence` 取 YAML 规则的 `confidence`（未声明记 `low`），`candidate_repo` 优先取规则的 `repo`、未声明时退回 T63 的组件名映射，`evidence` 保留 `host` / `port` / `banner` / `response_kind` / `confidence` 并加 `type: "banner"`；`matched_url` 为空。
 - `exposure_state`（按顺序判定）：WAF challenge/人机校验（含 Cloudflare 头 + 401/403/429/503、拦截词）→ `waf`；登录表单（含密码框）或登录标题 → `login_only`；401 与跳转登录 → 保持 `unknown`；404/500/502/503/504 → `error_page`；200 时 JSON → `api`、默认页/停放页 → `placeholder`、后台标题 → `admin`、目录列表/二进制/非 HTML 文本 → `static_only`、其余 HTML → `live_app`；其它状态码与空响应 → `unknown`。
 - `auth_state`：登录表单/登录标题、401、302 到登录 → `login_required`；200 业务 JSON → `anonymous`；其余 `unknown`。
 - 写库用 `UPDATE assets SET exposure_state/auth_state`；`unknown` 表示本次判不出来，不覆盖已有结论。服务/非 Web 资产保持 `unknown`，只用内存里的状态码/标题/响应头/正文判定，不落正文、不写 IP。
+
+## 候选 repo、AI 写回与前端（T63）
+
+**组件名 → 候选仓库映射**（`backend/component_repos.go`，`componentCandidateRepo`）：按组件名归一（小写、去感叹号、压缩空白）查表，命中写 `url_components.candidate_repo` / `asset_components.candidate_repo`，未命中记空串（不猜、不联网）。映射只做候选提示，**不写 `components.github_repo`**（那是确认仓库）。
+
+| 组件名 / 别名 | 候选仓库 |
+|---|---|
+| Apache Superset、Superset | `apache/superset` |
+| Jenkins | `jenkinsci/jenkins` |
+| WordPress | `WordPress/WordPress` |
+| Discuz! X、Discuz! | `Discuz/DiscuzX` |
+| GitLab | `gitlabhq/gitlabhq` |
+| Gitea | `go-gitea/gitea` |
+| Nginx | `nginx/nginx` |
+| Apache HTTP Server、httpd | `apache/httpd` |
+| PHP | `php/php-src` |
+| MySQL | `mysql/mysql-server` |
+| Redis | `redis/redis` |
+| MongoDB、Mongo | `mongodb/mongo` |
+| Elasticsearch | `elastic/elasticsearch` |
+| Kafka、Apache Kafka | `apache/kafka` |
+| RabbitMQ | `rabbitmq/rabbitmq-server` |
+| Memcached | `memcached/memcached` |
+| Nacos | `alibaba/nacos` |
+| etcd | `etcd-io/etcd` |
+| Tomcat、Apache Tomcat | `apache/tomcat` |
+| Spring Boot | `spring-projects/spring-boot` |
+
+- 写入点：Web wappalyzer（`syncURLComponentsEvidence`）与 title/header 规则（`syncIdentifyComponentsEvidence`）都写 `url_components.candidate_repo`；服务（`syncAssetServicesToComponents`）写 `asset_components.candidate_repo`。
+- 已有值不覆盖：关系上 `candidate_repo` 非空时，后续识别不再改写（人工/AI 填的候选保留）。服务例外仍按 T54：YAML 声明的 `repo` 优先，未声明时才用映射，映射不覆盖已有值。
+- 8 字段 API 的 `component_candidate_repo` 仍是关系值优先、为空再回退 `components.github_repo`（T60 口径不变）。
+
+**AI 写回 `POST /api/components/ai-review`**（鉴权同其它 `/api` 的 Bearer；MCP 工具 `ai_review_component` 同逻辑）
+
+- 入参：`component_id`（必填）、`asset_id`（可选）、`repo`（`owner/repo`，空串表示不改仓库）、`repo_confidence`（`high`/`medium`/`low`）、`audit_priority`（`P0`/`P1`/`P2`/`P3`）、`reason`（≤2000 字符）。
+- 校验：`component_id` 不存在 → 404；`asset_id` 不存在 → 404；`repo` 非 `owner/repo`、枚举非法、`reason` 超长 → 400。
+- 写：`repo` 非空时更新 `components.github_repo`；`repo_confidence` 非空时更新；条目写入 `components.ai_review`（jsonb）。
+- `ai_review` 结构：`{"by_asset": {"<asset_id>": {...}}}`，未给 `asset_id` 时键为 `"component"`；条目保存 `asset_id` / `repo` / `repo_confidence` / `audit_priority` / `reason` / `updated_at`（RFC3339），顶层另有 `updated_at`。
+- **幂等**：同一 `component + asset` 重复提交**覆盖该条**（键固定，内容以最后一次为准，只有 `updated_at` 前移），不会堆出多条；不同资产或组件级各占一条，互不影响。
+- 仓库真变了才清空 `stars` / `advisory_count` / `enrich_error` / `enriched_at`，避免旧仓库的富集结果挂在新仓库上；本接口不联网富集，需要时再用 `PATCH /api/components/{id}`。
+- 响应：更新后的组件行（`id`、`name`、`github_repo`、`repo_confidence`、`ai_review`、`stars`、`advisory_count`、`updated_at`）。
+
+**组件页前端（`frontend/src/pages/Components.jsx`）**
+
+- 列表筛选新增 `min_confidence`（high/medium/low，空=不筛）与 `exposure`（多选，9 个值）；与 T60 口径一致，计数随筛选收窄。
+- 展开行展示该组件前 5 条组件-资产关系的可信度、暴露、认证、候选仓库、版本线索、采集时间（避免主表硬挤列）。
+- 详情抽屉的资产表展示 8 字段：子域、厂商、URL、匹配 URL、暴露、认证、可信度、候选仓库、版本线索、采集时间、证据；证据默认只给 `type / value`，点「展开证据」看 `snippet`。
+- 页面不渲染 IP：关系行与证据都只有 host / 端口 / URL。

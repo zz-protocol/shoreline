@@ -128,6 +128,7 @@ func (a *api) routes() map[string]http.HandlerFunc {
 		"PATCH /api/components/{id}":                a.updateComponent,
 		"GET /api/components/{id}/assets":           a.listComponentAssets,
 		"GET /api/components/{id}/values":           a.componentValues,
+		"POST /api/components/ai-review":            a.aiReviewComponent,
 		"GET /api/common-components":                a.listCommonComponents,
 		"POST /api/common-components":               a.createCommonComponent,
 		"PATCH /api/common-components/{id}":         a.updateCommonComponent,

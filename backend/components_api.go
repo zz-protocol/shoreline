@@ -216,7 +216,7 @@ func optScoreQuery(w http.ResponseWriter, r *http.Request, name string) (*int, b
 	return &n, true
 }
 
-// exposureQuery 解析 exposure 筛选：可重复参数或逗号分隔，只认 live_app / api / admin，去重保序。
+// exposureQuery 解析 exposure 筛选：可重复参数或逗号分隔，接受 exposureStates 全集（T63 扩到 9 值），去重保序。
 func exposureQuery(w http.ResponseWriter, r *http.Request, name string) ([]string, bool) {
 	var out []string
 	seen := map[string]bool{}
@@ -226,10 +226,8 @@ func exposureQuery(w http.ResponseWriter, r *http.Request, name string) ([]strin
 			if v == "" {
 				continue
 			}
-			switch v {
-			case "live_app", "api", "admin":
-			default:
-				writeErr(w, 400, name+" must be live_app, api, admin")
+			if !validExposureState(v) {
+				writeErr(w, 400, name+" must be one of "+strings.Join(exposureStates, ", "))
 				return nil, false
 			}
 			if !seen[v] {

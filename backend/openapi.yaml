@@ -152,6 +152,16 @@ components:
         name: {type: string}
         created_at: {type: string, format: date-time}
         last_used_at: {type: string, format: date-time, nullable: true}
+    AIReviewInput:
+      type: object
+      required: [component_id]
+      properties:
+        component_id: {type: integer, description: "组件 id（GET /api/components 的 id）"}
+        asset_id: {type: integer, nullable: true, description: "可选：本次研判针对的资产 id；同 component+asset 重复提交覆盖该条"}
+        repo: {type: string, description: "owner/repo；空字符串表示不改 components.github_repo"}
+        repo_confidence: {type: string, enum: [high, medium, low], description: "仓库置信度；空表示不改"}
+        audit_priority: {type: string, enum: [P0, P1, P2, P3], description: "审计优先级；空表示不写"}
+        reason: {type: string, description: "研判理由，最多 2000 字符"}
   responses:
     Error:
       description: "错误"
@@ -503,7 +513,7 @@ paths:
         - {name: max_advisories, in: query, schema: {type: integer, minimum: 0}, description: "最多公开披露数（上限；仅已有计数的组件）"}
         - {name: min_score, in: query, schema: {type: integer, minimum: 0, maximum: 100}, description: "研究价值最低分（0–100，含端点）；分数为全局口径，不随 vendor 或 include_* 切换变化"}
         - {name: min_confidence, in: query, schema: {type: string, enum: [high, medium, low]}, description: "只看至少一条组件-资产关系达到该置信度（high > medium > low）；计数与列表用同一关系口径"}
-        - {name: exposure, in: query, schema: {type: array, items: {type: string, enum: [live_app, api, admin]}}, style: form, explode: true, description: "只看至少一条命中资产处于该暴露状态（多值并集，也可逗号分隔）"}
+        - {name: exposure, in: query, schema: {type: array, items: {type: string, enum: [live_app, login_only, api, admin, placeholder, waf, error_page, static_only, unknown]}}, style: form, explode: true, description: "只看至少一条命中资产处于该暴露状态（多值并集，也可逗号分隔）"}
         - {name: missing_repo, in: query, schema: {type: boolean, default: false}, description: "只看未关联 GitHub 仓库的组件"}
         - {name: include_all_categories, in: query, schema: {type: boolean, default: false}, description: "为 true 时展开全部类别；默认隐藏全部分类都落在低价值集合（JavaScript libraries、CDN、Analytics 等）的组件，空分类或跨类仍显示"}
         - {name: category, in: query, schema: {type: array, items: {type: string}}, style: form, explode: true, description: "按 Wappalyzer 分类名精筛（多值并集）；指定后不再套用默认类别隐藏"}
@@ -526,12 +536,20 @@ paths:
         - {name: max_advisories, in: query, schema: {type: integer, minimum: 0}}
         - {name: min_score, in: query, schema: {type: integer, minimum: 0, maximum: 100}}
         - {name: min_confidence, in: query, schema: {type: string, enum: [high, medium, low]}}
-        - {name: exposure, in: query, schema: {type: array, items: {type: string, enum: [live_app, api, admin]}}, style: form, explode: true}
+        - {name: exposure, in: query, schema: {type: array, items: {type: string, enum: [live_app, login_only, api, admin, placeholder, waf, error_page, static_only, unknown]}}, style: form, explode: true}
         - {name: missing_repo, in: query, schema: {type: boolean, default: false}}
         - {name: include_all_categories, in: query, schema: {type: boolean, default: false}}
         - {name: category, in: query, schema: {type: array, items: {type: string}}, style: form, explode: true}
         - {name: field, in: query, schema: {type: string, enum: [name], default: name}, description: "只支持 name（组件名）"}
       responses: {"200": {description: "{field, items: string[], count, truncated}"}, "400": {$ref: "#/components/responses/Error"}}
+  /api/components/ai-review:
+    post:
+      summary: "AI 写回组件研判：确认仓库（owner/repo，空表示不改）、repo 置信度、审计优先级与理由；同一 component+asset 重复提交覆盖该条 ai_review 记录（更新 updated_at），不堆重复条目"
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AIReviewInput"}
+      responses: {"200": {description: "Component（id、name、github_repo、repo_confidence、ai_review、stars、advisory_count、updated_at）"}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
   /api/components/{id}:
     get:
       summary: "组件详情（计数口径与列表的 include_* 相同，不因常见而 404；含 research_score 与 research_score_parts）"

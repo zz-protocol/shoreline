@@ -128,6 +128,12 @@ func syncAssetServicesToComponents(ctx context.Context, q serviceScanQ, targets 
 		if repo != "" {
 			repoArg = repo
 		}
+		// T63：候选仓库优先用 YAML 声明的 repo，没有声明时退回组件名映射；都不写 components.github_repo。
+		candidate := repo
+		fromYAML := candidate != ""
+		if candidate == "" {
+			candidate = componentCandidateRepo(display)
+		}
 		var id int64
 		if err := q.QueryRow(ctx, `INSERT INTO components (name, name_key, source, confirmed, categories, github_repo)
 			VALUES ($1, $2, 'service', $3, $4, $5)
@@ -151,9 +157,12 @@ func syncAssetServicesToComponents(ctx context.Context, q serviceScanQ, targets 
 				version = CASE WHEN EXCLUDED.version <> '' THEN EXCLUDED.version ELSE asset_components.version END,
 				evidence = EXCLUDED.evidence,
 				confidence = EXCLUDED.confidence,
-				candidate_repo = CASE WHEN EXCLUDED.candidate_repo <> '' THEN EXCLUDED.candidate_repo ELSE asset_components.candidate_repo END,
+				candidate_repo = CASE
+					WHEN $8::bool AND EXCLUDED.candidate_repo <> '' THEN EXCLUDED.candidate_repo
+					WHEN COALESCE(asset_components.candidate_repo, '') = '' THEN EXCLUDED.candidate_repo
+					ELSE asset_components.candidate_repo END,
 				ignored_at = NULL`,
-			*r.assetID, id, r.port, r.ver, raw, confidence, repo); err != nil {
+			*r.assetID, id, r.port, r.ver, raw, confidence, candidate, fromYAML); err != nil {
 			return err
 		}
 	}

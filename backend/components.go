@@ -146,12 +146,14 @@ func syncURLComponentsEvidence(ctx context.Context, q dbq, urlID int64, tech []s
 		default:
 			raw = []byte("{}")
 		}
-		if _, err := q.Exec(ctx, `INSERT INTO url_components (url_id, component_id, version, source, evidence, confidence, matched_url)
-			VALUES ($1, $2, $3, 'wappalyzer', $4, $5, $6)
+		// T63：候选仓库由组件名映射生成；已有值不覆盖，确认仓库（components.github_repo）不在这里写。
+		if _, err := q.Exec(ctx, `INSERT INTO url_components (url_id, component_id, version, source, evidence, confidence, matched_url, candidate_repo)
+			VALUES ($1, $2, $3, 'wappalyzer', $4, $5, $6, $7)
 			ON CONFLICT (url_id, component_id) DO UPDATE SET version = EXCLUDED.version, evidence = EXCLUDED.evidence,
 				confidence = EXCLUDED.confidence,
-				matched_url = CASE WHEN EXCLUDED.matched_url <> '' THEN EXCLUDED.matched_url ELSE url_components.matched_url END`,
-			urlID, id, it.version, raw, confidence, matchedURL); err != nil {
+				matched_url = CASE WHEN EXCLUDED.matched_url <> '' THEN EXCLUDED.matched_url ELSE url_components.matched_url END,
+				candidate_repo = CASE WHEN COALESCE(url_components.candidate_repo, '') <> '' THEN url_components.candidate_repo ELSE EXCLUDED.candidate_repo END`,
+			urlID, id, it.version, raw, confidence, matchedURL, componentCandidateRepo(it.name)); err != nil {
 			return err
 		}
 		keep = append(keep, id)

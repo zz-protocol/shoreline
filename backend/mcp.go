@@ -89,7 +89,7 @@ type searchComponentsIn struct {
 	MaxAdvisories        *int     `json:"max_advisories,omitempty" jsonschema:"maximum public advisory count (omit for no cap)"`
 	MinScore             *int     `json:"min_score,omitempty" jsonschema:"minimum research score 0-100 (omit for no cap)"`
 	MinConfidence        string   `json:"min_confidence,omitempty" jsonschema:"high | medium | low; only components with at least one component-asset relation at this confidence or above"`
-	Exposure             []string `json:"exposure,omitempty" jsonschema:"live_app | api | admin; only components with at least one matched asset in these exposure states"`
+	Exposure             []string `json:"exposure,omitempty" jsonschema:"live_app | login_only | api | admin | placeholder | waf | error_page | static_only | unknown; only components with at least one matched asset in these exposure states"`
 	MissingRepo          bool     `json:"missing_repo,omitempty" jsonschema:"only components with no github_repo"`
 	Sort                 string   `json:"sort,omitempty" jsonschema:"empty (vendor_count desc), stars, advisories (both ascending, nulls first), or research (research_score desc)"`
 	IncludeAllCategories bool     `json:"include_all_categories,omitempty" jsonschema:"include low-value categories hidden by default (JavaScript libraries, CDN, Analytics, etc.)"`
@@ -159,10 +159,8 @@ func (in searchComponentsIn) filter() (componentFilter, error) {
 		if v == "" {
 			continue
 		}
-		switch v {
-		case "live_app", "api", "admin":
-		default:
-			return f, errf(400, "exposure must be live_app, api, admin")
+		if !validExposureState(v) {
+			return f, errf(400, "exposure must be one of %s", strings.Join(exposureStates, ", "))
 		}
 		f.Exposures = append(f.Exposures, v)
 	}
@@ -435,7 +433,7 @@ func (a *api) mcpServer() *mcp.Server {
 			}
 			return nil, mapOut{"updated": tag.RowsAffected(), "status": st}, nil
 		})
-	mcp.AddTool(s, &mcp.Tool{Name: "search_components", Description: "Search the open-source component inventory (same filters as GET /api/components). Defaults: exclude common components; exclude wildcard, customer-hosted, and inactive assets; hide components whose categories are all low-value (JavaScript libraries, CDN, Analytics, etc.). include_all_categories=true shows all; category filters by Wappalyzer category names. Sorted by vendor_count then asset_count descending, or by stars/advisories ascending, or research (research_score desc). Optional max_stars, max_advisories, min_score (0-100), missing_repo, min_confidence (high/medium/low), exposure (live_app/api/admin). min_confidence and exposure filter on component-asset relations (url_components + asset_components) and counts use the same relation scope. Items include research_score and research_score_parts (attack/source/advisory/usage, each 0-1)."},
+	mcp.AddTool(s, &mcp.Tool{Name: "search_components", Description: "Search the open-source component inventory (same filters as GET /api/components). Defaults: exclude common components; exclude wildcard, customer-hosted, and inactive assets; hide components whose categories are all low-value (JavaScript libraries, CDN, Analytics, etc.). include_all_categories=true shows all; category filters by Wappalyzer category names. Sorted by vendor_count then asset_count descending, or by stars/advisories ascending, or research (research_score desc). Optional max_stars, max_advisories, min_score (0-100), missing_repo, min_confidence (high/medium/low), exposure (live_app/login_only/api/admin/placeholder/waf/error_page/static_only/unknown). min_confidence and exposure filter on component-asset relations (url_components + asset_components) and counts use the same relation scope. Items include research_score and research_score_parts (attack/source/advisory/usage, each 0-1)."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in searchComponentsIn) (*mcp.CallToolResult, pageOut, error) {
 			f, err := in.filter()
 			if err != nil {
@@ -468,6 +466,14 @@ func (a *api) mcpServer() *mcp.Server {
 				return toolErr[pageOut](err)
 			}
 			return nil, pageOut{Items: list, NextCursor: next}, nil
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "ai_review_component", Description: "Write back AI judgment on a component (same as POST /api/components/ai-review). Fields: component_id (required), asset_id (optional), repo (owner/repo; empty keeps components.github_repo), repo_confidence (high|medium|low), audit_priority (P0|P1|P2|P3), reason (<=2000 chars). Stored in components.ai_review.by_asset keyed by asset_id (or \"component\" when asset_id is omitted), so resubmitting the same component+asset overwrites that entry and only updated_at moves (idempotent). Writing a different repo clears stars/advisory_count for re-enrichment; this tool never calls GitHub. Returns the updated component row."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in aiReviewIn) (*mcp.CallToolResult, mapOut, error) {
+			out, err := a.writeAIReview(ctx, in)
+			if err != nil {
+				return toolErr[mapOut](err)
+			}
+			return nil, mapOut(out), nil
 		})
 	return s
 }

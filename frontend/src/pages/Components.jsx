@@ -19,6 +19,60 @@ export const SHOWN_CATEGORY_EXAMPLES = [
 ]
 export const CATEGORY_FILTERS = [...SHOWN_CATEGORY_EXAMPLES, ...HIDDEN_CATEGORIES]
 
+// T63：暴露状态筛选项与中文标签（与后端 exposureStates / T62 判定一致）。
+export const EXPOSURE_STATES = [
+  'live_app', 'login_only', 'api', 'admin', 'placeholder', 'waf', 'error_page', 'static_only', 'unknown',
+]
+export const EXPOSURE_LABELS = {
+  live_app: '在线应用',
+  login_only: '登录页',
+  api: 'API',
+  admin: '后台',
+  placeholder: '默认/停放页',
+  waf: 'WAF/人机',
+  error_page: '错误页',
+  static_only: '静态文件',
+  unknown: '未判定',
+}
+export const CONFIDENCE_LABELS = { high: '高', medium: '中', low: '低' }
+export const AUTH_LABELS = { anonymous: '匿名', login_required: '需登录', unknown: '未判定' }
+
+// 一条组件-资产关系的稳定 key（Web 关系有 url_id，服务关系有端口）。
+const relationKey = (r) => `${r.id}-${r.url_id || 0}-${r.port ?? 'w'}`
+
+function captureTimeText(v) {
+  if (!v) return '—'
+  const d = new Date(v)
+  return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleString()
+}
+
+/** 证据可折叠：默认只显示 type/value，点开看 snippet。 */
+function EvidenceCell({ evidence }) {
+  const [open, setOpen] = useState(false)
+  const ev = evidence || {}
+  const type = ev.type || ''
+  const value = ev.value || ''
+  const snippet = ev.snippet || ''
+  if (!type && !value && !snippet) {
+    const rest = Object.entries(ev).filter(([k]) => !['type', 'value', 'snippet'].includes(k))
+    return <span>{rest.length ? rest.map(([k, v]) => `${k}=${v}`).join(' ') : '—'}</span>
+  }
+  return (
+    <span>
+      <Typography.Text>{type || '—'}{value ? ` / ${value}` : ''}</Typography.Text>
+      {(snippet || Object.keys(ev).length > 3) && (
+        <>
+          {' '}
+          <Button size="small" type="link" data-testid="evidence-toggle" onClick={() => setOpen(!open)}>
+            {open ? '收起证据' : '展开证据'}
+          </Button>
+          {open && <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: 12 }}>{snippet || JSON.stringify(ev)}</pre>}
+        </>
+      )}
+    </span>
+  )
+}
+
 // 研究价值分项（0–1）只做展示，不在前端算分。
 const RESEARCH_PART_LABELS = [
   ['attack', '攻击面'],
@@ -64,6 +118,9 @@ export default function Components() {
   const [includeAllCategories, setIncludeAllCategories] = useState(false)
   const [selectedCats, setSelectedCats] = useState([])
   const [minScore, setMinScore] = useState()
+  const [minConfidence, setMinConfidence] = useState('')
+  const [exposures, setExposures] = useState([])
+  const [expandedRows, setExpandedRows] = useState({})
 
   useEffect(() => {
     get('/api/vendors').then((d) => setVendors(d.items || [])).catch((e) => message.error(e.message))
@@ -85,6 +142,8 @@ export default function Components() {
     if (minScore != null && minScore !== '') p.set('min_score', String(minScore))
     if (missingRepo) p.set('missing_repo', 'true')
     if (sort) p.set('sort', sort)
+    if (minConfidence) p.set('min_confidence', minConfidence)
+    exposures.forEach((e) => p.append('exposure', e))
     p.set('include_all_categories', String(!!includeAllCategories))
     selectedCats.forEach((c) => p.append('category', c))
     return p
@@ -115,7 +174,26 @@ export default function Components() {
       setLoading(false)
     }
   }
-  useEffect(() => { load() }, [excludeCommon, wild, hosted, dead, minAssets, minVendors, maxStars, maxAdvisories, minScore, missingRepo, sort, includeAllCategories, selectedCats])
+  useEffect(() => { load() }, [excludeCommon, wild, hosted, dead, minAssets, minVendors, maxStars, maxAdvisories, minScore, minConfidence, exposures, missingRepo, sort, includeAllCategories, selectedCats])
+
+  // 展开行：按组件取前几条组件-资产关系，展示可信度/暴露/认证/候选仓库/版本线索/采集时间。
+  const loadExpanded = async (row) => {
+    if (expandedRows[row.id]) return
+    setExpandedRows((m) => ({ ...m, [row.id]: { loading: true, items: [] } }))
+    try {
+      const p = new URLSearchParams({
+        include_wildcard: String(!!wild),
+        include_customer_hosted: String(!!hosted),
+        include_dead: String(!!dead),
+        limit: '5',
+      })
+      const d = await get(`/api/components/${row.id}/assets?${p}`)
+      setExpandedRows((m) => ({ ...m, [row.id]: { loading: false, items: d.items || [] } }))
+    } catch (e) {
+      setExpandedRows((m) => ({ ...m, [row.id]: { loading: false, items: [] } }))
+      message.error(e.message)
+    }
+  }
 
   const loadAssets = async (comp, next, vendorId = vendor) => {
     setAssetLoading(true)
@@ -243,6 +321,12 @@ export default function Components() {
         <span>
           未关联仓库 <Switch checked={missingRepo} onChange={setMissingRepo} data-testid="missing-repo" />
         </span>
+        <select data-testid="min-confidence" value={minConfidence} onChange={(e) => setMinConfidence(e.target.value)} style={{ height: 32 }}>
+          <option value="">全部置信度</option>
+          <option value="high">high（高）</option>
+          <option value="medium">medium（中）</option>
+          <option value="low">low（低）</option>
+        </select>
         <select data-testid="comp-sort" value={sort} onChange={(e) => setSort(e.target.value)} style={{ height: 32 }}>
           <option value="">默认排序（厂商数）</option>
           <option value="stars">Star 升序</option>
@@ -267,9 +351,24 @@ export default function Components() {
           </label>
         ))}
       </Space>
+      <Space wrap data-testid="exposure-filters">
+        {EXPOSURE_STATES.map((v) => (
+          <label key={v} style={{ marginRight: 8 }}>
+            <input
+              type="checkbox"
+              checked={exposures.includes(v)}
+              data-testid={`exposure-${v}`}
+              onChange={(e) => {
+                setExposures(e.target.checked ? [...exposures, v] : exposures.filter((x) => x !== v))
+              }}
+            /> {EXPOSURE_LABELS[v] || v}
+          </label>
+        ))}
+      </Space>
       <Typography.Text type="secondary">{HELP.components}</Typography.Text>
       <Typography.Text type="secondary" data-testid="advisory-note">{HELP.advisories}</Typography.Text>
       <Typography.Text type="secondary">「复制本列」覆盖当前筛选条件下的全部组件名（非仅本页），一行一个、去重排序；HTTP 下自动回退，失败可手动复制。</Typography.Text>
+      <Typography.Text type="secondary" data-testid="relation-hint">展开行按组件列出前几条组件-资产关系（可信度、暴露、认证、候选仓库、版本线索、采集时间）；点组件名进详情可看全部 8 字段与可折叠证据。</Typography.Text>
       {llmConfigured === false && (
         <Typography.Text type="warning" data-testid="llm-unconfigured">{HELP.llmCandidates}</Typography.Text>
       )}
@@ -306,6 +405,31 @@ export default function Components() {
         dataSource={items}
         pagination={false}
         onRow={(row) => ({ onClick: () => openDetail(row), style: { cursor: 'pointer' }, 'data-testid': `comp-row-${row.id}` })}
+        expandable={{
+          onExpand: (expanded, row) => { if (expanded) loadExpanded(row) },
+          expandedRowRender: (row) => {
+            const st = expandedRows[row.id] || {}
+            return (
+              <Table
+                rowKey={relationKey}
+                size="small"
+                pagination={false}
+                loading={!!st.loading}
+                dataSource={st.items || []}
+                locale={{ emptyText: '该组件在当前筛选下没有关联资产' }}
+                columns={[
+                  { title: '子域', dataIndex: 'subdomain' },
+                  { title: '可信度', dataIndex: 'component_confidence', width: 90, render: (v) => CONFIDENCE_LABELS[v] || v || '—' },
+                  { title: '暴露', dataIndex: 'exposure_state', width: 110, render: (v) => EXPOSURE_LABELS[v] || v || '—' },
+                  { title: '认证', dataIndex: 'auth_state', width: 100, render: (v) => AUTH_LABELS[v] || v || '—' },
+                  { title: '候选仓库', dataIndex: 'component_candidate_repo', width: 170, render: (v) => v || '—' },
+                  { title: '版本线索', dataIndex: 'version_hint', width: 100, render: (v) => v || '—' },
+                  { title: '采集时间', dataIndex: 'capture_time', width: 170, render: captureTimeText },
+                ]}
+              />
+            )
+          },
+        }}
         locale={{ emptyText: <Guide title="没有组件" steps={['先完成 http 扫描，或升级后从已有技术栈回填', '默认会排除常见组件，并隐藏纯前端等低价值类别；可关闭「排除常见」或打开「显示全部类别」']} /> }}
         columns={[
           { title: (
@@ -346,7 +470,7 @@ export default function Components() {
       />
       {cursor && <Button onClick={() => load(cursor)} data-testid="comp-more">加载更多</Button>}
 
-      <Drawer title={detail ? detail.name : ''} open={!!detail} width={720} onClose={() => setDetail(null)} destroyOnClose>
+      <Drawer title={detail ? detail.name : ''} open={!!detail} width={1000} onClose={() => setDetail(null)} destroyOnClose>
         {detail && (
           <Space direction="vertical" style={{ width: '100%' }} size="middle">
             <Space wrap>
@@ -365,18 +489,29 @@ export default function Components() {
             </Space>
             {detail.enrich_error && <Typography.Text type="danger" data-testid="enrich-error">富集失败：{detail.enrich_error}</Typography.Text>}
             <Typography.Text type="secondary">复制覆盖当前筛选下的全部结果（非仅本页），一行一个、去重；HTTP 下自动回退，失败可手动复制。</Typography.Text>
-            <Table
-              rowKey="id"
-              loading={assetLoading}
-              dataSource={assets}
-              pagination={false}
-              size="small"
-              columns={[
-                { title: '子域', dataIndex: 'subdomain' },
-                { title: '厂商', dataIndex: 'vendor', width: 140 },
-                { title: 'URL', dataIndex: 'urls', render: (us) => <span style={{ whiteSpace: 'pre-wrap' }}>{(us || []).map((u) => u.url).join('\n')}</span> },
-              ]}
-            />
+            <div data-testid="comp-asset-table">
+              <Table
+                rowKey={relationKey}
+                loading={assetLoading}
+                dataSource={assets}
+                pagination={false}
+                size="small"
+                scroll={{ x: 1200 }}
+                columns={[
+                  { title: '子域', dataIndex: 'subdomain' },
+                  { title: '厂商', dataIndex: 'vendor', width: 120 },
+                  { title: 'URL', dataIndex: 'urls', width: 220, render: (us) => <span style={{ whiteSpace: 'pre-wrap' }}>{(us || []).map((u) => u.url).join('\n') || '—'}</span> },
+                  { title: '匹配 URL', dataIndex: 'matched_url', width: 220, render: (v) => v || '—' },
+                  { title: '暴露', dataIndex: 'exposure_state', width: 110, render: (v) => EXPOSURE_LABELS[v] || v || '—' },
+                  { title: '认证', dataIndex: 'auth_state', width: 100, render: (v) => AUTH_LABELS[v] || v || '—' },
+                  { title: '可信度', dataIndex: 'component_confidence', width: 90, render: (v) => CONFIDENCE_LABELS[v] || v || '—' },
+                  { title: '候选仓库', dataIndex: 'component_candidate_repo', width: 170, render: (v) => v || '—' },
+                  { title: '版本线索', dataIndex: 'version_hint', width: 100, render: (v) => v || '—' },
+                  { title: '采集时间', dataIndex: 'capture_time', width: 170, render: captureTimeText },
+                  { title: '证据', dataIndex: 'component_evidence', width: 240, render: (ev) => <EvidenceCell evidence={ev} /> },
+                ]}
+              />
+            </div>
             {assetCursor && <Button onClick={() => loadAssets(detail, assetCursor)} data-testid="comp-assets-more">加载更多</Button>}
           </Space>
         )}
