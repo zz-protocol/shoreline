@@ -502,6 +502,8 @@ paths:
         - {name: max_stars, in: query, schema: {type: integer, minimum: 0}, description: "最多 star（上限；仅已有 star 的组件）"}
         - {name: max_advisories, in: query, schema: {type: integer, minimum: 0}, description: "最多公开披露数（上限；仅已有计数的组件）"}
         - {name: min_score, in: query, schema: {type: integer, minimum: 0, maximum: 100}, description: "研究价值最低分（0–100，含端点）；分数为全局口径，不随 vendor 或 include_* 切换变化"}
+        - {name: min_confidence, in: query, schema: {type: string, enum: [high, medium, low]}, description: "只看至少一条组件-资产关系达到该置信度（high > medium > low）；计数与列表用同一关系口径"}
+        - {name: exposure, in: query, schema: {type: array, items: {type: string, enum: [live_app, api, admin]}}, style: form, explode: true, description: "只看至少一条命中资产处于该暴露状态（多值并集，也可逗号分隔）"}
         - {name: missing_repo, in: query, schema: {type: boolean, default: false}, description: "只看未关联 GitHub 仓库的组件"}
         - {name: include_all_categories, in: query, schema: {type: boolean, default: false}, description: "为 true 时展开全部类别；默认隐藏全部分类都落在低价值集合（JavaScript libraries、CDN、Analytics 等）的组件，空分类或跨类仍显示"}
         - {name: category, in: query, schema: {type: array, items: {type: string}}, style: form, explode: true, description: "按 Wappalyzer 分类名精筛（多值并集）；指定后不再套用默认类别隐藏"}
@@ -523,6 +525,8 @@ paths:
         - {name: max_stars, in: query, schema: {type: integer, minimum: 0}}
         - {name: max_advisories, in: query, schema: {type: integer, minimum: 0}}
         - {name: min_score, in: query, schema: {type: integer, minimum: 0, maximum: 100}}
+        - {name: min_confidence, in: query, schema: {type: string, enum: [high, medium, low]}}
+        - {name: exposure, in: query, schema: {type: array, items: {type: string, enum: [live_app, api, admin]}}, style: form, explode: true}
         - {name: missing_repo, in: query, schema: {type: boolean, default: false}}
         - {name: include_all_categories, in: query, schema: {type: boolean, default: false}}
         - {name: category, in: query, schema: {type: array, items: {type: string}}, style: form, explode: true}
@@ -551,7 +555,7 @@ paths:
       responses: {"200": {description: "Component"}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
   /api/components/{id}/assets:
     get:
-      summary: "组件关联资产与 URL（分页）；可按厂商筛选；统计口径同 include_*"
+      summary: "组件-资产关系与 URL（分页，一条关系一项）；每条关系带 T60 的 8 字段；可按厂商筛选；统计口径同 include_*"
       parameters:
         - {$ref: "#/components/parameters/id"}
         - {name: vendor, in: query, schema: {type: integer}}
@@ -560,7 +564,7 @@ paths:
         - {name: include_dead, in: query, schema: {type: boolean, default: false}}
         - {$ref: "#/components/parameters/limit"}
         - {$ref: "#/components/parameters/cursor"}
-      responses: {"200": {description: "{items: [{id, subdomain, vendor_id, vendor, alive, urls: [{id, url, title, version, source}]}], next_cursor}"}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: "{items: [组件-资产关系：id、subdomain、vendor、url、title、version、source、port、urls，以及 component_evidence、component_confidence、matched_url、version_hint、exposure_state、auth_state、component_candidate_repo、capture_time（RFC3339）；服务组件 matched_url 为空], next_cursor}"}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
   /api/components/{id}/values:
     get:
       summary: "复制本组件资产主机名或 URL：当前筛选下全部结果，去重排序（上限 100000）"

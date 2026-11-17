@@ -431,3 +431,11 @@ curl -s http://127.0.0.1:8080/mcp -H "Authorization: Bearer $TOKEN" \
 - 统计口径：按原因统计资产数用 `count(DISTINCT asset_id)`，不要用行数（行数会被多轮任务与历史重复放大）。
 - 拨号前 CDN 复判：`resolverFromDNS` 保留解析链 CNAME；`prepareServiceDialIPs` 用既有 CDN 判定（CNAME 后缀 / cdncheck 段 / 静态库）复核本次解析结果，命中即记 `cdn_fronted` 并跳过。`cdn_fronted` 为 NULL（未判定）仍由 T50 门控跳过，不进入拨号准备；不改 T49/T50 门控顺序。
 - 仍不写 IP：解析地址只在内存参与 CDN 匹配与拨号，不落库、不进响应/日志；跳过记录只有 host 与原因。
+
+## 组件-资产 8 字段（T60）
+
+迁移 `037_component_asset_fields.sql`（可重跑）给 `assets` 加 `exposure_state` / `auth_state`（默认 `unknown`，建 `assets_exposure_state_idx`），给 `url_components` / `asset_components` 加 `confidence`（默认 `low`）、`matched_url`、`candidate_repo`（默认空串，各建 confidence 索引），给 `components` 加 `repo_confidence`（默认 `low`）与 `ai_review`（jsonb，默认 `{}`）。历史行只由默认值回填，**不伪造证据**；evidence/confidence/exposure 的写入在 T61/T62。
+
+- `GET /api/components/{id}/assets` 改为一条组件-资产关系一项：保留 `id`、`subdomain`、`vendor`、`url`、`title`、`version`、`source`、`port`、`urls`，并返回 8 字段 `component_evidence`（evidence jsonb 原样）、`component_confidence`、`matched_url`（Web 关系取具体 URL；服务关系为空）、`version_hint`、`exposure_state`、`auth_state`、`component_candidate_repo`（关系上 `candidate_repo` 为空时回退 `components.github_repo`）、`capture_time`（`created_at`，RFC3339）。分页仍按资产计，`next_cursor` 传下一页；MCP `list_component_assets` 与 REST 同口径。
+- `GET /api/components`（以及 `/api/components/values`、MCP `search_components`）新增 `min_confidence=high|medium|low` 与 `exposure=live_app,api,admin`（可重复或逗号分隔）：只保留至少一条组件-资产关系（`url_components` 或 `asset_components`）满足置信度下限、且命中资产暴露状态落在所选集合的组件；`url_count` / `asset_count` / `vendor_count` 与列表用同一关系口径。未传这两个参数时行为不变。
+- 仍不写 IP：组件关系只带 host、端口、URL 与证据，不落库、不进 API/MCP/前端；`confidence` 由岸线规则推断，LLM 不改写。

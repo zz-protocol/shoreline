@@ -24,7 +24,9 @@ type componentFilter struct {
 	Vendor               *int64
 	MaxStars             *int
 	MaxAdvisories        *int
-	MinScore             *int // 研究价值最低分（0–100）
+	MinScore             *int     // 研究价值最低分（0–100）
+	MinConfidence        string   // T60：high/medium/low，按组件-资产关系置信度过滤
+	Exposures            []string // T60：live_app/api/admin，按资产暴露状态过滤
 	MissingRepo          bool
 	Sort                 string // "", "stars", "advisories", "research"
 	IncludeAllCategories bool
@@ -57,12 +59,33 @@ const scopedAssetSQL = `FROM asset_components ac
 	  AND ($4::bigint IS NULL OR r.vendor_id = $4)
 	  AND ac.ignored_at IS NULL`
 
+// relationFilterSQL：T60 关系级筛选（$6 置信度下限、$7 暴露状态），只拼在组件列表统计的分支上，
+// 研究价值评分（researchScoreRowsSQL）仍用基础口径。conf 为分支的 confidence 列。
+func relationFilterSQL(conf string) string {
+	return `
+	  AND ($6::int = 0 OR CASE ` + conf + ` WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END >= $6)
+	  AND (COALESCE(cardinality($7::text[]), 0) = 0 OR a.exposure_state = ANY($7))`
+}
+
 const commonExistsSQL = `EXISTS (
 	SELECT 1 FROM common_component_names n
 	WHERE n.deleted_at IS NULL AND n.enabled AND n.name_key = c.name_key)`
 
 func (f componentFilter) scopeArgs() []any {
 	return []any{f.IncludeWild, f.IncludeHosted, f.IncludeDead, f.Vendor}
+}
+
+// minConfidenceRank：high=3、medium=2、low=1；空为 0（不过滤）。
+func (f componentFilter) minConfidenceRank() int {
+	switch f.MinConfidence {
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	}
+	return 0
 }
 
 func componentFilterFromQuery(w http.ResponseWriter, r *http.Request, withListExtras bool) (componentFilter, bool) {
@@ -108,6 +131,17 @@ func componentFilterFromQuery(w http.ResponseWriter, r *http.Request, withListEx
 			return componentFilter{}, false
 		}
 		if f.MinScore, okS = optScoreQuery(w, r, "min_score"); !okS {
+			return componentFilter{}, false
+		}
+		switch mc := strings.TrimSpace(r.URL.Query().Get("min_confidence")); mc {
+		case "", "high", "medium", "low":
+			f.MinConfidence = mc
+		default:
+			writeErr(w, 400, "min_confidence must be high, medium, or low")
+			return componentFilter{}, false
+		}
+		var okE bool
+		if f.Exposures, okE = exposureQuery(w, r, "exposure"); !okE {
 			return componentFilter{}, false
 		}
 		miss, okM := boolParam(w, r, "missing_repo")
@@ -182,7 +216,32 @@ func optScoreQuery(w http.ResponseWriter, r *http.Request, name string) (*int, b
 	return &n, true
 }
 
-const componentCountSQL = `SELECT c.id, c.name, c.source, c.confirmed, c.github_repo, c.stars, c.advisory_count, c.enrich_error, c.enriched_at, c.categories,
+// exposureQuery 解析 exposure 筛选：可重复参数或逗号分隔，只认 live_app / api / admin，去重保序。
+func exposureQuery(w http.ResponseWriter, r *http.Request, name string) ([]string, bool) {
+	var out []string
+	seen := map[string]bool{}
+	for _, raw := range r.URL.Query()[name] {
+		for _, v := range strings.Split(raw, ",") {
+			v = strings.TrimSpace(v)
+			if v == "" {
+				continue
+			}
+			switch v {
+			case "live_app", "api", "admin":
+			default:
+				writeErr(w, 400, name+" must be live_app, api, admin")
+				return nil, false
+			}
+			if !seen[v] {
+				seen[v] = true
+				out = append(out, v)
+			}
+		}
+	}
+	return out, true
+}
+
+var componentCountSQL = `SELECT c.id, c.name, c.source, c.confirmed, c.github_repo, c.stars, c.advisory_count, c.enrich_error, c.enriched_at, c.categories,
 	c.research_score::float8 AS research_score, c.research_score_parts, ` + commonExistsSQL + ` AS is_common,
 	count(DISTINCT s.url_id)::bigint AS url_count,
 	count(DISTINCT s.asset_id)::bigint AS asset_count,
@@ -190,17 +249,17 @@ const componentCountSQL = `SELECT c.id, c.name, c.source, c.confirmed, c.github_
 FROM components c
 JOIN (
 	SELECT uc.component_id, u.id AS url_id, a.id AS asset_id, r.vendor_id
-	` + scopedURLSQL + `
+	` + scopedURLSQL + relationFilterSQL("uc.confidence") + `
 	UNION ALL
 	SELECT ac.component_id, NULL::bigint AS url_id, a.id AS asset_id, r.vendor_id
-	` + scopedAssetSQL + `
+	` + scopedAssetSQL + relationFilterSQL("ac.confidence") + `
 ) s ON s.component_id = c.id
 WHERE c.confirmed
   AND ($5::text = '' OR strpos(lower(c.name), $5) > 0)
 GROUP BY c.id`
 
 func (f componentFilter) countArgs() []any {
-	return append(f.scopeArgs(), strings.ToLower(strings.TrimSpace(f.Q)))
+	return append(f.scopeArgs(), strings.ToLower(strings.TrimSpace(f.Q)), f.minConfidenceRank(), f.Exposures)
 }
 
 func componentSortSQL(sort string) (order, cursorPred string) {
@@ -235,7 +294,7 @@ var componentListValuesMax = assetValuesMax
 
 // listFilterSQL：与 GET /api/components 相同的 having + 外层筛选（不含排序与分页）。
 func (f componentFilter) listFilterSQL() (having, filters string, args []any) {
-	having = `HAVING count(DISTINCT s.asset_id) >= $6 AND count(DISTINCT s.vendor_id) >= $7`
+	having = `HAVING count(DISTINCT s.asset_id) >= $8 AND count(DISTINCT s.vendor_id) >= $9`
 	if f.ExcludeCommon {
 		having += ` AND NOT (` + commonExistsSQL + `)`
 	}
@@ -395,7 +454,7 @@ SELECT c.id, c.name, c.source, c.confirmed, c.github_repo, c.stars, c.advisory_c
 	COALESCE(x.vendor_count, 0) AS vendor_count
 FROM components c
 LEFT JOIN counted x ON x.id = c.id
-WHERE c.id = $6`
+WHERE c.id = $8`
 	list, err := rowsJSON(a.db.Query(r.Context(), q, append(f.countArgs(), id)...))
 	if err != nil {
 		dbErr(w, err)
@@ -409,28 +468,75 @@ WHERE c.id = $6`
 	writeJSON(w, 200, list[0])
 }
 
-func (a *api) queryComponentAssets(ctx context.Context, id int64, f componentFilter) ([]map[string]any, error) {
+// componentAssetSQL：组件-资产关系明细（Web 取 url_components，服务取 asset_components）。
+// 每条关系都带 T60 的 8 字段；$1 组件 id、$2 资产 id 数组。服务关系 matched_url 为空。
+const componentAssetSQL = `SELECT u.asset_id AS id, a.subdomain, a.alive, a.wildcard, a.customer_hosted,
+	r.vendor_id, v.name AS vendor,
+	u.id AS url_id,
+	u.scheme || '://' || u.host || ':' || u.port::text AS url,
+	COALESCE(u.title, '') AS title,
+	uc.version AS version,
+	uc.source AS source,
+	NULL::int AS port,
+	uc.evidence AS component_evidence,
+	uc.confidence AS component_confidence,
+	COALESCE(NULLIF(uc.matched_url, ''), u.scheme || '://' || u.host || ':' || u.port::text) AS matched_url,
+	uc.version AS version_hint,
+	a.exposure_state, a.auth_state,
+	COALESCE(NULLIF(uc.candidate_repo, ''), c.github_repo, '') AS component_candidate_repo,
+	uc.created_at AS capture_time
+FROM url_components uc
+JOIN urls u ON u.id = uc.url_id
+JOIN assets a ON a.id = u.asset_id
+JOIN root_domains r ON r.id = a.root_id
+JOIN vendors v ON v.id = r.vendor_id
+JOIN components c ON c.id = uc.component_id
+WHERE uc.component_id = $1 AND u.asset_id = ANY($2)
+UNION ALL
+SELECT ac.asset_id AS id, a.subdomain, a.alive, a.wildcard, a.customer_hosted,
+	r.vendor_id, v.name AS vendor,
+	0::bigint AS url_id,
+	''::text AS url,
+	''::text AS title,
+	ac.version AS version,
+	ac.source AS source,
+	ac.port,
+	ac.evidence AS component_evidence,
+	ac.confidence AS component_confidence,
+	''::text AS matched_url,
+	ac.version AS version_hint,
+	a.exposure_state, a.auth_state,
+	COALESCE(NULLIF(ac.candidate_repo, ''), c.github_repo, '') AS component_candidate_repo,
+	ac.created_at AS capture_time
+FROM asset_components ac
+JOIN assets a ON a.id = ac.asset_id
+JOIN root_domains r ON r.id = a.root_id
+JOIN vendors v ON v.id = r.vendor_id
+JOIN components c ON c.id = ac.component_id
+WHERE ac.component_id = $1 AND ac.asset_id = ANY($2) AND ac.ignored_at IS NULL
+ORDER BY id DESC, url_id DESC, port DESC NULLS LAST`
+
+// queryComponentAssets 下钻组件-资产关系：仍按资产分页（cursor 为资产 id），返回的每条关系自带 8 字段。
+func (a *api) queryComponentAssets(ctx context.Context, id int64, f componentFilter) ([]map[string]any, any, error) {
 	if err := checkPage(f.Limit, f.Cursor); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if f.Vendor != nil {
 		if err := checkVendor(f.Vendor); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	var exists bool
 	if err := a.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM components WHERE id = $1)`, id).Scan(&exists); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !exists {
-		return nil, errf(404, "not found")
+		return nil, nil, errf(404, "not found")
 	}
 	args := append(f.scopeArgs(), id, f.Cursor, f.Limit+1)
-	assets, err := rowsJSON(a.db.Query(ctx, `SELECT a.id, a.subdomain, a.alive, a.wildcard, a.customer_hosted,
-		r.vendor_id, v.name AS vendor, a.id AS cursor_id
+	rows, err := a.db.Query(ctx, `SELECT a.id
 		FROM assets a
 		JOIN root_domains r ON r.id = a.root_id
-		JOIN vendors v ON v.id = r.vendor_id
 		WHERE a.id IN (
 			SELECT DISTINCT a2.id
 			FROM url_components uc
@@ -456,69 +562,48 @@ func (a *api) queryComponentAssets(ctx context.Context, id int64, f componentFil
 		)
 		  AND ($6::bigint = 0 OR a.id < $6)
 		ORDER BY a.id DESC
-		LIMIT $7`, args...))
+		LIMIT $7`, args...)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := attachComponentURLs(ctx, a, id, f, assets); err != nil {
-		return nil, err
-	}
-	return assets, nil
-}
-
-func attachComponentURLs(ctx context.Context, a *api, componentID int64, f componentFilter, assets []map[string]any) error {
-	if len(assets) == 0 {
-		return nil
-	}
-	ids := make([]int64, 0, len(assets))
-	idx := map[int64]int{}
-	for i, m := range assets {
-		id, _ := m["id"].(int64)
-		if id == 0 {
-			if v, ok := m["id"].(int32); ok {
-				id = int64(v)
-			}
-		}
-		ids = append(ids, id)
-		idx[id] = i
-		m["urls"] = []any{}
-	}
-	rows, err := a.db.Query(ctx, `SELECT u.asset_id, u.id, u.scheme || '://' || u.host || ':' || u.port::text AS url,
-		u.title, uc.version, uc.source
-		FROM url_components uc
-		JOIN urls u ON u.id = uc.url_id
-		WHERE uc.component_id = $1 AND u.asset_id = ANY($2)
-		ORDER BY u.asset_id, u.id`, componentID, ids)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	type ur struct {
-		assetID int64
-		row     map[string]any
-	}
-	var list []ur
+	ids := make([]int64, 0, f.Limit+1)
 	for rows.Next() {
-		var assetID, urlID int64
-		var url, title, version, source string
-		var titlePtr *string
-		if err := rows.Scan(&assetID, &urlID, &url, &titlePtr, &version, &source); err != nil {
-			return err
+		var aid int64
+		if err := rows.Scan(&aid); err != nil {
+			rows.Close()
+			return nil, nil, err
 		}
-		if titlePtr != nil {
-			title = *titlePtr
+		ids = append(ids, aid)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, nil, err
+	}
+	var next any
+	if len(ids) > f.Limit {
+		next = strconv.FormatInt(ids[f.Limit-1], 10)
+		ids = ids[:f.Limit]
+	}
+	out := []map[string]any{}
+	if len(ids) == 0 {
+		return out, next, nil
+	}
+	list, err := rowsJSON(a.db.Query(ctx, componentAssetSQL, id, ids))
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, m := range list {
+		// 兼容旧前端：保留 urls 数组（Web 关系一项，服务关系为空）。
+		urls := []any{}
+		if urlID, ok := m["url_id"].(int64); ok && urlID != 0 {
+			urls = append(urls, map[string]any{
+				"id": urlID, "url": m["url"], "title": m["title"], "version": m["version"], "source": m["source"],
+			})
 		}
-		list = append(list, ur{assetID, map[string]any{"id": urlID, "url": url, "title": title, "version": version, "source": source}})
+		m["urls"] = urls
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	for _, it := range list {
-		if i, ok := idx[it.assetID]; ok {
-			assets[i]["urls"] = append(assets[i]["urls"].([]any), it.row)
-		}
-	}
-	return nil
+	return list, next, nil
 }
 
 func (a *api) listComponentAssets(w http.ResponseWriter, r *http.Request) {
@@ -535,12 +620,11 @@ func (a *api) listComponentAssets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.Limit, f.Cursor = limit, cursor
-	list, err := a.queryComponentAssets(r.Context(), id, f)
+	list, next, err := a.queryComponentAssets(r.Context(), id, f)
 	if err != nil {
 		writeAnyErr(w, err)
 		return
 	}
-	list, next := cutPage(list, limit)
 	writeJSON(w, 200, map[string]any{"items": list, "next_cursor": next})
 }
 

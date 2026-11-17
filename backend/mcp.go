@@ -88,6 +88,8 @@ type searchComponentsIn struct {
 	MaxStars             *int     `json:"max_stars,omitempty" jsonschema:"maximum GitHub stars (omit for no cap; only rows with a known star count)"`
 	MaxAdvisories        *int     `json:"max_advisories,omitempty" jsonschema:"maximum public advisory count (omit for no cap)"`
 	MinScore             *int     `json:"min_score,omitempty" jsonschema:"minimum research score 0-100 (omit for no cap)"`
+	MinConfidence        string   `json:"min_confidence,omitempty" jsonschema:"high | medium | low; only components with at least one component-asset relation at this confidence or above"`
+	Exposure             []string `json:"exposure,omitempty" jsonschema:"live_app | api | admin; only components with at least one matched asset in these exposure states"`
 	MissingRepo          bool     `json:"missing_repo,omitempty" jsonschema:"only components with no github_repo"`
 	Sort                 string   `json:"sort,omitempty" jsonschema:"empty (vendor_count desc), stars, advisories (both ascending, nulls first), or research (research_score desc)"`
 	IncludeAllCategories bool     `json:"include_all_categories,omitempty" jsonschema:"include low-value categories hidden by default (JavaScript libraries, CDN, Analytics, etc.)"`
@@ -146,6 +148,24 @@ func (in searchComponentsIn) filter() (componentFilter, error) {
 	}
 	f.MissingRepo = in.MissingRepo
 	f.IncludeAllCategories = in.IncludeAllCategories
+	switch strings.TrimSpace(in.MinConfidence) {
+	case "", "high", "medium", "low":
+		f.MinConfidence = strings.TrimSpace(in.MinConfidence)
+	default:
+		return f, errf(400, "min_confidence must be high, medium, or low")
+	}
+	for _, v := range in.Exposure {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		switch v {
+		case "live_app", "api", "admin":
+		default:
+			return f, errf(400, "exposure must be live_app, api, admin")
+		}
+		f.Exposures = append(f.Exposures, v)
+	}
 	for _, v := range in.Category {
 		v = strings.TrimSpace(v)
 		if v == "" {
@@ -415,7 +435,7 @@ func (a *api) mcpServer() *mcp.Server {
 			}
 			return nil, mapOut{"updated": tag.RowsAffected(), "status": st}, nil
 		})
-	mcp.AddTool(s, &mcp.Tool{Name: "search_components", Description: "Search the open-source component inventory (same filters as GET /api/components). Defaults: exclude common components; exclude wildcard, customer-hosted, and inactive assets; hide components whose categories are all low-value (JavaScript libraries, CDN, Analytics, etc.). include_all_categories=true shows all; category filters by Wappalyzer category names. Sorted by vendor_count then asset_count descending, or by stars/advisories ascending, or research (research_score desc). Optional max_stars, max_advisories, min_score (0-100), missing_repo. Items include research_score and research_score_parts (attack/source/advisory/usage, each 0-1)."},
+	mcp.AddTool(s, &mcp.Tool{Name: "search_components", Description: "Search the open-source component inventory (same filters as GET /api/components). Defaults: exclude common components; exclude wildcard, customer-hosted, and inactive assets; hide components whose categories are all low-value (JavaScript libraries, CDN, Analytics, etc.). include_all_categories=true shows all; category filters by Wappalyzer category names. Sorted by vendor_count then asset_count descending, or by stars/advisories ascending, or research (research_score desc). Optional max_stars, max_advisories, min_score (0-100), missing_repo, min_confidence (high/medium/low), exposure (live_app/api/admin). min_confidence and exposure filter on component-asset relations (url_components + asset_components) and counts use the same relation scope. Items include research_score and research_score_parts (attack/source/advisory/usage, each 0-1)."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in searchComponentsIn) (*mcp.CallToolResult, pageOut, error) {
 			f, err := in.filter()
 			if err != nil {
@@ -433,7 +453,7 @@ func (a *api) mcpServer() *mcp.Server {
 			list, next := cutPage(list, limit)
 			return nil, pageOut{Items: list, NextCursor: next}, nil
 		})
-	mcp.AddTool(s, &mcp.Tool{Name: "list_component_assets", Description: "List assets and URLs linked to a component (same as GET /api/components/{id}/assets). Optional vendor filter. Same default exclusions as search_components (wildcard / customer-hosted / inactive)."},
+	mcp.AddTool(s, &mcp.Tool{Name: "list_component_assets", Description: "List component-asset relations linked to a component (same as GET /api/components/{id}/assets). Each item is one relation and carries the 8 T60 fields: component_evidence, component_confidence, matched_url, version_hint, exposure_state, auth_state, component_candidate_repo, capture_time; asset fields (subdomain, vendor, and the legacy urls array) are kept. matched_url is the concrete URL for Web relations and empty for service relations. Optional vendor filter. Same default exclusions as search_components (wildcard / customer-hosted / inactive)."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in listComponentAssetsIn) (*mcp.CallToolResult, pageOut, error) {
 			if in.ComponentID < 1 {
 				return toolErr[pageOut](errf(400, "component_id must be >= 1"))
@@ -443,11 +463,10 @@ func (a *api) mcpServer() *mcp.Server {
 				return toolErr[pageOut](err)
 			}
 			f := componentFilter{Vendor: in.Vendor, IncludeWild: in.IncludeWildcard, IncludeHosted: in.IncludeHosted, IncludeDead: in.IncludeDead, Limit: limit, Cursor: cursor}
-			list, err := a.queryComponentAssets(ctx, in.ComponentID, f)
+			list, next, err := a.queryComponentAssets(ctx, in.ComponentID, f)
 			if err != nil {
 				return toolErr[pageOut](err)
 			}
-			list, next := cutPage(list, limit)
 			return nil, pageOut{Items: list, NextCursor: next}, nil
 		})
 	return s
