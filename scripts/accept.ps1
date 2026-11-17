@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("T49", "T50", "T51", "T52", "T53", "T54", "T55", "T56", "T57", "T58", "T60", "All")]
+    [ValidateSet("T49", "T50", "T51", "T52", "T53", "T54", "T55", "T56", "T57", "T58", "T60", "T61", "T62", "All")]
     [string]$Task = "All",
     [int]$Count = 1,
     [switch]$SkipFrontend
@@ -285,6 +285,50 @@ function Invoke-T60 {
     }
 }
 
+function Invoke-T61 {
+    Write-Host "`nT61 证据与置信度" -ForegroundColor Cyan
+    Invoke-Check "T61" "实现与测试存在" {
+        Assert-Exists (Join-Path $backend "web_evidence.go") "web_evidence.go"
+        Assert-Exists (Join-Path $backend "t61_evidence_confidence_test.go") "T61 测试"
+    }
+    Invoke-Check "T61" "测试通过（T61）" { Invoke-GoTests "T61" }
+    Invoke-Check "T61" "证据类型与置信度映射" {
+        foreach ($t in @("evidencePath", "evidenceHeader", "evidenceMeta", "evidenceTitle", "evidenceJS", "evidenceLLM")) {
+            Assert-Text (Join-Path $backend "web_evidence.go") $t "缺少 $t"
+        }
+        Assert-Text (Join-Path $backend "web_evidence.go") "confidenceHigh" "缺少 high"
+    }
+    Invoke-Check "T61" "写 confidence/matched_url" {
+        Assert-Text (Join-Path $backend "components.go") "confidence" "组件同步未写 confidence"
+        Assert-Text (Join-Path $backend "components.go") "matched_url" "组件同步未写 matched_url"
+    }
+    Invoke-Check "T61" "服务证据保留" {
+        Assert-Text (Join-Path $backend "service_inventory.go") "candidate_repo" "服务未写 candidate_repo"
+        Assert-Text (Join-Path $backend "t61_evidence_confidence_test.go") "Service" "缺少服务证据用例"
+    }
+}
+
+function Invoke-T62 {
+    Write-Host "`nT62 exposure/auth" -ForegroundColor Cyan
+    Invoke-Check "T62" "实现与测试存在" {
+        Assert-Exists (Join-Path $backend "exposure_auth.go") "exposure_auth.go"
+        Assert-Exists (Join-Path $backend "t62_exposure_auth_test.go") "T62 测试"
+    }
+    Invoke-Check "T62" "测试通过（T62）" { Invoke-GoTests "T62" }
+    Invoke-Check "T62" "exposure 枚举完整" {
+        foreach ($e in @("exposureLiveApp", "exposureLoginOnly", "exposureAPI", "exposureAdmin", "exposurePlaceholder", "exposureWAF", "exposureErrorPage", "exposureStaticOnly", "exposureUnknown")) {
+            Assert-Text (Join-Path $backend "exposure_auth.go") $e "缺少 $e"
+        }
+    }
+    Invoke-Check "T62" "auth 枚举与写入" {
+        Assert-Text (Join-Path $backend "exposure_auth.go") "authLoginRequired" "缺少 authLoginRequired"
+        Assert-Text (Join-Path $backend "exposure_auth.go") "exposure_state" "未写 exposure_state"
+    }
+    Invoke-Check "T62" "无 IP" {
+        Assert-Text (Join-Path $backend "t62_exposure_auth_test.go") "IP|NoIP" "缺少无 IP 断言"
+    }
+}
+
 function Invoke-T54 {
     Write-Host "`nT54 研究价值评分" -ForegroundColor Cyan
     Invoke-Check "T54" "实现文件存在" {
@@ -325,6 +369,8 @@ switch ($Task) {
     "T57" { Invoke-T57 }
     "T58" { Invoke-T58 }
     "T60" { Invoke-T60 }
+    "T61" { Invoke-T61 }
+    "T62" { Invoke-T62 }
     "All" {
         Invoke-T49
         Invoke-T50
@@ -337,6 +383,8 @@ switch ($Task) {
         Invoke-T57
         Invoke-T58
         Invoke-T60
+        Invoke-T61
+        Invoke-T62
     }
 }
 
