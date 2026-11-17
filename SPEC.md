@@ -462,3 +462,35 @@ T49（门控）→ T50（CDN 识别）→ T51（端口/服务指纹）→ T52（
 
 ### 任务顺序与依赖
 T55 → T56 → T57；T58 可与 T55 并行诊断；T59 最后。迁移 032/033/034 串行。
+
+
+## 第十一轮：组件-资产 8 字段（T60–T63）
+
+背景：用户要求岸线只采最刚需的 8 个字段，复杂研判交给 AI。现有 `asset_components` / `url_components` 已有 `evidence`、`version`、`source`、`created_at`，缺 `confidence`、`matched_url`、`exposure_state`、`auth_state`、`candidate_repo`；Web 组件存 `url_components`，服务组件存 `asset_components`。
+
+已确认口径：
+- 8 字段：`component_evidence`（`{type,value,snippet}`）、`component_confidence`（high/medium/low）、`matched_url`、`version_hint`、`exposure_state`、`auth_state`、`component_candidate_repo`、`capture_time`。
+- `exposure_state` / `auth_state` 是资产级属性，存 `assets`；组件关系 API 关联返回。
+- `matched_url` 对服务组件为空；Web 组件取命中的具体 URL。
+- `confidence` 由岸线规则推断；LLM 只写回 repo / priority / reason，不改 confidence。
+- 历史数据回填 unknown/low，不伪造证据。
+- 不实现 AI 组件归一、repo 确认、源码 tag 选择、漏洞前提匹配（交给 AI）。
+
+### T60 字段与 API
+迁移 037：`assets` 加 `exposure_state`、`auth_state`；`url_components` / `asset_components` 加 `confidence`、`matched_url`、`candidate_repo`；`components` 加 `repo_confidence`、`ai_review`（jsonb）。API `GET /api/components/{id}/assets` 返回 8 字段（`component_evidence`、`component_confidence`、`matched_url`、`version_hint`、`exposure_state`、`auth_state`、`component_candidate_repo`、`capture_time`）；`GET /api/components` 支持 `min_confidence`、`exposure` 筛选；历史回填 unknown/low；OpenAPI/MCP 同步。
+验收：字段齐全；筛选正确；回填幂等；无 IP；go test/vitest/build。
+
+### T61 证据与置信度
+行为：Web Wappalyzer 识别写 `evidence`（path/header/meta/title/js/favicon/status/llm）与 confidence 规则（明确 path/header/meta/JS/favicon = high；title/结构 = medium；域名语义/仅 Server/LLM = low）；服务识别沿用 T53 的 evidence/confidence；无证据记 low。
+验收：构造 header/meta/title/path/js 样本，confidence 与 evidence type 正确；无证据 low；服务证据不丢。
+
+### T62 exposure/auth
+行为：HTTP 扫描按 status/title/body/headers 判定 `exposure_state`（live_app/login_only/api/admin/placeholder/waf/error_page/static_only/unknown）与 `auth_state`（anonymous/login_required/unknown），写 `assets`；组件关系 API 关联返回。历史数据只标 unknown，后续扫描更新。
+验收：构造 200 登录页/401/JSON/placeholder/WAF/404/静态样本判定正确；不误判；无 IP。
+
+### T63 候选 repo、AI 写回与前端
+行为：组件名→repo 映射表生成 `candidate_repo`；`POST /api/components/ai-review` 写回 `repo`、`repo_confidence`、`audit_priority`、`reason`；组件页展示 8 字段并支持 confidence/exposure 筛选；MCP/OpenAPI 同步。
+验收：映射命中；AI 写回幂等且鉴权同现有；筛选与展示正确；无 IP。
+
+### 依赖
+T60 → T61/T62 → T63；迁移 037 串行。

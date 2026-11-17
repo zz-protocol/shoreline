@@ -85,5 +85,14 @@
 | T58 | no_dial_ip 收口（诊断完成）：77,729 行为 44,823 资产，99.85% 为 NXDOMAIN 死域；改 skip 原因细分（dns_nxdomain/dns_nodata/dns_timeout/dns_error/dns_negative_cached）、service_scan_skips 去重 + scan_task_id、NXDOMAIN 双 resolver 复核、A/AAAA 分开成功、EDNS0/TC TCP 回退、重解析后 CDN 复判；仍不绕过 CDN 门控 | 同类资产不重复计数；NXDOMAIN 负缓存/预过滤后不再逐轮重解析；CDN 未判定仍跳过；不写 IP；无真实网络 | 完成（1e163ff/cdc4067；accept T58 全 PASS；生产迁移 036 去重 101450→54503 行、count 累计 77729；DNS 负答案复核、A/AAAA 分开、EDNS0/TC、负缓存、CDN 复判测试过；go test -count=2 231.0s、前端 75 测试与 build 过；无真实网络） |
 | T59 | 小批复扫与对比：SERVICE_SCAN_TIMEOUT=1s；5–10 个根域复扫；重触发 20 个失败根域；对比 open/verified/named/候选 | 复扫前后对比；失败根域补齐 359/363；不改 T55–T58 口径；开发环境仅假服务/测试库 | 进行中（1s 复扫已触发；5 个样本 open 46→57、22→33、67→55、40→39、29→34，verified 均仍为 0；新 skip 原因 dns_nxdomain 7329 等生效；20 个失败根域已重触发，running 692，root done 359/363，后台继续） |
 
-依赖顺序：T49 → T50 → T51 → T52 →（T53 可并行）→ T54（依赖 T52）。第十轮 T55 → T56 → T57；T58 可与 T55 并行；T59 最后。T49/T50 可先独立验收。
+## 第十一轮（11-16）：组件-资产 8 字段
+
+| 编号 | 任务 | 验收标准 | 状态 |
+|---|---|---|---|
+| T60 | 字段与 API：迁移 037；assets 加 exposure_state/auth_state；url_components/asset_components 加 confidence/matched_url/candidate_repo；components 加 repo_confidence/ai_review；GET /api/components/{id}/assets 返回 8 字段；GET /api/components 支持 min_confidence/exposure；历史回填 unknown/low；OpenAPI/MCP 同步 | 8 字段齐全；筛选正确；回填幂等；无 IP；go test/vitest/build | 待做 |
+| T61 | 证据与置信度：Web Wappalyzer 写 evidence（path/header/meta/title/js/favicon/status/llm）与 confidence 规则；服务沿用 T53；无证据 low | 构造 header/meta/title/path/js 样本，confidence 与 evidence type 正确；无证据 low；服务证据不丢 | 待做 |
+| T62 | exposure/auth：HTTP 扫描按 status/title/body/headers 判定 exposure_state（live_app/login_only/api/admin/placeholder/waf/error_page/static_only/unknown）与 auth_state（anonymous/login_required/unknown），写 assets；历史 unknown | 构造 200 登录页/401/JSON/placeholder/WAF/404/静态样本判定正确；不误判；无 IP | 待做 |
+| T63 | 候选 repo、AI 写回与前端：组件名映射表生成 candidate_repo；POST /api/components/ai-review 写回 repo/repo_confidence/audit_priority/reason；组件页展示 8 字段与 confidence/exposure 筛选；MCP/OpenAPI 同步 | 映射命中；AI 写回幂等且鉴权同现有；筛选与展示正确；无 IP | 待做 |
+
+依赖顺序：T49 → T50 → T51 → T52 →（T53 可并行）→ T54（依赖 T52）。第十轮 T55 → T56 → T57；T58 可与 T55 并行；T59 最后。第十一轮 T60 → T61/T62 → T63；迁移 037 串行。T49/T50 可先独立验收。
 约束：只开发，不部署、不对真实厂商扫描、不写生产地址、IP 不存不显、不删除已识别组件数据。
