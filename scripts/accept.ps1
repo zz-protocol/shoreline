@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("T49", "T50", "T51", "T52", "T53", "T54", "T55", "T56", "T57", "T58", "T60", "T61", "T62", "All")]
+    [ValidateSet("T49", "T50", "T51", "T52", "T53", "T54", "T55", "T56", "T57", "T58", "T60", "T61", "T62", "T63", "All")]
     [string]$Task = "All",
     [int]$Count = 1,
     [switch]$SkipFrontend
@@ -329,6 +329,33 @@ function Invoke-T62 {
     }
 }
 
+function Invoke-T63 {
+    Write-Host "`nT63 候选 repo / AI 写回 / 前端" -ForegroundColor Cyan
+    Invoke-Check "T63" "实现与测试存在" {
+        Assert-Exists (Join-Path $backend "component_repos.go") "component_repos.go"
+        Assert-Exists (Join-Path $backend "component_ai_review.go") "component_ai_review.go"
+        Assert-Exists (Join-Path $backend "t63_ai_review_test.go") "T63 测试"
+        Assert-Exists (Join-Path $frontend "src\t63.test.jsx") "T63 前端测试"
+    }
+    Invoke-Check "T63" "测试通过（T63）" { Invoke-GoTests "T63" }
+    Invoke-Check "T63" "repo 映射表" {
+        Assert-Text (Join-Path $backend "component_repos.go") "apache/superset" "缺少 Superset"
+        Assert-Text (Join-Path $backend "component_repos.go") "jenkinsci/jenkins" "缺少 Jenkins"
+        Assert-Text (Join-Path $backend "component_repos.go") "gitlab" "缺少 GitLab"
+    }
+    Invoke-Check "T63" "AI 写回路由与校验" {
+        Assert-Text (Join-Path $backend "api.go") "ai-review" "路由未注册"
+        Assert-Text (Join-Path $backend "component_ai_review.go") "repo_confidence" "缺少 repo_confidence"
+        Assert-Text (Join-Path $backend "openapi.yaml") "/api/components/ai-review" "OpenAPI 未同步"
+    }
+    Invoke-Check "T63" "前端筛选与 8 字段" {
+        Assert-Text (Join-Path $frontend "src\pages\Components.jsx") "min_confidence" "缺少 min_confidence"
+        Assert-Text (Join-Path $frontend "src\pages\Components.jsx") "exposure" "缺少 exposure"
+        Assert-Text (Join-Path $frontend "src\pages\Components.jsx") "capture_time" "缺少 capture_time"
+    }
+    Invoke-Check "T63" "前端测试通过" { Invoke-FrontendTests }
+}
+
 function Invoke-T54 {
     Write-Host "`nT54 研究价值评分" -ForegroundColor Cyan
     Invoke-Check "T54" "实现文件存在" {
@@ -371,6 +398,7 @@ switch ($Task) {
     "T60" { Invoke-T60 }
     "T61" { Invoke-T61 }
     "T62" { Invoke-T62 }
+    "T63" { Invoke-T63 }
     "All" {
         Invoke-T49
         Invoke-T50
@@ -385,6 +413,7 @@ switch ($Task) {
         Invoke-T60
         Invoke-T61
         Invoke-T62
+        Invoke-T63
     }
 }
 
