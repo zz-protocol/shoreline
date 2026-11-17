@@ -89,7 +89,7 @@
 
 | 编号 | 任务 | 验收标准 | 状态 |
 |---|---|---|---|
-| T60 | 字段与 API：迁移 037；assets 加 exposure_state/auth_state；url_components/asset_components 加 confidence/matched_url/candidate_repo；components 加 repo_confidence/ai_review；GET /api/components/{id}/assets 返回 8 字段；GET /api/components 支持 min_confidence/exposure；历史回填 unknown/low；OpenAPI/MCP 同步 | 8 字段齐全；筛选正确；回填幂等；无 IP；go test/vitest/build | 待验收 |
+| T60 | 字段与 API：迁移 037；assets 加 exposure_state/auth_state；url_components/asset_components 加 confidence/matched_url/candidate_repo；components 加 repo_confidence/ai_review；GET /api/components/{id}/assets 返回 8 字段；GET /api/components 支持 min_confidence/exposure；历史回填 unknown/low；OpenAPI/MCP 同步 | 8 字段齐全；筛选正确；回填幂等；无 IP；go test/vitest/build | 完成（a5c1b59/93d30bf；accept T60 全 PASS；生产迁移 037 后 8 字段 API 可用，历史回填 low/unknown；min_confidence 筛选 low 全量、high 0；go test -count=2 通过、前端 75 测试与 build 过；无真实网络） |
 | T61 | 证据与置信度：Web Wappalyzer 写 evidence（path/header/meta/title/js/favicon/status/llm）与 confidence 规则；服务沿用 T53；无证据 low | 构造 header/meta/title/path/js 样本，confidence 与 evidence type 正确；无证据 low；服务证据不丢 | 待做 |
 | T62 | exposure/auth：HTTP 扫描按 status/title/body/headers 判定 exposure_state（live_app/login_only/api/admin/placeholder/waf/error_page/static_only/unknown）与 auth_state（anonymous/login_required/unknown），写 assets；历史 unknown | 构造 200 登录页/401/JSON/placeholder/WAF/404/静态样本判定正确；不误判；无 IP | 待做 |
 | T63 | 候选 repo、AI 写回与前端：组件名映射表生成 candidate_repo；POST /api/components/ai-review 写回 repo/repo_confidence/audit_priority/reason；组件页展示 8 字段与 confidence/exposure 筛选；MCP/OpenAPI 同步 | 映射命中；AI 写回幂等且鉴权同现有；筛选与展示正确；无 IP | 待做 |
